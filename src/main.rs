@@ -1,10 +1,27 @@
-use std::env;
 use std::f32::consts::TAU;
 use std::i16;
-use std::process;
 use hound;
+use clap::Clap;
 
-const USAGE: &str = "Usage: pitch-corrector <action> <filename> # Where <action> is either write or read";
+#[derive(Clap)]
+#[clap()]
+struct Opts {
+    #[clap(subcommand)]
+    subcmd: SubCommand,
+    /// Sets the name of the input/output wav file
+    #[clap(short, long, default_value = "example.wav")]
+    filename: String,
+}
+
+#[derive(Clap)]
+enum SubCommand {
+    /// Generate a wav file
+    #[clap()]
+    Write,
+    /// Analize a wav file
+    #[clap()]
+    Read,
+}
 
 fn read(filename: &String) {
     let mut reader = hound::WavReader::open(filename).unwrap();
@@ -15,8 +32,7 @@ fn read(filename: &String) {
     println!("RMS is {}", (sqr_sum / reader.len() as f64).sqrt());
 }
 
-fn write(filename: &String) {
-    let spec = hound::WavSpec {
+fn write(filename: &String) { let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 44100,
         bits_per_sample: 16,
@@ -32,18 +48,10 @@ fn write(filename: &String) {
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
+    let opts: Opts = Opts::parse();
 
-    if args.len() != 3 {
-        println!("{}", USAGE);
-        process::exit(1);
-    }
-
-    let action = &args[1];
-
-    match action.as_str() {
-        "write" => write(&args[2]),
-        "read"  => read(&args[2]),
-        _ => println!("{}", USAGE),
+    match opts.subcmd {
+        SubCommand::Write => write(&opts.filename),
+        SubCommand::Read  =>  read(&opts.filename),
     }
 }
