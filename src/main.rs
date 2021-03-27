@@ -1,7 +1,9 @@
-use std::f32::consts::TAU;
+use std::f32::consts::PI;
 use std::i16;
 use hound;
 use clap::Clap;
+
+const TAU: f32 = 2.0 * PI;
 
 #[derive(Clap)]
 #[clap()]
