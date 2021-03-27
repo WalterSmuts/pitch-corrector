@@ -6,7 +6,6 @@ use std::i16;
 const TAU: f32 = 2.0 * PI;
 
 #[derive(Clap)]
-#[clap()]
 struct Opts {
     #[clap(subcommand)]
     subcmd: SubCommand,
@@ -18,10 +17,8 @@ struct Opts {
 #[derive(Clap)]
 enum SubCommand {
     /// Generate a wav file
-    #[clap()]
     Write,
     /// Analize a wav file
-    #[clap()]
     Read,
 }
 
