@@ -1,7 +1,7 @@
+use clap::Clap;
+use hound;
 use std::f32::consts::PI;
 use std::i16;
-use hound;
-use clap::Clap;
 
 const TAU: f32 = 2.0 * PI;
 
@@ -34,14 +34,15 @@ fn read(filename: &String) {
     println!("RMS is {}", (sqr_sum / reader.len() as f64).sqrt());
 }
 
-fn write(filename: &String) { let spec = hound::WavSpec {
+fn write(filename: &String) {
+    let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 44100,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(filename, spec).unwrap();
-    for t in (0 .. 44100 * 5).map(|x| x as f32 / 44100.0) {
+    for t in (0..44100 * 5).map(|x| x as f32 / 44100.0) {
         let sample = (TAU * t * 440.0).sin();
         let amplitude = i16::MAX as f32;
         writer.write_sample((sample * amplitude) as i16).unwrap();
@@ -54,6 +55,6 @@ fn main() {
 
     match opts.subcmd {
         SubCommand::Write => write(&opts.filename),
-        SubCommand::Read  =>  read(&opts.filename),
+        SubCommand::Read => read(&opts.filename),
     }
 }
