@@ -2,7 +2,7 @@ use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use cpal::{SampleRate, StreamConfig};
-use hound;
+
 use std::f32::consts::PI;
 use std::sync::{Arc, Barrier};
 
