@@ -1,11 +1,11 @@
-use clap::Clap;
+use clap::Parser;
 use hound;
 use std::f32::consts::PI;
 use std::i16;
 
 const TAU: f32 = 2.0 * PI;
 
-#[derive(Clap)]
+#[derive(Parser)]
 struct Opts {
     #[clap(subcommand)]
     subcmd: SubCommand,
@@ -14,7 +14,7 @@ struct Opts {
     filename: String,
 }
 
-#[derive(Clap)]
+#[derive(Parser)]
 enum SubCommand {
     /// Generate a wav file
     Write,
