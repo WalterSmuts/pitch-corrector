@@ -1,7 +1,10 @@
 use clap::Parser;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::Sample;
+use cpal::{SampleRate, StreamConfig};
 use hound;
 use std::f32::consts::PI;
-use std::i16;
+use std::sync::{Arc, Barrier};
 
 const TAU: f32 = 2.0 * PI;
 
@@ -20,6 +23,8 @@ enum SubCommand {
     Write,
     /// Analize a wav file
     Read,
+    /// Play wav file and showing live levels
+    Play,
 }
 
 fn read(filename: &String) {
@@ -47,11 +52,53 @@ fn write(filename: &String) {
     writer.finalize().unwrap();
 }
 
+fn play(filename: &String) {
+    let mut reader = hound::WavReader::open(filename).unwrap();
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .expect("No output device available");
+
+    let barrier = Arc::new(Barrier::new(2));
+    let barrier_clone = barrier.clone();
+    let once = std::sync::Once::new();
+
+    let stream = device
+        .build_output_stream(
+            &StreamConfig {
+                channels: 1,
+                sample_rate: SampleRate(44100),
+                buffer_size: cpal::BufferSize::Default,
+            },
+            move |data: &mut [f32], _| {
+                for sample in data.iter_mut() {
+                    *sample = Sample::from(
+                        &reader
+                            .samples::<i16>()
+                            .map(|sample| sample.unwrap())
+                            .next()
+                            .unwrap_or_else(|| {
+                                once.call_once(|| {
+                                    barrier_clone.wait();
+                                });
+                                0
+                            }),
+                    );
+                }
+            },
+            |_| panic!("Error from ALSA"),
+        )
+        .unwrap();
+    stream.play().unwrap();
+    barrier.wait();
+}
+
 fn main() {
     let opts: Opts = Opts::parse();
 
     match opts.subcmd {
         SubCommand::Write => write(&opts.filename),
         SubCommand::Read => read(&opts.filename),
+        SubCommand::Play => play(&opts.filename),
     }
 }
