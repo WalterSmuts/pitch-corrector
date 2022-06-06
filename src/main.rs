@@ -85,6 +85,11 @@ fn play(filename: &String) {
                             }),
                     );
                 }
+                let sqr_sum = data.iter().fold(0.0, |sqr_sum, s| {
+                    let sample = *s as f64;
+                    sqr_sum + sample * sample
+                });
+                println!("RMS is {}", (sqr_sum / reader.len() as f64).sqrt());
             },
             |_| panic!("Error from ALSA"),
         )
