@@ -2,9 +2,10 @@ use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use cpal::{SampleRate, StreamConfig};
-
 use std::f32::consts::PI;
 use std::sync::{Arc, Barrier};
+use textplots::Shape;
+use textplots::{Chart, Plot};
 
 const TAU: f32 = 2.0 * PI;
 
@@ -68,7 +69,7 @@ fn play(filename: &String) {
             &StreamConfig {
                 channels: 1,
                 sample_rate: SampleRate(44100),
-                buffer_size: cpal::BufferSize::Default,
+                buffer_size: cpal::BufferSize::Fixed(1024 * 4),
             },
             move |data: &mut [f32], _| {
                 for sample in data.iter_mut() {
@@ -85,11 +86,16 @@ fn play(filename: &String) {
                             }),
                     );
                 }
-                let sqr_sum = data.iter().fold(0.0, |sqr_sum, s| {
-                    let sample = *s as f64;
-                    sqr_sum + sample * sample
-                });
-                println!("RMS is {}", (sqr_sum / reader.len() as f64).sqrt());
+                let mut index = -(data.len() as i32) / 2;
+                let mut points = Vec::with_capacity(1024);
+                for point in data {
+                    points.push((index as f32, *point));
+                    index += 1;
+                }
+                print!("{}[2J", 27 as char);
+                Chart::new_with_y_range(200, 100, -512.0, 512.0, -1.0, 1.0)
+                    .lineplot(&Shape::Points(&points))
+                    .display();
             },
             |_| panic!("Error from ALSA"),
         )
