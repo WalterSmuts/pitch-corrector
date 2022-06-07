@@ -64,6 +64,7 @@ fn play(filename: &String) {
     let barrier_clone = barrier.clone();
     let once = std::sync::Once::new();
 
+    print!("{}[2J", 27 as char);
     let stream = device
         .build_output_stream(
             &StreamConfig {
@@ -92,7 +93,7 @@ fn play(filename: &String) {
                     points.push((index as f32, *point));
                     index += 1;
                 }
-                print!("{}[2J", 27 as char);
+                print!("{}", ansi_escapes::CursorTo::TopLeft);
                 Chart::new_with_y_range(200, 100, -512.0, 512.0, -1.0, 1.0)
                     .lineplot(&Shape::Points(&points))
                     .display();
