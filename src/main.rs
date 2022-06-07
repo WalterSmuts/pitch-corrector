@@ -30,6 +30,8 @@ enum SubCommand {
     Read,
     /// Play wav file and showing live levels
     Play,
+    /// Record from microphone while showing live levels
+    Record,
 }
 
 fn read(filename: &String) {
@@ -140,6 +142,66 @@ fn play(filename: &String) {
     barrier.wait();
 }
 
+fn record() {
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .expect("No input device available");
+    let config = device.default_input_config().unwrap();
+    dbg!(&config);
+    let config = &config.into();
+    dbg!(&config);
+    print!("{}[2J", 27 as char);
+    let mut real_planner = RealFftPlanner::<f32>::new();
+    let r2c = real_planner.plan_fft_forward(BUFFER_SIZE);
+    let stream = device
+        .build_input_stream(
+            config,
+            move |data: &[f32], _| {
+                let mut ff_data = [0.0; BUFFER_SIZE].to_vec();
+                ff_data.copy_from_slice(&data[0..BUFFER_SIZE]);
+                let mut spectrum = r2c.make_output_vec();
+                r2c.process(&mut ff_data, &mut spectrum).unwrap();
+                let spectrum: Vec<f32> = spectrum
+                    .into_iter()
+                    .map(|complex| complex.norm_sqr())
+                    .collect();
+                let spectrum: Vec<(f32, f32)> = spectrum
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, val)| ((index as f32).log2() * 102.4, val))
+                    .collect();
+                let mut index = -(BUFFER_SIZE as i32) / 2;
+                let mut points = Vec::with_capacity(BUFFER_SIZE);
+                for point in data {
+                    points.push((index as f32, *point));
+                    if points.len() == BUFFER_SIZE {
+                        break;
+                    }
+                    index += 1;
+                }
+
+                print!("{}", ansi_escapes::CursorTo::TopLeft);
+                Chart::new_with_y_range(200, 100, 0.0, BUFFER_SIZE as f32, 0.0, 30.0)
+                    .lineplot(&Shape::Points(&spectrum))
+                    .display();
+                Chart::new_with_y_range(
+                    200,
+                    100,
+                    -(BUFFER_SIZE as f32) / 2.0,
+                    BUFFER_SIZE as f32 / 2.0,
+                    -1.0,
+                    1.0,
+                )
+                .lineplot(&Shape::Points(&points))
+                .display();
+            },
+            |_| panic!("Error from ALSA on record"),
+        ).unwrap();
+    stream.play().unwrap();
+    std::thread::park();
+}
+
 fn main() {
     let opts: Opts = Opts::parse();
 
@@ -147,5 +209,6 @@ fn main() {
         SubCommand::Write => write(&opts.filename),
         SubCommand::Read => read(&opts.filename),
         SubCommand::Play => play(&opts.filename),
+        SubCommand::Record => record(),
     }
 }
