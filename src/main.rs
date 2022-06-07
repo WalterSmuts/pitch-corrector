@@ -1,4 +1,5 @@
 use clap::Parser;
+use cpal::{InputCallbackInfo, OutputCallbackInfo};
 use realfft::RealFftPlanner;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -65,83 +66,78 @@ fn write(filename: &String) {
 
 fn play(filename: &String) {
     let mut reader = hound::WavReader::open(filename).unwrap();
-    let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .expect("No output device available");
-
     let barrier = Arc::new(Barrier::new(2));
     let barrier_clone = barrier.clone();
     let once = std::sync::Once::new();
 
     print!("{}[2J", 27 as char);
-    let stream = device
-        .build_output_stream(
-            &StreamConfig {
-                channels: 1,
-                sample_rate: SampleRate(SAMPLE_RATE),
-                buffer_size: cpal::BufferSize::Fixed(BUFFER_SIZE as u32 * 4),
-            },
-            move |data: &mut [f32], _| {
-                print!("{}", ansi_escapes::CursorTo::TopLeft);
-                for sample in data.iter_mut() {
-                    *sample = Sample::from(
-                        &reader
-                            .samples::<i16>()
-                            .map(|sample| sample.unwrap())
-                            .next()
-                            .unwrap_or_else(|| {
-                                once.call_once(|| {
-                                    barrier_clone.wait();
-                                });
-                                0
-                            }),
-                    );
-                }
-                draw_psd(data);
-                draw_waveform(data);
-            },
-            |_| panic!("Error from ALSA"),
-        )
-        .unwrap();
+    let stream = get_output_stream(move |data: &mut [f32], _| {
+        print!("{}", ansi_escapes::CursorTo::TopLeft);
+        for sample in data.iter_mut() {
+            *sample = Sample::from(
+                &reader
+                    .samples::<i16>()
+                    .map(|sample| sample.unwrap())
+                    .next()
+                    .unwrap_or_else(|| {
+                        once.call_once(|| {
+                            barrier_clone.wait();
+                        });
+                        0
+                    }),
+            );
+        }
+        draw_psd(data);
+        draw_waveform(data);
+    });
     stream.play().unwrap();
     barrier.wait();
 }
 
 fn record() {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .expect("No input device available");
-    let config = device.default_input_config().unwrap();
-    dbg!(&config);
-    let config = &config.into();
-    dbg!(&config);
     print!("{}[2J", 27 as char);
-    let stream = device
-        .build_input_stream(
-            config,
-            move |data: &[f32], _| {
-                print!("{}", ansi_escapes::CursorTo::TopLeft);
-                draw_psd(data);
-                draw_waveform(data);
-            },
-            |_| panic!("Error from ALSA on record"),
-        )
-        .unwrap();
+    let stream = get_input_stream(move |data: &[f32], _| {
+        print!("{}", ansi_escapes::CursorTo::TopLeft);
+        draw_psd(data);
+        draw_waveform(data);
+    });
     stream.play().unwrap();
     std::thread::park();
 }
 
 fn pass_through() {
-    let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .expect("No input device available");
     let input_buffer: Arc<SegQueue<f32>> = Arc::new(SegQueue::new());
     let output_buffer = input_buffer.clone();
 
     print!("{}[2J", 27 as char);
+    let input_stream = get_input_stream(move |data: &[f32], _| {
+        print!("{}", ansi_escapes::CursorTo::TopLeft);
+        draw_psd(data);
+        draw_waveform(data);
+        for datum in data {
+            input_buffer.push(*datum);
+        }
+    });
+    input_stream.play().unwrap();
+
+    let output_stream = get_output_stream(move |data: &mut [f32], _| {
+        for sample in data.iter_mut() {
+            *sample = Sample::from(&output_buffer.pop().unwrap_or_else(|| 0.0));
+        }
+    });
+    output_stream.play().unwrap();
+    std::thread::park();
+}
+
+fn get_input_stream<T, D>(handler: D) -> cpal::Stream
+where
+    T: Sample,
+    D: FnMut(&[T], &InputCallbackInfo) + Send + 'static,
+{
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .expect("No input device available");
     let input_stream = device
         .build_input_stream(
             &StreamConfig {
@@ -149,19 +145,22 @@ fn pass_through() {
                 sample_rate: SampleRate(SAMPLE_RATE),
                 buffer_size: BufferSize::Fixed((BUFFER_SIZE * 4) as u32),
             },
-            move |data: &[f32], _| {
-                print!("{}", ansi_escapes::CursorTo::TopLeft);
-                draw_psd(data);
-                draw_waveform(data);
-                for datum in data {
-                    input_buffer.push(*datum);
-                }
-            },
-            |_| panic!("Error from ALSA on record"),
+            handler,
+            |_| panic!("Error from ALSA on input"),
         )
         .unwrap();
-    input_stream.play().unwrap();
+    input_stream
+}
 
+fn get_output_stream<T, D>(handler: D) -> cpal::Stream
+where
+    T: Sample,
+    D: FnMut(&mut [T], &OutputCallbackInfo) + Send + 'static,
+{
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .expect("No input device available");
     let output_stream = device
         .build_output_stream(
             &StreamConfig {
@@ -169,16 +168,11 @@ fn pass_through() {
                 sample_rate: SampleRate(SAMPLE_RATE),
                 buffer_size: BufferSize::Fixed((BUFFER_SIZE * 4) as u32),
             },
-            move |data: &mut [f32], _| {
-                for sample in data.iter_mut() {
-                    *sample = Sample::from(&output_buffer.pop().unwrap_or_else(|| 0.0));
-                }
-            },
-            |_| panic!("Error from ALSA"),
+            handler,
+            |_| panic!("Error from ALSA on output"),
         )
         .unwrap();
-    output_stream.play().unwrap();
-    std::thread::park();
+    output_stream
 }
 
 fn draw_waveform(data: &[f32]) {
