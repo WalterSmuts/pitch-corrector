@@ -89,10 +89,13 @@ fn play(filename: &String) {
                             }),
                     );
                 }
-                let mut index = -(data.len() as i32) / 2;
+                let mut index = -(BUFFER_SIZE as i32) / 2;
                 let mut points = Vec::with_capacity(BUFFER_SIZE);
                 for point in data {
                     points.push((index as f32, *point));
+                    if points.len() == BUFFER_SIZE {
+                        break;
+                    }
                     index += 1;
                 }
                 print!("{}", ansi_escapes::CursorTo::TopLeft);
