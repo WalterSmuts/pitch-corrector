@@ -8,6 +8,8 @@ use textplots::Shape;
 use textplots::{Chart, Plot};
 
 const TAU: f32 = 2.0 * PI;
+const BUFFER_SIZE: usize = 1024;
+const SAMPLE_RATE: u32 = 44100;
 
 #[derive(Parser)]
 struct Opts {
@@ -40,12 +42,12 @@ fn read(filename: &String) {
 fn write(filename: &String) {
     let spec = hound::WavSpec {
         channels: 1,
-        sample_rate: 44100,
+        sample_rate: SAMPLE_RATE,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
     let mut writer = hound::WavWriter::create(filename, spec).unwrap();
-    for t in (0..44100 * 5).map(|x| x as f32 / 44100.0) {
+    for t in (0..SAMPLE_RATE * 5).map(|x| x as f32 / SAMPLE_RATE as f32) {
         let sample = (TAU * t * 440.0).sin();
         let amplitude = i16::MAX as f32;
         writer.write_sample((sample * amplitude) as i16).unwrap();
@@ -69,8 +71,8 @@ fn play(filename: &String) {
         .build_output_stream(
             &StreamConfig {
                 channels: 1,
-                sample_rate: SampleRate(44100),
-                buffer_size: cpal::BufferSize::Fixed(1024 * 4),
+                sample_rate: SampleRate(SAMPLE_RATE),
+                buffer_size: cpal::BufferSize::Fixed(BUFFER_SIZE as u32 * 4),
             },
             move |data: &mut [f32], _| {
                 for sample in data.iter_mut() {
@@ -88,15 +90,22 @@ fn play(filename: &String) {
                     );
                 }
                 let mut index = -(data.len() as i32) / 2;
-                let mut points = Vec::with_capacity(1024);
+                let mut points = Vec::with_capacity(BUFFER_SIZE);
                 for point in data {
                     points.push((index as f32, *point));
                     index += 1;
                 }
                 print!("{}", ansi_escapes::CursorTo::TopLeft);
-                Chart::new_with_y_range(200, 100, -512.0, 512.0, -1.0, 1.0)
-                    .lineplot(&Shape::Points(&points))
-                    .display();
+                Chart::new_with_y_range(
+                    200,
+                    100,
+                    -(BUFFER_SIZE as f32) / 2.0,
+                    BUFFER_SIZE as f32 / 2.0,
+                    -1.0,
+                    1.0,
+                )
+                .lineplot(&Shape::Points(&points))
+                .display();
             },
             |_| panic!("Error from ALSA"),
         )
