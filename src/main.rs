@@ -2,8 +2,10 @@ use clap::Parser;
 use realfft::RealFftPlanner;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::BufferSize;
 use cpal::Sample;
 use cpal::{SampleRate, StreamConfig};
+use crossbeam_queue::SegQueue;
 use std::f32::consts::PI;
 use std::sync::{Arc, Barrier};
 use textplots::Shape;
@@ -32,6 +34,8 @@ enum SubCommand {
     Play,
     /// Record from microphone while showing live levels
     Record,
+    /// Record from microphone and play directly to speakers
+    PassThrough,
 }
 
 fn read(filename: &String) {
@@ -129,6 +133,54 @@ fn record() {
     std::thread::park();
 }
 
+fn pass_through() {
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .expect("No input device available");
+    let input_buffer: Arc<SegQueue<f32>> = Arc::new(SegQueue::new());
+    let output_buffer = input_buffer.clone();
+
+    print!("{}[2J", 27 as char);
+    let input_stream = device
+        .build_input_stream(
+            &StreamConfig {
+                channels: 1,
+                sample_rate: SampleRate(SAMPLE_RATE),
+                buffer_size: BufferSize::Fixed((BUFFER_SIZE * 4) as u32),
+            },
+            move |data: &[f32], _| {
+                print!("{}", ansi_escapes::CursorTo::TopLeft);
+                draw_psd(data);
+                draw_waveform(data);
+                for datum in data {
+                    input_buffer.push(*datum);
+                }
+            },
+            |_| panic!("Error from ALSA on record"),
+        )
+        .unwrap();
+    input_stream.play().unwrap();
+
+    let output_stream = device
+        .build_output_stream(
+            &StreamConfig {
+                channels: 1,
+                sample_rate: SampleRate(SAMPLE_RATE),
+                buffer_size: BufferSize::Fixed((BUFFER_SIZE * 4) as u32),
+            },
+            move |data: &mut [f32], _| {
+                for sample in data.iter_mut() {
+                    *sample = Sample::from(&output_buffer.pop().unwrap_or_else(|| 0.0));
+                }
+            },
+            |_| panic!("Error from ALSA"),
+        )
+        .unwrap();
+    output_stream.play().unwrap();
+    std::thread::park();
+}
+
 fn draw_waveform(data: &[f32]) {
     let mut index = -(BUFFER_SIZE as i32) / 2;
     let mut points = Vec::with_capacity(BUFFER_SIZE);
@@ -180,5 +232,6 @@ fn main() {
         SubCommand::Read => read(&opts.filename),
         SubCommand::Play => play(&opts.filename),
         SubCommand::Record => record(),
+        SubCommand::PassThrough => pass_through(),
     }
 }
