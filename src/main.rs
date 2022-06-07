@@ -70,9 +70,7 @@ fn play(filename: &String) {
     let barrier_clone = barrier.clone();
     let once = std::sync::Once::new();
 
-    print!("{}[2J", 27 as char);
     let stream = get_output_stream(move |data: &mut [f32], _| {
-        print!("{}", ansi_escapes::CursorTo::TopLeft);
         for sample in data.iter_mut() {
             *sample = Sample::from(
                 &reader
@@ -87,19 +85,15 @@ fn play(filename: &String) {
                     }),
             );
         }
-        draw_psd(data);
-        draw_waveform(data);
+        draw_data(&data);
     });
     stream.play().unwrap();
     barrier.wait();
 }
 
 fn record() {
-    print!("{}[2J", 27 as char);
     let stream = get_input_stream(move |data: &[f32], _| {
-        print!("{}", ansi_escapes::CursorTo::TopLeft);
-        draw_psd(data);
-        draw_waveform(data);
+        draw_data(&data);
     });
     stream.play().unwrap();
     std::thread::park();
@@ -109,11 +103,8 @@ fn pass_through() {
     let input_buffer: Arc<SegQueue<f32>> = Arc::new(SegQueue::new());
     let output_buffer = input_buffer.clone();
 
-    print!("{}[2J", 27 as char);
     let input_stream = get_input_stream(move |data: &[f32], _| {
-        print!("{}", ansi_escapes::CursorTo::TopLeft);
-        draw_psd(data);
-        draw_waveform(data);
+        draw_data(&data);
         for datum in data {
             input_buffer.push(*datum);
         }
@@ -218,7 +209,14 @@ fn draw_psd(data: &[f32]) {
         .display();
 }
 
+fn draw_data(data: &[f32]) {
+    print!("{}", ansi_escapes::CursorTo::TopLeft);
+    draw_psd(data);
+    draw_waveform(data);
+}
+
 fn main() {
+    print!("{}[2J", 27 as char);
     let opts: Opts = Opts::parse();
 
     match opts.subcmd {
