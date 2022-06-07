@@ -12,3 +12,4 @@ clap = { version = "3.1", features = ["derive"] }
 cpal = "0.13"
 textplots = "0.8"
 ansi-escapes = "0.1"
+realfft = "3.0"
