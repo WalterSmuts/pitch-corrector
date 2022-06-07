@@ -114,26 +114,7 @@ fn play(filename: &String) {
                             }),
                     );
                 }
-                let mut index = -(BUFFER_SIZE as i32) / 2;
-                let mut points = Vec::with_capacity(BUFFER_SIZE);
-                for point in data {
-                    points.push((index as f32, *point));
-                    if points.len() == BUFFER_SIZE {
-                        break;
-                    }
-                    index += 1;
-                }
-
-                Chart::new_with_y_range(
-                    200,
-                    100,
-                    -(BUFFER_SIZE as f32) / 2.0,
-                    BUFFER_SIZE as f32 / 2.0,
-                    -1.0,
-                    1.0,
-                )
-                .lineplot(&Shape::Points(&points))
-                .display();
+                draw_waveform(data);
             },
             |_| panic!("Error from ALSA"),
         )
@@ -171,35 +152,40 @@ fn record() {
                     .enumerate()
                     .map(|(index, val)| ((index as f32).log2() * 102.4, val))
                     .collect();
-                let mut index = -(BUFFER_SIZE as i32) / 2;
-                let mut points = Vec::with_capacity(BUFFER_SIZE);
-                for point in data {
-                    points.push((index as f32, *point));
-                    if points.len() == BUFFER_SIZE {
-                        break;
-                    }
-                    index += 1;
-                }
-
                 print!("{}", ansi_escapes::CursorTo::TopLeft);
+                draw_waveform(data);
+
                 Chart::new_with_y_range(200, 100, 0.0, BUFFER_SIZE as f32, 0.0, 30.0)
                     .lineplot(&Shape::Points(&spectrum))
                     .display();
-                Chart::new_with_y_range(
-                    200,
-                    100,
-                    -(BUFFER_SIZE as f32) / 2.0,
-                    BUFFER_SIZE as f32 / 2.0,
-                    -1.0,
-                    1.0,
-                )
-                .lineplot(&Shape::Points(&points))
-                .display();
             },
             |_| panic!("Error from ALSA on record"),
-        ).unwrap();
+        )
+        .unwrap();
     stream.play().unwrap();
     std::thread::park();
+}
+
+fn draw_waveform(data: &[f32]) {
+    let mut index = -(BUFFER_SIZE as i32) / 2;
+    let mut points = Vec::with_capacity(BUFFER_SIZE);
+    for point in data {
+        points.push((index as f32, *point));
+        if points.len() == BUFFER_SIZE {
+            break;
+        }
+        index += 1;
+    }
+    Chart::new_with_y_range(
+        200,
+        100,
+        -(BUFFER_SIZE as f32) / 2.0,
+        BUFFER_SIZE as f32 / 2.0,
+        -1.0,
+        1.0,
+    )
+    .lineplot(&Shape::Points(&points))
+    .display();
 }
 
 fn main() {
