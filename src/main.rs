@@ -85,7 +85,7 @@ fn play(filename: &String) {
                     }),
             );
         }
-        draw_data(&data);
+        draw_data(data);
     });
     stream.play().unwrap();
     barrier.wait();
@@ -93,7 +93,7 @@ fn play(filename: &String) {
 
 fn record() {
     let stream = get_input_stream(move |data: &[f32], _| {
-        draw_data(&data);
+        draw_data(data);
     });
     stream.play().unwrap();
     std::thread::park();
@@ -104,7 +104,7 @@ fn pass_through() {
     let output_buffer = input_buffer.clone();
 
     let input_stream = get_input_stream(move |data: &[f32], _| {
-        draw_data(&data);
+        draw_data(data);
         for datum in data {
             input_buffer.push(*datum);
         }
@@ -113,7 +113,7 @@ fn pass_through() {
 
     let output_stream = get_output_stream(move |data: &mut [f32], _| {
         for sample in data.iter_mut() {
-            *sample = Sample::from(&output_buffer.pop().unwrap_or_else(|| 0.0));
+            *sample = Sample::from(&output_buffer.pop().unwrap_or(0.0));
         }
     });
     output_stream.play().unwrap();
@@ -129,7 +129,8 @@ where
     let device = host
         .default_input_device()
         .expect("No input device available");
-    let input_stream = device
+
+    device
         .build_input_stream(
             &StreamConfig {
                 channels: 1,
@@ -139,8 +140,7 @@ where
             handler,
             |_| panic!("Error from ALSA on input"),
         )
-        .unwrap();
-    input_stream
+        .unwrap()
 }
 
 fn get_output_stream<T, D>(handler: D) -> cpal::Stream
@@ -152,7 +152,8 @@ where
     let device = host
         .default_output_device()
         .expect("No input device available");
-    let output_stream = device
+
+    device
         .build_output_stream(
             &StreamConfig {
                 channels: 1,
@@ -162,8 +163,7 @@ where
             handler,
             |_| panic!("Error from ALSA on output"),
         )
-        .unwrap();
-    output_stream
+        .unwrap()
 }
 
 fn draw_waveform(data: &[f32]) {
@@ -195,12 +195,9 @@ fn draw_psd(data: &[f32]) {
     ff_data.copy_from_slice(&data[0..BUFFER_SIZE]);
     let mut spectrum = r2c.make_output_vec();
     r2c.process(&mut ff_data, &mut spectrum).unwrap();
-    let spectrum: Vec<f32> = spectrum
-        .into_iter()
-        .map(|complex| complex.norm_sqr())
-        .collect();
     let spectrum: Vec<(f32, f32)> = spectrum
         .into_iter()
+        .map(|complex| complex.norm_sqr())
         .enumerate()
         .map(|(index, val)| ((index as f32).log2() * 102.4, val))
         .collect();
