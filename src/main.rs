@@ -70,9 +70,6 @@ fn play(filename: &String) {
     let barrier_clone = barrier.clone();
     let once = std::sync::Once::new();
 
-    let mut real_planner = RealFftPlanner::<f32>::new();
-    let r2c = real_planner.plan_fft_forward(BUFFER_SIZE);
-
     print!("{}[2J", 27 as char);
     let stream = device
         .build_output_stream(
@@ -82,24 +79,7 @@ fn play(filename: &String) {
                 buffer_size: cpal::BufferSize::Fixed(BUFFER_SIZE as u32 * 4),
             },
             move |data: &mut [f32], _| {
-                let mut ff_data = [0.0; BUFFER_SIZE].to_vec();
-                ff_data.copy_from_slice(&data[0..BUFFER_SIZE]);
-                let mut spectrum = r2c.make_output_vec();
-                r2c.process(&mut ff_data, &mut spectrum).unwrap();
-                let spectrum: Vec<f32> = spectrum
-                    .into_iter()
-                    .map(|complex| complex.norm_sqr())
-                    .collect();
-                let spectrum: Vec<(f32, f32)> = spectrum
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, val)| ((index as f32).log2() * 102.4, val))
-                    .collect();
                 print!("{}", ansi_escapes::CursorTo::TopLeft);
-                Chart::new_with_y_range(200, 100, 0.0, BUFFER_SIZE as f32, 0.0, 30.0)
-                    .lineplot(&Shape::Points(&spectrum))
-                    .display();
-
                 for sample in data.iter_mut() {
                     *sample = Sample::from(
                         &reader
@@ -114,6 +94,7 @@ fn play(filename: &String) {
                             }),
                     );
                 }
+                draw_psd(data);
                 draw_waveform(data);
             },
             |_| panic!("Error from ALSA"),
@@ -133,31 +114,13 @@ fn record() {
     let config = &config.into();
     dbg!(&config);
     print!("{}[2J", 27 as char);
-    let mut real_planner = RealFftPlanner::<f32>::new();
-    let r2c = real_planner.plan_fft_forward(BUFFER_SIZE);
     let stream = device
         .build_input_stream(
             config,
             move |data: &[f32], _| {
-                let mut ff_data = [0.0; BUFFER_SIZE].to_vec();
-                ff_data.copy_from_slice(&data[0..BUFFER_SIZE]);
-                let mut spectrum = r2c.make_output_vec();
-                r2c.process(&mut ff_data, &mut spectrum).unwrap();
-                let spectrum: Vec<f32> = spectrum
-                    .into_iter()
-                    .map(|complex| complex.norm_sqr())
-                    .collect();
-                let spectrum: Vec<(f32, f32)> = spectrum
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, val)| ((index as f32).log2() * 102.4, val))
-                    .collect();
                 print!("{}", ansi_escapes::CursorTo::TopLeft);
+                draw_psd(data);
                 draw_waveform(data);
-
-                Chart::new_with_y_range(200, 100, 0.0, BUFFER_SIZE as f32, 0.0, 30.0)
-                    .lineplot(&Shape::Points(&spectrum))
-                    .display();
             },
             |_| panic!("Error from ALSA on record"),
         )
@@ -186,6 +149,27 @@ fn draw_waveform(data: &[f32]) {
     )
     .lineplot(&Shape::Points(&points))
     .display();
+}
+
+fn draw_psd(data: &[f32]) {
+    let mut real_planner = RealFftPlanner::<f32>::new();
+    let r2c = real_planner.plan_fft_forward(BUFFER_SIZE);
+    let mut ff_data = [0.0; BUFFER_SIZE].to_vec();
+    ff_data.copy_from_slice(&data[0..BUFFER_SIZE]);
+    let mut spectrum = r2c.make_output_vec();
+    r2c.process(&mut ff_data, &mut spectrum).unwrap();
+    let spectrum: Vec<f32> = spectrum
+        .into_iter()
+        .map(|complex| complex.norm_sqr())
+        .collect();
+    let spectrum: Vec<(f32, f32)> = spectrum
+        .into_iter()
+        .enumerate()
+        .map(|(index, val)| ((index as f32).log2() * 102.4, val))
+        .collect();
+    Chart::new_with_y_range(200, 100, 0.0, BUFFER_SIZE as f32, 0.0, 30.0)
+        .lineplot(&Shape::Points(&spectrum))
+        .display();
 }
 
 fn main() {
