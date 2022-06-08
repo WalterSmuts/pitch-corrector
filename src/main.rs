@@ -37,7 +37,7 @@ enum SubCommand {
     /// Record from microphone while showing live levels
     Record,
     /// Record from microphone and play directly to speakers
-    PassThrough,
+    Passthrough,
 }
 
 fn read(filename: &String) {
@@ -100,7 +100,7 @@ fn record() {
     std::thread::park();
 }
 
-fn pass_through() {
+fn passthrough() {
     let input_buffer: Arc<SegQueue<f32>> = Arc::new(SegQueue::new());
     let output_buffer = input_buffer.clone();
 
@@ -243,6 +243,6 @@ fn main() {
         SubCommand::Read => read(&opts.filename),
         SubCommand::Play => play(&opts.filename),
         SubCommand::Record => record(),
-        SubCommand::PassThrough => pass_through(),
+        SubCommand::Passthrough => passthrough(),
     }
 }
