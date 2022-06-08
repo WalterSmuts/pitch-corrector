@@ -1,6 +1,7 @@
 use clap::Parser;
 use cpal::{InputCallbackInfo, OutputCallbackInfo};
-use realfft::RealFftPlanner;
+use realfft::RealToComplex;
+use realfft::{ComplexToReal, RealFftPlanner};
 use splines::{Interpolation, Key, Spline};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -38,6 +39,8 @@ enum SubCommand {
     Record,
     /// Record from microphone and play directly to speakers
     Passthrough,
+    /// Passthrough microphone to speakers but halve the pitch
+    SimplePitchHalver,
 }
 
 fn read(filename: &String) {
@@ -115,6 +118,71 @@ fn passthrough() {
     let output_stream = get_output_stream(move |data: &mut [f32], _| {
         for sample in data.iter_mut() {
             *sample = Sample::from(&output_buffer.pop().unwrap_or(0.0));
+        }
+    });
+    output_stream.play().unwrap();
+    std::thread::park();
+}
+
+struct PitchHalver {
+    input_buffer: SegQueue<f32>,
+    output_buffer: SegQueue<f32>,
+    forward_fft: Arc<dyn RealToComplex<f32>>,
+    inverse_fft: Arc<dyn ComplexToReal<f32>>,
+}
+
+impl PitchHalver {
+    fn new() -> Self {
+        let mut real_planner = RealFftPlanner::new();
+        PitchHalver {
+            input_buffer: SegQueue::new(),
+            output_buffer: SegQueue::new(),
+            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
+            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
+        }
+    }
+
+    fn pop_sample(&self) -> Option<f32> {
+        self.output_buffer.pop()
+    }
+
+    fn push_sample(&self, sample: f32) {
+        self.input_buffer.push(sample);
+        if self.input_buffer.len() > BUFFER_SIZE {
+            let mut buffer = [0.0; BUFFER_SIZE];
+            for sample in &mut buffer {
+                *sample = self.input_buffer.pop().unwrap();
+            }
+            let mut spectrum = self.forward_fft.make_output_vec();
+            self.forward_fft
+                .process(&mut buffer, &mut spectrum)
+                .unwrap();
+            let mut outdata = self.inverse_fft.make_output_vec();
+            self.inverse_fft
+                .process(&mut spectrum, &mut outdata)
+                .unwrap();
+            for sample in outdata {
+                self.output_buffer.push(sample / BUFFER_SIZE as f32);
+            }
+        }
+    }
+}
+
+fn simple_pitch_halver() {
+    let input_pitch_halver = Arc::new(PitchHalver::new());
+    let output_pitch_halver = input_pitch_halver.clone();
+
+    let input_stream = get_input_stream(move |data: &[f32], _| {
+        draw_data(data);
+        for datum in data {
+            input_pitch_halver.push_sample(*datum);
+        }
+    });
+    input_stream.play().unwrap();
+
+    let output_stream = get_output_stream(move |data: &mut [f32], _| {
+        for sample in data.iter_mut() {
+            *sample = Sample::from(&output_pitch_halver.pop_sample().unwrap_or(0.0));
         }
     });
     output_stream.play().unwrap();
@@ -244,5 +312,6 @@ fn main() {
         SubCommand::Play => play(&opts.filename),
         SubCommand::Record => record(),
         SubCommand::Passthrough => passthrough(),
+        SubCommand::SimplePitchHalver => simple_pitch_halver(),
     }
 }
