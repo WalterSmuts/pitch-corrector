@@ -226,6 +226,7 @@ fn draw_data(data: &[f32]) {
 }
 
 fn main() {
+    let opts: Opts = Opts::parse();
     ctrlc::set_handler(move || {
         print!("{}", ansi_escapes::CursorTo::AbsoluteX(0));
         print!("{}", ansi_escapes::ClearScreen);
@@ -236,7 +237,6 @@ fn main() {
 
     print!("{}", ansi_escapes::ClearScreen);
     print!("{}", termion::cursor::Hide);
-    let opts: Opts = Opts::parse();
 
     match opts.subcmd {
         SubCommand::Write => write(&opts.filename),
