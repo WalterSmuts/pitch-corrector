@@ -129,7 +129,6 @@ struct PitchHalver {
     output_buffer: SegQueue<f32>,
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
-    drop_frame: std::sync::Mutex<bool>,
 }
 
 impl PitchHalver {
@@ -140,7 +139,6 @@ impl PitchHalver {
             output_buffer: SegQueue::new(),
             forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
             inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
-            drop_frame: std::sync::Mutex::new(false),
         }
     }
 
@@ -151,30 +149,28 @@ impl PitchHalver {
     fn push_sample(&self, sample: f32) {
         self.input_buffer.push(sample);
         if self.input_buffer.len() > BUFFER_SIZE {
-
             let mut buffer = [0.0; BUFFER_SIZE];
             for sample in &mut buffer {
                 *sample = self.input_buffer.pop().unwrap();
             }
-            let mut drop_frame = self.drop_frame.lock().unwrap();
-            if *drop_frame {
-                *drop_frame = false;
-                return;
+            self.process(&mut buffer);
+            for sample in buffer {
+                self.output_buffer.push(sample / BUFFER_SIZE as f32);
             }
-            *drop_frame = true;
+        }
+    }
 
-            let mut spectrum = self.forward_fft.make_output_vec();
-            self.forward_fft
-                .process(&mut buffer, &mut spectrum)
-                .unwrap();
-            let mut outdata = self.inverse_fft.make_output_vec();
-            self.inverse_fft
-                .process(&mut spectrum, &mut outdata)
-                .unwrap();
-            for sample in outdata {
-                self.output_buffer.push(sample / BUFFER_SIZE as f32);
-                self.output_buffer.push(sample / BUFFER_SIZE as f32);
-            }
+    fn process(&self, buffer: &mut [f32]) {
+        let mut spectrum = self.forward_fft.make_output_vec();
+        self.forward_fft.process(buffer, &mut spectrum).unwrap();
+        // TODO: Some phase manipulation
+        self.inverse_fft
+            .process(&mut spectrum, buffer)
+            .unwrap();
+        let mut temp = [0.0; BUFFER_SIZE/2].to_vec();
+        temp.clone_from_slice(&buffer[0..BUFFER_SIZE/2]);
+        for (index, sample) in buffer.iter_mut().enumerate() {
+            *sample = temp[index/2];
         }
     }
 }
