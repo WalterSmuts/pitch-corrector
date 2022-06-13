@@ -104,24 +104,7 @@ fn record() {
 }
 
 fn passthrough() {
-    let input_buffer: Arc<SegQueue<f32>> = Arc::new(SegQueue::new());
-    let output_buffer = input_buffer.clone();
-
-    let input_stream = get_input_stream(move |data: &[f32], _| {
-        draw_data(data);
-        for datum in data {
-            input_buffer.push(*datum);
-        }
-    });
-    input_stream.play().unwrap();
-
-    let output_stream = get_output_stream(move |data: &mut [f32], _| {
-        for sample in data.iter_mut() {
-            *sample = Sample::from(&output_buffer.pop().unwrap_or(0.0));
-        }
-    });
-    output_stream.play().unwrap();
-    std::thread::park();
+    setup_passthrough_processor(DisplayProcessor)
 }
 
 struct PitchHalver {
@@ -129,6 +112,23 @@ struct PitchHalver {
     output_buffer: SegQueue<f32>,
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
+}
+
+struct DisplayProcessor;
+
+trait StreamProcessor {
+    fn push_sample(&self, sample: f32);
+    fn pop_sample(&self) -> Option<f32>;
+}
+
+impl StreamProcessor for DisplayProcessor {
+    fn push_sample(&self, sample: f32) {
+        todo!()
+    }
+
+    fn pop_sample(&self) -> Option<f32> {
+        todo!()
+    }
 }
 
 impl PitchHalver {
@@ -142,6 +142,20 @@ impl PitchHalver {
         }
     }
 
+    fn process(&self, buffer: &mut [f32]) {
+        let mut spectrum = self.forward_fft.make_output_vec();
+        self.forward_fft.process(buffer, &mut spectrum).unwrap();
+        // TODO: Some phase manipulation
+        self.inverse_fft.process(&mut spectrum, buffer).unwrap();
+        let mut temp = [0.0; BUFFER_SIZE / 2].to_vec();
+        temp.clone_from_slice(&buffer[0..BUFFER_SIZE / 2]);
+        for (index, sample) in buffer.iter_mut().enumerate() {
+            *sample = temp[index / 2];
+        }
+    }
+}
+
+impl StreamProcessor for PitchHalver {
     fn pop_sample(&self) -> Option<f32> {
         self.output_buffer.pop()
     }
@@ -159,37 +173,30 @@ impl PitchHalver {
             }
         }
     }
-
-    fn process(&self, buffer: &mut [f32]) {
-        let mut spectrum = self.forward_fft.make_output_vec();
-        self.forward_fft.process(buffer, &mut spectrum).unwrap();
-        // TODO: Some phase manipulation
-        self.inverse_fft
-            .process(&mut spectrum, buffer)
-            .unwrap();
-        let mut temp = [0.0; BUFFER_SIZE/2].to_vec();
-        temp.clone_from_slice(&buffer[0..BUFFER_SIZE/2]);
-        for (index, sample) in buffer.iter_mut().enumerate() {
-            *sample = temp[index/2];
-        }
-    }
 }
 
 fn simple_pitch_halver() {
-    let input_pitch_halver = Arc::new(PitchHalver::new());
-    let output_pitch_halver = input_pitch_halver.clone();
+    setup_passthrough_processor(PitchHalver::new());
+}
+
+fn setup_passthrough_processor<T: 'static>(processor: T)
+where
+    T: StreamProcessor + Send + Sync,
+{
+    let input_passthrough_processor = Arc::new(processor);
+    let output_passthrough_processor = input_passthrough_processor.clone();
 
     let input_stream = get_input_stream(move |data: &[f32], _| {
         draw_data(data);
         for datum in data {
-            input_pitch_halver.push_sample(*datum);
+            input_passthrough_processor.push_sample(*datum);
         }
     });
     input_stream.play().unwrap();
 
     let output_stream = get_output_stream(move |data: &mut [f32], _| {
         for sample in data.iter_mut() {
-            *sample = Sample::from(&output_pitch_halver.pop_sample().unwrap_or(0.0));
+            *sample = Sample::from(&output_passthrough_processor.pop_sample().unwrap_or(0.0));
         }
     });
     output_stream.play().unwrap();
