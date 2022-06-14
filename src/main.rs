@@ -1,5 +1,6 @@
 use clap::Parser;
 use crossbeam_queue::SegQueue;
+use display::SignalDrawer;
 use realfft::RealToComplex;
 use realfft::{ComplexToReal, RealFftPlanner};
 use std::sync::atomic::AtomicUsize;
@@ -40,6 +41,7 @@ struct DisplayProcessor {
     buffer: SegQueue<f32>,
     display_buffer: Mutex<Box<[f32]>>,
     buffer_index: AtomicUsize,
+    signal_drawer: SignalDrawer,
 }
 
 pub trait StreamProcessor {
@@ -53,6 +55,7 @@ impl DisplayProcessor {
             buffer: SegQueue::new(),
             display_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE])),
             buffer_index: AtomicUsize::new(0),
+            signal_drawer: SignalDrawer::new(),
         }
     }
 }
@@ -65,7 +68,7 @@ impl StreamProcessor for DisplayProcessor {
         self.buffer_index.fetch_add(1, Ordering::Relaxed);
         if self.buffer_index.load(Ordering::Relaxed) >= BUFFER_SIZE {
             self.buffer_index.swap(0, Ordering::Relaxed);
-            display::draw_data(&buffer);
+            self.signal_drawer.draw_data(&buffer);
         }
     }
 
