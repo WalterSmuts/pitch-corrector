@@ -36,22 +36,16 @@ fn passthrough() {
 }
 
 struct PitchHalver {
-    input_buffer: SegQueue<f32>,
-    output_buffer: SegQueue<f32>,
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
 }
 
 struct HighPassFilter {
-    input_buffer: SegQueue<f32>,
-    output_buffer: SegQueue<f32>,
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
 }
 
 struct LowPassFilter {
-    input_buffer: SegQueue<f32>,
-    output_buffer: SegQueue<f32>,
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
 }
@@ -98,6 +92,51 @@ struct DisplayProcessor {
     signal_drawer: SignalDrawer,
 }
 
+struct Segmenter<T>
+where
+    T: BlockProcessor,
+{
+    input_buffer: SegQueue<f32>,
+    output_buffer: SegQueue<f32>,
+    block_processor: T,
+}
+
+impl<T> Segmenter<T>
+where
+    T: BlockProcessor,
+{
+    fn new(block_processor: T) -> Self {
+        Self {
+            input_buffer: SegQueue::new(),
+            output_buffer: SegQueue::new(),
+            block_processor,
+        }
+    }
+}
+
+impl<T> StreamProcessor for Segmenter<T>
+where
+    T: BlockProcessor,
+{
+    fn pop_sample(&self) -> Option<f32> {
+        self.output_buffer.pop()
+    }
+
+    fn push_sample(&self, sample: f32) {
+        self.input_buffer.push(sample);
+        if self.input_buffer.len() > BUFFER_SIZE {
+            let mut buffer = [0.0; BUFFER_SIZE];
+            for sample in &mut buffer {
+                *sample = self.input_buffer.pop().unwrap();
+            }
+            self.block_processor.process(&mut buffer);
+            for sample in buffer {
+                self.output_buffer.push(sample / BUFFER_SIZE as f32);
+            }
+        }
+    }
+}
+
 pub trait StreamProcessor {
     fn push_sample(&self, sample: f32);
     fn pop_sample(&self) -> Option<f32>;
@@ -135,13 +174,13 @@ impl PitchHalver {
     fn new() -> Self {
         let mut real_planner = RealFftPlanner::new();
         PitchHalver {
-            input_buffer: SegQueue::new(),
-            output_buffer: SegQueue::new(),
             forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
             inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
         }
     }
+}
 
+impl BlockProcessor for PitchHalver {
     fn process(&self, buffer: &mut [f32]) {
         let mut spectrum = self.forward_fft.make_output_vec();
         self.forward_fft.process(buffer, &mut spectrum).unwrap();
@@ -155,17 +194,21 @@ impl PitchHalver {
     }
 }
 
+trait BlockProcessor {
+    fn process(&self, buffer: &mut [f32]);
+}
+
 impl HighPassFilter {
     fn new() -> Self {
         let mut real_planner = RealFftPlanner::new();
         Self {
-            input_buffer: SegQueue::new(),
-            output_buffer: SegQueue::new(),
             forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
             inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
         }
     }
+}
 
+impl BlockProcessor for HighPassFilter {
     fn process(&self, buffer: &mut [f32]) {
         let mut spectrum = self.forward_fft.make_output_vec();
         self.forward_fft.process(buffer, &mut spectrum).unwrap();
@@ -180,13 +223,13 @@ impl LowPassFilter {
     fn new() -> Self {
         let mut real_planner = RealFftPlanner::new();
         Self {
-            input_buffer: SegQueue::new(),
-            output_buffer: SegQueue::new(),
             forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
             inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
         }
     }
+}
 
+impl BlockProcessor for LowPassFilter {
     fn process(&self, buffer: &mut [f32]) {
         let mut spectrum = self.forward_fft.make_output_vec();
         self.forward_fft.process(buffer, &mut spectrum).unwrap();
@@ -197,70 +240,13 @@ impl LowPassFilter {
     }
 }
 
-impl StreamProcessor for PitchHalver {
-    fn pop_sample(&self) -> Option<f32> {
-        self.output_buffer.pop()
-    }
-
-    fn push_sample(&self, sample: f32) {
-        self.input_buffer.push(sample);
-        if self.input_buffer.len() > BUFFER_SIZE {
-            let mut buffer = [0.0; BUFFER_SIZE];
-            for sample in &mut buffer {
-                *sample = self.input_buffer.pop().unwrap();
-            }
-            self.process(&mut buffer);
-            for sample in buffer {
-                self.output_buffer.push(sample / BUFFER_SIZE as f32);
-            }
-        }
-    }
-}
-
-impl StreamProcessor for HighPassFilter {
-    fn pop_sample(&self) -> Option<f32> {
-        self.output_buffer.pop()
-    }
-
-    fn push_sample(&self, sample: f32) {
-        self.input_buffer.push(sample);
-        if self.input_buffer.len() > BUFFER_SIZE {
-            let mut buffer = [0.0; BUFFER_SIZE];
-            for sample in &mut buffer {
-                *sample = self.input_buffer.pop().unwrap();
-            }
-            self.process(&mut buffer);
-            for sample in buffer {
-                self.output_buffer.push(sample / BUFFER_SIZE as f32);
-            }
-        }
-    }
-}
-
-impl StreamProcessor for LowPassFilter {
-    fn pop_sample(&self) -> Option<f32> {
-        self.output_buffer.pop()
-    }
-
-    fn push_sample(&self, sample: f32) {
-        self.input_buffer.push(sample);
-        if self.input_buffer.len() > BUFFER_SIZE {
-            let mut buffer = [0.0; BUFFER_SIZE];
-            for sample in &mut buffer {
-                *sample = self.input_buffer.pop().unwrap();
-            }
-            self.process(&mut buffer);
-            for sample in buffer {
-                self.output_buffer.push(sample / BUFFER_SIZE as f32);
-            }
-        }
-    }
-}
-
 fn simple_pitch_halver() {
+    let composed_processor = ComposedProcessor::new(
+        DisplayProcessor::new(true),
+        Segmenter::new(PitchHalver::new()),
+    );
     let composed_processor =
-        ComposedProcessor::new(DisplayProcessor::new(true), PitchHalver::new());
-    let composed_processor = ComposedProcessor::new(composed_processor, PitchHalver::new());
+        ComposedProcessor::new(composed_processor, Segmenter::new(PitchHalver::new()));
     let composed_processor =
         ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
     let _streams = hardware::setup_passthrough_processor(composed_processor);
@@ -268,8 +254,10 @@ fn simple_pitch_halver() {
 }
 
 fn high_pass_filter() {
-    let composed_processor =
-        ComposedProcessor::new(DisplayProcessor::new(true), HighPassFilter::new());
+    let composed_processor = ComposedProcessor::new(
+        DisplayProcessor::new(true),
+        Segmenter::new(HighPassFilter::new()),
+    );
     let composed_processor =
         ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
     let _streams = hardware::setup_passthrough_processor(composed_processor);
@@ -277,8 +265,10 @@ fn high_pass_filter() {
 }
 
 fn low_pass_filter() {
-    let composed_processor =
-        ComposedProcessor::new(DisplayProcessor::new(true), LowPassFilter::new());
+    let composed_processor = ComposedProcessor::new(
+        DisplayProcessor::new(true),
+        Segmenter::new(LowPassFilter::new()),
+    );
     let composed_processor =
         ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
     let _streams = hardware::setup_passthrough_processor(composed_processor);
