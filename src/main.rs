@@ -1,6 +1,6 @@
 use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::BufferSize;
+use cpal::{BufferSize, Stream};
 use cpal::Sample;
 use cpal::{InputCallbackInfo, OutputCallbackInfo};
 use cpal::{SampleRate, StreamConfig};
@@ -105,7 +105,8 @@ fn record() {
 }
 
 fn passthrough() {
-    setup_passthrough_processor(DisplayProcessor::new())
+    let _streams = setup_passthrough_processor(DisplayProcessor::new());
+    std::thread::park();
 }
 
 struct PitchHalver {
@@ -198,10 +199,11 @@ impl StreamProcessor for PitchHalver {
 }
 
 fn simple_pitch_halver() {
-    setup_passthrough_processor(PitchHalver::new());
+    let _streams = setup_passthrough_processor(PitchHalver::new());
+    std::thread::park();
 }
 
-fn setup_passthrough_processor<T: 'static>(processor: T)
+fn setup_passthrough_processor<T: 'static>(processor: T) -> (Stream, Stream)
 where
     T: StreamProcessor + Send + Sync,
 {
@@ -222,7 +224,7 @@ where
         }
     });
     output_stream.play().unwrap();
-    std::thread::park();
+    (input_stream, output_stream)
 }
 
 fn get_input_stream<T, D>(handler: D) -> cpal::Stream
