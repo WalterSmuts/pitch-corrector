@@ -8,7 +8,7 @@ use crossbeam_queue::SegQueue;
 use realfft::RealToComplex;
 use realfft::{ComplexToReal, RealFftPlanner};
 use splines::{Interpolation, Key, Spline};
-use std::f32::consts::PI;
+use std::f32::consts::TAU;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -16,7 +16,6 @@ use std::sync::{Arc, Barrier};
 use textplots::Shape;
 use textplots::{Chart, Plot};
 
-const TAU: f32 = 2.0 * PI;
 const BUFFER_SIZE: usize = 1024;
 const SAMPLE_RATE: u32 = 44100;
 
