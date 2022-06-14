@@ -31,6 +31,11 @@ pub struct LowPassFilter {
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
 }
 
+pub struct FrequencyDomainPitchShifter {
+    forward_fft: Arc<dyn RealToComplex<f32>>,
+    inverse_fft: Arc<dyn ComplexToReal<f32>>,
+}
+
 pub struct DisplayProcessor {
     buffer: SegQueue<f32>,
     display_buffer: Mutex<Box<[f32]>>,
@@ -198,6 +203,33 @@ impl BlockProcessor for LowPassFilter {
             .iter_mut()
             .for_each(|sample| *sample = Complex::new(0.0, 0.0));
         self.inverse_fft.process(&mut spectrum, buffer).unwrap();
+        for sample in buffer {
+            *sample /= BUFFER_SIZE as f32;
+        }
+    }
+}
+
+impl FrequencyDomainPitchShifter {
+    pub fn new() -> Self {
+        let mut real_planner = RealFftPlanner::new();
+        Self {
+            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
+            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
+        }
+    }
+}
+
+impl BlockProcessor for FrequencyDomainPitchShifter {
+    // TODO: Allow for arbitrary stretching by implementing interpolation on the Complex type
+    fn process(&self, buffer: &mut [f32]) {
+        let mut spectrum = self.forward_fft.make_output_vec();
+        self.forward_fft.process(buffer, &mut spectrum).unwrap();
+        let mut spectrum_out = self.forward_fft.make_output_vec();
+        for (index, sample) in spectrum_out[0..BUFFER_SIZE / 4].iter_mut().enumerate() {
+            *sample = spectrum[index * 2];
+        }
+
+        self.inverse_fft.process(&mut spectrum_out, buffer).unwrap();
         for sample in buffer {
             *sample /= BUFFER_SIZE as f32;
         }
