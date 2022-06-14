@@ -37,6 +37,41 @@ struct PitchHalver {
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
 }
 
+struct ComposedProcessor<F, S>
+where
+    F: StreamProcessor,
+    S: StreamProcessor,
+{
+    first: F,
+    second: S,
+}
+
+impl<F, S> StreamProcessor for ComposedProcessor<F, S>
+where
+    F: StreamProcessor,
+    S: StreamProcessor,
+{
+    fn push_sample(&self, sample: f32) {
+        self.first.push_sample(sample);
+        if let Some(sample) = self.first.pop_sample() {
+            self.second.push_sample(sample);
+        }
+    }
+    fn pop_sample(&self) -> Option<f32> {
+        self.second.pop_sample()
+    }
+}
+
+impl<F, S> ComposedProcessor<F, S>
+where
+    F: StreamProcessor,
+    S: StreamProcessor,
+{
+    fn new(first: F, second: S) -> Self {
+        Self { first, second }
+    }
+}
+
 struct DisplayProcessor {
     buffer: SegQueue<f32>,
     display_buffer: Mutex<Box<[f32]>>,
@@ -122,7 +157,8 @@ impl StreamProcessor for PitchHalver {
 }
 
 fn simple_pitch_halver() {
-    let _streams = hardware::setup_passthrough_processor(PitchHalver::new());
+    let compolsed_processor = ComposedProcessor::new(DisplayProcessor::new(), PitchHalver::new());
+    let _streams = hardware::setup_passthrough_processor(compolsed_processor);
     std::thread::park();
 }
 
