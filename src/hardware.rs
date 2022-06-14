@@ -1,4 +1,4 @@
-use crate::StreamProcessor;
+use crate::signal_processing::StreamProcessor;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Sample;
 use cpal::{BufferSize, Stream};
