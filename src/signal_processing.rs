@@ -115,7 +115,7 @@ where
             }
             self.block_processor.process(&mut buffer);
             for sample in buffer {
-                self.output_buffer.push(sample / BUFFER_SIZE as f32);
+                self.output_buffer.push(sample);
             }
         }
     }
@@ -170,6 +170,9 @@ impl BlockProcessor for PitchHalver {
         for (index, sample) in buffer.iter_mut().enumerate() {
             *sample = temp[index / 2];
         }
+        for sample in buffer {
+            *sample /= BUFFER_SIZE as f32;
+        }
     }
 }
 
@@ -191,6 +194,9 @@ impl BlockProcessor for HighPassFilter {
             .iter_mut()
             .for_each(|sample| *sample = Complex::new(0.0, 0.0));
         self.inverse_fft.process(&mut spectrum, buffer).unwrap();
+        for sample in buffer {
+            *sample /= BUFFER_SIZE as f32;
+        }
     }
 }
 
@@ -212,5 +218,8 @@ impl BlockProcessor for LowPassFilter {
             .iter_mut()
             .for_each(|sample| *sample = Complex::new(0.0, 0.0));
         self.inverse_fft.process(&mut spectrum, buffer).unwrap();
+        for sample in buffer {
+            *sample /= BUFFER_SIZE as f32;
+        }
     }
 }
