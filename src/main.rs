@@ -3,6 +3,9 @@ use cpal::{InputCallbackInfo, OutputCallbackInfo};
 use realfft::RealToComplex;
 use realfft::{ComplexToReal, RealFftPlanner};
 use splines::{Interpolation, Key, Spline};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::BufferSize;
@@ -104,7 +107,7 @@ fn record() {
 }
 
 fn passthrough() {
-    setup_passthrough_processor(DisplayProcessor)
+    setup_passthrough_processor(DisplayProcessor::new())
 }
 
 struct PitchHalver {
@@ -114,20 +117,41 @@ struct PitchHalver {
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
 }
 
-struct DisplayProcessor;
+struct DisplayProcessor {
+    buffer: SegQueue<f32>,
+    display_buffer: Mutex<Box<[f32]>>,
+    buffer_index: AtomicUsize,
+}
 
 trait StreamProcessor {
     fn push_sample(&self, sample: f32);
     fn pop_sample(&self) -> Option<f32>;
 }
 
+impl DisplayProcessor {
+    fn new() -> Self {
+        Self {
+            buffer: SegQueue::new(),
+            display_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE])),
+            buffer_index: AtomicUsize::new(0),
+        }
+    }
+}
+
 impl StreamProcessor for DisplayProcessor {
     fn push_sample(&self, sample: f32) {
-        todo!()
+        self.buffer.push(sample);
+        let mut buffer = self.display_buffer.lock().unwrap();
+        buffer[self.buffer_index.load(Ordering::Relaxed)] = sample;
+        self.buffer_index.fetch_add(1, Ordering::Relaxed);
+        if self.buffer_index.load(Ordering::Relaxed) >= BUFFER_SIZE {
+            self.buffer_index.swap(0, Ordering::Relaxed);
+            draw_data(&buffer);
+        }
     }
 
     fn pop_sample(&self) -> Option<f32> {
-        todo!()
+        self.buffer.pop()
     }
 }
 
