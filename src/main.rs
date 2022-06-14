@@ -1,18 +1,17 @@
 use clap::Parser;
-use cpal::{InputCallbackInfo, OutputCallbackInfo};
-use realfft::RealToComplex;
-use realfft::{ComplexToReal, RealFftPlanner};
-use splines::{Interpolation, Key, Spline};
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
-use std::sync::Mutex;
-
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::BufferSize;
 use cpal::Sample;
+use cpal::{InputCallbackInfo, OutputCallbackInfo};
 use cpal::{SampleRate, StreamConfig};
 use crossbeam_queue::SegQueue;
+use realfft::RealToComplex;
+use realfft::{ComplexToReal, RealFftPlanner};
+use splines::{Interpolation, Key, Spline};
 use std::f32::consts::PI;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 use std::sync::{Arc, Barrier};
 use textplots::Shape;
 use textplots::{Chart, Plot};
