@@ -1,6 +1,7 @@
 use clap::Parser;
 use crossbeam_queue::SegQueue;
 use display::SignalDrawer;
+use realfft::num_complex::Complex;
 use realfft::RealToComplex;
 use realfft::{ComplexToReal, RealFftPlanner};
 use std::sync::atomic::AtomicUsize;
@@ -24,6 +25,8 @@ enum SubCommand {
     Passthrough,
     /// Passthrough microphone to speakers but halve the pitch
     SimplePitchHalver,
+    /// Passthrough microphone to speakers but filter out low frequencies
+    HighPassFilter,
 }
 fn passthrough() {
     let _streams = hardware::setup_passthrough_processor(DisplayProcessor::new(true));
@@ -31,6 +34,13 @@ fn passthrough() {
 }
 
 struct PitchHalver {
+    input_buffer: SegQueue<f32>,
+    output_buffer: SegQueue<f32>,
+    forward_fft: Arc<dyn RealToComplex<f32>>,
+    inverse_fft: Arc<dyn ComplexToReal<f32>>,
+}
+
+struct HighPassFilter {
     input_buffer: SegQueue<f32>,
     output_buffer: SegQueue<f32>,
     forward_fft: Arc<dyn RealToComplex<f32>>,
@@ -136,6 +146,27 @@ impl PitchHalver {
     }
 }
 
+impl HighPassFilter {
+    fn new() -> Self {
+        let mut real_planner = RealFftPlanner::new();
+        Self {
+            input_buffer: SegQueue::new(),
+            output_buffer: SegQueue::new(),
+            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
+            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
+        }
+    }
+
+    fn process(&self, buffer: &mut [f32]) {
+        let mut spectrum = self.forward_fft.make_output_vec();
+        self.forward_fft.process(buffer, &mut spectrum).unwrap();
+        spectrum[0..15]
+            .iter_mut()
+            .for_each(|sample| *sample = Complex::new(0.0, 0.0));
+        self.inverse_fft.process(&mut spectrum, buffer).unwrap();
+    }
+}
+
 impl StreamProcessor for PitchHalver {
     fn pop_sample(&self) -> Option<f32> {
         self.output_buffer.pop()
@@ -186,6 +217,15 @@ fn simple_pitch_halver() {
     std::thread::park();
 }
 
+fn high_pass_filter() {
+    let composed_processor =
+        ComposedProcessor::new(DisplayProcessor::new(true), HighPassFilter::new());
+    let composed_processor =
+        ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
+    let _streams = hardware::setup_passthrough_processor(composed_processor);
+    std::thread::park();
+}
+
 fn main() {
     let opts: Opts = Opts::parse();
     ctrlc::set_handler(move || {
@@ -202,5 +242,6 @@ fn main() {
     match opts.subcmd {
         SubCommand::Passthrough => passthrough(),
         SubCommand::SimplePitchHalver => simple_pitch_halver(),
+        SubCommand::HighPassFilter => high_pass_filter(),
     }
 }
