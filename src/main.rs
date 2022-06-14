@@ -26,7 +26,7 @@ enum SubCommand {
     SimplePitchHalver,
 }
 fn passthrough() {
-    let _streams = hardware::setup_passthrough_processor(DisplayProcessor::new());
+    let _streams = hardware::setup_passthrough_processor(DisplayProcessor::new(true));
     std::thread::park();
 }
 
@@ -85,12 +85,12 @@ pub trait StreamProcessor {
 }
 
 impl DisplayProcessor {
-    fn new() -> Self {
+    fn new(should_clear_screen: bool) -> Self {
         Self {
             buffer: SegQueue::new(),
             display_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE])),
             buffer_index: AtomicUsize::new(0),
-            signal_drawer: SignalDrawer::new(),
+            signal_drawer: SignalDrawer::new(should_clear_screen),
         }
     }
 }
@@ -156,9 +156,33 @@ impl StreamProcessor for PitchHalver {
     }
 }
 
+impl StreamProcessor for HighPassFilter {
+    fn pop_sample(&self) -> Option<f32> {
+        self.output_buffer.pop()
+    }
+
+    fn push_sample(&self, sample: f32) {
+        self.input_buffer.push(sample);
+        if self.input_buffer.len() > BUFFER_SIZE {
+            let mut buffer = [0.0; BUFFER_SIZE];
+            for sample in &mut buffer {
+                *sample = self.input_buffer.pop().unwrap();
+            }
+            self.process(&mut buffer);
+            for sample in buffer {
+                self.output_buffer.push(sample / BUFFER_SIZE as f32);
+            }
+        }
+    }
+}
+
 fn simple_pitch_halver() {
-    let compolsed_processor = ComposedProcessor::new(DisplayProcessor::new(), PitchHalver::new());
-    let _streams = hardware::setup_passthrough_processor(compolsed_processor);
+    let composed_processor =
+        ComposedProcessor::new(DisplayProcessor::new(true), PitchHalver::new());
+    let composed_processor = ComposedProcessor::new(composed_processor, PitchHalver::new());
+    let composed_processor =
+        ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
+    let _streams = hardware::setup_passthrough_processor(composed_processor);
     std::thread::park();
 }
 
