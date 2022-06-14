@@ -19,10 +19,7 @@ pub trait BlockProcessor {
     fn process(&self, buffer: &mut [f32]);
 }
 
-pub struct PitchHalver {
-    forward_fft: Arc<dyn RealToComplex<f32>>,
-    inverse_fft: Arc<dyn ComplexToReal<f32>>,
-}
+pub struct NaivePitchHalver;
 
 pub struct HighPassFilter {
     forward_fft: Arc<dyn RealToComplex<f32>>,
@@ -149,29 +146,12 @@ impl StreamProcessor for DisplayProcessor {
     }
 }
 
-impl PitchHalver {
-    pub fn new() -> Self {
-        let mut real_planner = RealFftPlanner::new();
-        PitchHalver {
-            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
-            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
-        }
-    }
-}
-
-impl BlockProcessor for PitchHalver {
+impl BlockProcessor for NaivePitchHalver {
     fn process(&self, buffer: &mut [f32]) {
-        let mut spectrum = self.forward_fft.make_output_vec();
-        self.forward_fft.process(buffer, &mut spectrum).unwrap();
-        // TODO: Some phase manipulation
-        self.inverse_fft.process(&mut spectrum, buffer).unwrap();
         let mut temp = [0.0; BUFFER_SIZE / 2].to_vec();
         temp.clone_from_slice(&buffer[0..BUFFER_SIZE / 2]);
         for (index, sample) in buffer.iter_mut().enumerate() {
             *sample = temp[index / 2];
-        }
-        for sample in buffer {
-            *sample /= BUFFER_SIZE as f32;
         }
     }
 }

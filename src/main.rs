@@ -3,7 +3,7 @@ use signal_processing::ComposedProcessor;
 use signal_processing::DisplayProcessor;
 use signal_processing::HighPassFilter;
 use signal_processing::LowPassFilter;
-use signal_processing::PitchHalver;
+use signal_processing::NaivePitchHalver;
 use signal_processing::Segmenter;
 
 mod display;
@@ -20,7 +20,7 @@ struct Opts {
 enum SubCommand {
     Passthrough,
     /// Passthrough microphone to speakers but halve the pitch
-    SimplePitchHalver,
+    NaivePitchHalver,
     /// Passthrough microphone to speakers but filter out low frequencies
     HighPassFilter,
     /// Passthrough microphone to speakers but filter out high frequencies
@@ -32,13 +32,11 @@ fn passthrough() {
     std::thread::park();
 }
 
-fn simple_pitch_halver() {
+fn naive_pitch_halver() {
     let composed_processor = ComposedProcessor::new(
         DisplayProcessor::new(true),
-        Segmenter::new(PitchHalver::new()),
+        Segmenter::new(NaivePitchHalver),
     );
-    let composed_processor =
-        ComposedProcessor::new(composed_processor, Segmenter::new(PitchHalver::new()));
     let composed_processor =
         ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
     let _streams = hardware::setup_passthrough_processor(composed_processor);
@@ -82,7 +80,7 @@ fn main() {
 
     match opts.subcmd {
         SubCommand::Passthrough => passthrough(),
-        SubCommand::SimplePitchHalver => simple_pitch_halver(),
+        SubCommand::NaivePitchHalver => naive_pitch_halver(),
         SubCommand::HighPassFilter => high_pass_filter(),
         SubCommand::LowPassFilter => low_pass_filter(),
     }
