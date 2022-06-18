@@ -3,6 +3,7 @@ use crossbeam_queue::SegQueue;
 use realfft::num_complex::Complex;
 use realfft::RealToComplex;
 use realfft::{ComplexToReal, RealFftPlanner};
+use splines::{Interpolation, Key, Spline};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -164,10 +165,15 @@ impl StreamProcessor for DisplayProcessor {
 
 impl BlockProcessor for NaivePitchHalver {
     fn process(&self, buffer: &mut [f32]) {
-        let mut temp = [0.0; BUFFER_SIZE / 2].to_vec();
-        temp.clone_from_slice(&buffer[0..BUFFER_SIZE / 2]);
+        let vec: Vec<_> = buffer
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| Key::new(index as f32, *sample as f32, Interpolation::Linear))
+            .collect();
+
+        let spline = Spline::from_vec(vec);
         for (index, sample) in buffer.iter_mut().enumerate() {
-            *sample = temp[index / 2];
+            *sample = spline.sample((index / 2) as f32).unwrap();
         }
     }
 }
