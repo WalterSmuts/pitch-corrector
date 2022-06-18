@@ -147,6 +147,10 @@ impl DisplayProcessor {
 impl StreamProcessor for DisplayProcessor {
     fn push_sample(&self, sample: f32) {
         self.buffer.push(sample);
+    }
+
+    fn pop_sample(&self) -> Option<f32> {
+        let sample = self.buffer.pop()?;
         let mut buffer = self.display_buffer.lock().unwrap();
         buffer[self.buffer_index.load(Ordering::Relaxed)] = sample;
         self.buffer_index.fetch_add(1, Ordering::Relaxed);
@@ -154,10 +158,7 @@ impl StreamProcessor for DisplayProcessor {
             self.buffer_index.swap(0, Ordering::Relaxed);
             self.signal_drawer.draw_data(&buffer);
         }
-    }
-
-    fn pop_sample(&self) -> Option<f32> {
-        self.buffer.pop()
+        Some(sample)
     }
 }
 
