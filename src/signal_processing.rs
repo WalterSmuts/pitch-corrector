@@ -43,6 +43,16 @@ pub struct DisplayProcessor {
     signal_drawer: SignalDrawer,
 }
 
+// TODO: Remove unnecessary memory
+pub struct OverlapAndAddProcessor<T>
+where
+    T: BlockProcessor,
+{
+    previous_buffer: Mutex<Box<[f32]>>,
+    previous_half_buffer: Mutex<Box<[f32]>>,
+    block_processor: T,
+}
+
 pub struct ComposedProcessor<F, S>
 where
     F: StreamProcessor,
@@ -232,6 +242,162 @@ impl BlockProcessor for FrequencyDomainPitchShifter {
         self.inverse_fft.process(&mut spectrum_out, buffer).unwrap();
         for sample in buffer {
             *sample /= BUFFER_SIZE as f32;
+        }
+    }
+}
+
+impl<T> BlockProcessor for OverlapAndAddProcessor<T>
+where
+    T: BlockProcessor,
+{
+    // TODO: Remove unnecessary allocations
+    fn process(&self, buffer: &mut [f32]) {
+        // Create a temp clone of input buffer
+        let temp_input_buffer = buffer.to_vec();
+
+        // Get a lock and reference to previous buffer
+        let previous_buffer = &mut self.previous_buffer.lock().unwrap();
+
+        // Get first block to process (second half of previous and first half on current)
+        let mut first = previous_buffer[BUFFER_SIZE / 2..].to_vec();
+        first.append(&mut buffer[..BUFFER_SIZE / 2].to_vec());
+
+        // Get second block to process (the current input buffer)
+        let mut second = buffer.to_vec();
+
+        // Apply hanning window to first block
+        let window = apodize::hanning_iter(BUFFER_SIZE);
+        for (sample, window_sample) in first.iter_mut().zip(window) {
+            *sample *= window_sample as f32;
+        }
+
+        // Apply hanning window to second block
+        let window = apodize::hanning_iter(BUFFER_SIZE);
+        for (sample, window_sample) in second.iter_mut().zip(window) {
+            *sample *= window_sample as f32;
+        }
+
+        // Process each block separately
+        self.block_processor.process(&mut first);
+        self.block_processor.process(&mut second);
+
+        // Overlap and add second half of first block and first half of second block
+        for (first_sample, second_sample) in first[BUFFER_SIZE / 2..]
+            .iter_mut()
+            .zip(&second[..BUFFER_SIZE / 2])
+        {
+            *first_sample += second_sample;
+        }
+
+        // Lock and get reference to previous half buffer
+        let previous_half_buffer = &mut self.previous_half_buffer.lock().unwrap();
+        // Overlap and add first half of first block previous_half_buffer
+        for (first_sample, second_sample) in first[..BUFFER_SIZE / 2]
+            .iter_mut()
+            .zip(previous_half_buffer.to_vec())
+        {
+            *first_sample += second_sample;
+        }
+
+        // Save current buffer for processing next time
+        previous_buffer.copy_from_slice(&temp_input_buffer);
+
+        // Save second part of input buffer windowed
+        previous_half_buffer.copy_from_slice(&second[BUFFER_SIZE / 2..]);
+
+        buffer.copy_from_slice(&first);
+    }
+}
+
+impl<T> OverlapAndAddProcessor<T>
+where
+    T: BlockProcessor,
+{
+    pub fn new(block_processor: T) -> Self {
+        Self {
+            previous_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE])),
+            previous_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
+            block_processor,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_SAMPLE_SIZE: usize = BUFFER_SIZE * 10;
+    const TEST_EQUALITY_EPISLON: f32 = 0.002;
+
+    struct PassthroughBlockProcessor;
+
+    impl BlockProcessor for PassthroughBlockProcessor {
+        fn process(&self, _buffer: &mut [f32]) {
+            // Do nothing to buffer
+        }
+    }
+
+    #[test]
+    fn overlap_and_add_processor_is_transparent() {
+        let passthrough_stream_processor =
+            Segmenter::new(OverlapAndAddProcessor::new(PassthroughBlockProcessor));
+        let queue = SegQueue::new();
+        for _ in 0..TEST_SAMPLE_SIZE {
+            let x = rand::random::<f32>();
+            passthrough_stream_processor.push_sample(x);
+            queue.push(x);
+        }
+
+        // Get rid of transients
+        for _ in 0..BUFFER_SIZE {
+            let _ = passthrough_stream_processor.pop_sample().unwrap();
+            let _ = queue.pop().unwrap();
+        }
+
+        // Remove delay from OverlapAndAddProcessor
+        for _ in 0..BUFFER_SIZE / 2 {
+            let _ = passthrough_stream_processor.pop_sample().unwrap();
+        }
+
+        while let (Some(stream_processor_value), Some(queue_value)) =
+            (passthrough_stream_processor.pop_sample(), queue.pop())
+        {
+            approx::assert_abs_diff_eq!(
+                stream_processor_value,
+                queue_value,
+                epsilon = TEST_EQUALITY_EPISLON
+            );
+        }
+    }
+
+    #[test]
+    fn apodize_hanning_window_sums_to_one() {
+        let mut window_1: Vec<_> = apodize::hanning_iter(BUFFER_SIZE).collect();
+        let window_2: Vec<_> = apodize::hanning_iter(BUFFER_SIZE).collect();
+
+        for (w1, w2) in window_1[..BUFFER_SIZE / 2]
+            .iter_mut()
+            .zip(window_2[BUFFER_SIZE / 2..].iter())
+        {
+            *w1 += w2;
+        }
+        for sample in window_1[..BUFFER_SIZE / 2].iter() {
+            approx::assert_abs_diff_eq!(*sample, 1.0, epsilon = TEST_EQUALITY_EPISLON as f64);
+        }
+    }
+
+    #[test]
+    fn segmenter_is_transparent() {
+        let passthrough_stream_processor = Segmenter::new(PassthroughBlockProcessor);
+        let queue = SegQueue::new();
+        for _ in 0..TEST_SAMPLE_SIZE {
+            let x = rand::random::<f32>();
+            passthrough_stream_processor.push_sample(x);
+            queue.push(x);
+        }
+
+        while let Some(stream_sample) = passthrough_stream_processor.pop_sample() {
+            assert_eq!(stream_sample, queue.pop().unwrap());
         }
     }
 }
