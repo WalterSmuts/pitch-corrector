@@ -6,7 +6,7 @@ use signal_processing::DisplayProcessor;
 use signal_processing::FrequencyDomainPitchShifter;
 use signal_processing::HighPassFilter;
 use signal_processing::LowPassFilter;
-use signal_processing::NaivePitchHalver;
+use signal_processing::NaivePitchShifter;
 use signal_processing::Segmenter;
 use signal_processing::StreamProcessor;
 use std::f32::consts::TAU;
@@ -27,7 +27,7 @@ struct Opts {
 enum SubCommand {
     Passthrough,
     /// Passthrough microphone to speakers but halve the pitch
-    NaivePitchHalver,
+    NaivePitchShifter,
     /// Passthrough microphone to speakers but filter out low frequencies
     HighPassFilter,
     /// Passthrough microphone to speakers but filter out high frequencies
@@ -43,10 +43,10 @@ fn passthrough() {
     std::thread::park();
 }
 
-fn naive_pitch_halver() {
+fn naive_pitch_shifter() {
     let composed_processor = ComposedProcessor::new(
         DisplayProcessor::new(true),
-        Segmenter::new(NaivePitchHalver),
+        Segmenter::new(NaivePitchShifter::new(1.2)),
     );
     let composed_processor =
         ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
@@ -134,7 +134,7 @@ fn main() {
 
     match opts.subcmd {
         SubCommand::Passthrough => passthrough(),
-        SubCommand::NaivePitchHalver => naive_pitch_halver(),
+        SubCommand::NaivePitchShifter => naive_pitch_shifter(),
         SubCommand::HighPassFilter => high_pass_filter(),
         SubCommand::LowPassFilter => low_pass_filter(),
         SubCommand::FrequencyDomainPitchShifter => frequency_domain_pitch_shifter(),

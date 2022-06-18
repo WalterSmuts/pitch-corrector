@@ -20,7 +20,9 @@ pub trait BlockProcessor {
     fn process(&self, buffer: &mut [f32]);
 }
 
-pub struct NaivePitchHalver;
+pub struct NaivePitchShifter {
+    scaling_ratio: f32,
+}
 
 pub struct HighPassFilter {
     forward_fft: Arc<dyn RealToComplex<f32>>,
@@ -163,8 +165,15 @@ impl StreamProcessor for DisplayProcessor {
     }
 }
 
-impl BlockProcessor for NaivePitchHalver {
+impl NaivePitchShifter {
+    pub fn new(scaling_ratio: f32) -> Self {
+        Self { scaling_ratio }
+    }
+}
+
+impl BlockProcessor for NaivePitchShifter {
     fn process(&self, buffer: &mut [f32]) {
+        let len = buffer.len() as f32;
         let vec: Vec<_> = buffer
             .iter()
             .enumerate()
@@ -173,7 +182,9 @@ impl BlockProcessor for NaivePitchHalver {
 
         let spline = Spline::from_vec(vec);
         for (index, sample) in buffer.iter_mut().enumerate() {
-            *sample = spline.sample((index / 2) as f32).unwrap();
+            *sample = spline
+                .sample((index as f32 * self.scaling_ratio) % (len - 1.0))
+                .unwrap();
         }
     }
 }
