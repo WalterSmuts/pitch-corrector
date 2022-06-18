@@ -55,7 +55,7 @@ where
         .unwrap()
 }
 
-fn get_output_stream<T, D>(handler: D) -> cpal::Stream
+pub fn get_output_stream<T, D>(handler: D) -> cpal::Stream
 where
     T: Sample,
     D: FnMut(&mut [T], &OutputCallbackInfo) + Send + 'static,
