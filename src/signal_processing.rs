@@ -3,7 +3,6 @@ use crossbeam_queue::SegQueue;
 use realfft::num_complex::Complex;
 use realfft::RealToComplex;
 use realfft::{ComplexToReal, RealFftPlanner};
-use splines::{Interpolation, Key, Spline};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -173,19 +172,12 @@ impl NaivePitchShifter {
 
 impl BlockProcessor for NaivePitchShifter {
     fn process(&self, buffer: &mut [f32]) {
-        let len = buffer.len() as f32;
-        let vec: Vec<_> = buffer
-            .iter()
-            .enumerate()
-            .map(|(index, sample)| Key::new(index as f32, *sample as f32, Interpolation::Linear))
-            .collect();
-
-        let spline = Spline::from_vec(vec);
-        for (index, sample) in buffer.iter_mut().enumerate() {
-            *sample = spline
-                .sample((index as f32 * self.scaling_ratio) % (len - 1.0))
-                .unwrap();
+        let mut output_buffer = [0.0; BUFFER_SIZE];
+        for (index, sample) in output_buffer.iter_mut().enumerate() {
+            *sample = (index as f32 * self.scaling_ratio) % (BUFFER_SIZE as f32 - 1.0);
         }
+        buffer.interpolate_samples(&mut output_buffer);
+        buffer.copy_from_slice(&output_buffer);
     }
 }
 
