@@ -15,6 +15,7 @@ use std::sync::Barrier;
 
 mod display;
 mod hardware;
+mod interpolation;
 mod signal_processing;
 
 #[derive(Parser)]
