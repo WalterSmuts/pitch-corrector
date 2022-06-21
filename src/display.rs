@@ -45,6 +45,11 @@ impl SignalDrawer {
         let mut ff_data = [0.0; BUFFER_SIZE].to_vec();
         ff_data.copy_from_slice(&data[0..BUFFER_SIZE]);
 
+        let window = apodize::hanning_iter(BUFFER_SIZE);
+        for (sample, window_sample) in ff_data.iter_mut().zip(window) {
+            *sample *= window_sample as f32;
+        }
+
         let mut spectrum = self.fft.make_output_vec();
         self.fft.process(&mut ff_data, &mut spectrum).unwrap();
 
