@@ -1,5 +1,6 @@
+use crate::interpolation::Interpolate;
+use crate::interpolation::InterpolationMethod;
 use realfft::{RealFftPlanner, RealToComplex};
-use splines::{Interpolation, Key, Spline};
 use std::sync::Arc;
 use textplots::Shape;
 use textplots::{Chart, Plot};
@@ -30,16 +31,9 @@ impl SignalDrawer {
     fn draw_waveform(&self, data: &[f32]) {
         println!("Waveform:");
         let (width, height) = get_textplots_window_size();
-        let vec = data
-            .iter()
-            .enumerate()
-            .map(|(index, sample)| Key::new(index as f32, *sample as f32, Interpolation::Linear))
-            .collect();
-
-        let spline = Spline::from_vec(vec);
         Chart::new_with_y_range(width, height / 2, 0.0, BUFFER_SIZE as f32, -1.0, 1.0)
             .lineplot(&Shape::Continuous(Box::new(|x| {
-                spline.sample(x).unwrap_or(0.0)
+                data.interpolate_sample(x, InterpolationMethod::WhittakerShannon)
             })))
             .display();
     }
@@ -50,22 +44,18 @@ impl SignalDrawer {
 
         let mut ff_data = [0.0; BUFFER_SIZE].to_vec();
         ff_data.copy_from_slice(&data[0..BUFFER_SIZE]);
+
         let mut spectrum = self.fft.make_output_vec();
         self.fft.process(&mut ff_data, &mut spectrum).unwrap();
 
         let vec: Vec<_> = spectrum
             .into_iter()
             .map(|complex| complex.norm_sqr())
-            .enumerate()
-            .map(|(index, val)| ((index as f32).log2() * 115.4, val))
-            .map(|(index, sample)| Key::new(index as f32, sample as f32, Interpolation::Cosine))
             .collect();
-
-        let spline = Spline::from_vec(vec);
 
         Chart::new_with_y_range(width, height / 2, 0.0, BUFFER_SIZE as f32, 0.0, 50.0)
             .lineplot(&Shape::Continuous(Box::new(|x| {
-                spline.sample(x).unwrap_or(0.0)
+                vec.interpolate_sample(2.0_f32.powf(x / 113.8), InterpolationMethod::Linear)
             })))
             .display();
     }
