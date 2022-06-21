@@ -123,9 +123,7 @@ fn play() {
 fn main() {
     let opts: Opts = Opts::parse();
     ctrlc::set_handler(move || {
-        print!("{}", ansi_escapes::CursorTo::AbsoluteX(0));
-        print!("{}", ansi_escapes::ClearScreen);
-        print!("{}", termion::cursor::Show);
+        reset_screen();
         std::process::exit(130);
     })
     .expect("Error setting Ctrl-C handler");
@@ -141,4 +139,11 @@ fn main() {
         SubCommand::FrequencyDomainPitchShifter => frequency_domain_pitch_shifter(),
         SubCommand::Play => play(),
     }
+    reset_screen();
+}
+
+fn reset_screen() {
+    print!("{}", ansi_escapes::CursorTo::AbsoluteX(0));
+    print!("{}", ansi_escapes::ClearScreen);
+    print!("{}", termion::cursor::Show);
 }
