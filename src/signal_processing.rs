@@ -47,13 +47,12 @@ pub struct DisplayProcessor {
     signal_drawer: SignalDrawer,
 }
 
-// TODO: Remove unnecessary memory
 pub struct OverlapAndAddProcessor<T>
 where
     T: BlockProcessor,
 {
-    previous_buffer: Mutex<Box<[f32]>>,
-    previous_half_buffer: Mutex<Box<[f32]>>,
+    previous_clean_half_buffer: Mutex<Box<[f32]>>,
+    previous_processed_half_buffer: Mutex<Box<[f32]>>,
     block_processor: T,
 }
 
@@ -268,10 +267,10 @@ where
         let temp_input_buffer = buffer.to_vec();
 
         // Get a lock and reference to previous buffer
-        let previous_buffer = &mut self.previous_buffer.lock().unwrap();
+        let previous_clean_half_buffer = &mut self.previous_clean_half_buffer.lock().unwrap();
 
         // Get first block to process (second half of previous and first half on current)
-        let mut first = previous_buffer[BUFFER_SIZE / 2..].to_vec();
+        let mut first = previous_clean_half_buffer.to_vec();
         first.append(&mut buffer[..BUFFER_SIZE / 2].to_vec());
 
         // Get second block to process (the current input buffer)
@@ -302,20 +301,22 @@ where
         }
 
         // Lock and get reference to previous half buffer
-        let previous_half_buffer = &mut self.previous_half_buffer.lock().unwrap();
-        // Overlap and add first half of first block previous_half_buffer
+        let previous_processed_half_buffer =
+            &mut self.previous_processed_half_buffer.lock().unwrap();
+
+        // Overlap and add first half of first block previous_processed_half_buffer
         for (first_sample, second_sample) in first[..BUFFER_SIZE / 2]
             .iter_mut()
-            .zip(previous_half_buffer.to_vec())
+            .zip(previous_processed_half_buffer.to_vec())
         {
             *first_sample += second_sample;
         }
 
-        // Save current buffer for processing next time
-        previous_buffer.copy_from_slice(&temp_input_buffer);
+        // Save half current buffer for processing next time
+        previous_clean_half_buffer.copy_from_slice(&temp_input_buffer[BUFFER_SIZE / 2..]);
 
-        // Save second part of input buffer windowed
-        previous_half_buffer.copy_from_slice(&second[BUFFER_SIZE / 2..]);
+        // Save second part of input buffer windowed and processed
+        previous_processed_half_buffer.copy_from_slice(&second[BUFFER_SIZE / 2..]);
 
         buffer.copy_from_slice(&first);
     }
@@ -327,8 +328,8 @@ where
 {
     pub fn new(block_processor: T) -> Self {
         Self {
-            previous_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE])),
-            previous_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
+            previous_clean_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
+            previous_processed_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
             block_processor,
         }
     }
