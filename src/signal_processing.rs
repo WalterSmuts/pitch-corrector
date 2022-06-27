@@ -350,6 +350,16 @@ mod tests {
         }
     }
 
+    struct AmplitudeHalvingBlockProcessor;
+
+    impl BlockProcessor for AmplitudeHalvingBlockProcessor {
+        fn process(&self, buffer: &mut [f32]) {
+            for sample in buffer.iter_mut() {
+                *sample /= 2.0;
+            }
+        }
+    }
+
     #[test]
     fn overlap_and_add_processor_is_transparent() {
         let passthrough_stream_processor =
@@ -378,6 +388,39 @@ mod tests {
             approx::assert_abs_diff_eq!(
                 stream_processor_value,
                 queue_value,
+                epsilon = TEST_EQUALITY_EPISLON
+            );
+        }
+    }
+
+    #[test]
+    fn overlap_and_add_processor_and_amplitude_halver_works_as_expected() {
+        let passthrough_stream_processor =
+            Segmenter::new(OverlapAndAddProcessor::new(AmplitudeHalvingBlockProcessor));
+        let queue = SegQueue::new();
+        for _ in 0..TEST_SAMPLE_SIZE {
+            let x = rand::random::<f32>();
+            passthrough_stream_processor.push_sample(x);
+            queue.push(x);
+        }
+
+        // Get rid of transients
+        for _ in 0..BUFFER_SIZE {
+            let _ = passthrough_stream_processor.pop_sample().unwrap();
+            let _ = queue.pop().unwrap();
+        }
+
+        // Remove delay from OverlapAndAddProcessor
+        for _ in 0..BUFFER_SIZE / 2 {
+            let _ = passthrough_stream_processor.pop_sample().unwrap();
+        }
+
+        while let (Some(stream_processor_value), Some(queue_value)) =
+            (passthrough_stream_processor.pop_sample(), queue.pop())
+        {
+            approx::assert_abs_diff_eq!(
+                stream_processor_value,
+                queue_value / 2.0,
                 epsilon = TEST_EQUALITY_EPISLON
             );
         }
