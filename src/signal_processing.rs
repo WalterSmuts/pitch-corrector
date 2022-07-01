@@ -42,9 +42,9 @@ pub struct FrequencyDomainPitchShifter {
     scaling_ratio: f32,
 }
 
-pub struct DisplayProcessor {
+pub struct DisplayProcessor<const I: usize = BUFFER_SIZE> {
     buffer: SegQueue<f32>,
-    display_buffer: Mutex<Box<[f32]>>,
+    display_buffer: Mutex<[f32; I]>,
     buffer_index: AtomicUsize,
     signal_drawer: SignalDrawer,
 }
@@ -138,18 +138,18 @@ where
     }
 }
 
-impl DisplayProcessor {
+impl<const I: usize> DisplayProcessor<I> {
     pub fn new(should_clear_screen: bool) -> Self {
         Self {
             buffer: SegQueue::new(),
-            display_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE])),
+            display_buffer: Mutex::new([0.0; I]),
             buffer_index: AtomicUsize::new(0),
             signal_drawer: SignalDrawer::new(should_clear_screen),
         }
     }
 }
 
-impl StreamProcessor for DisplayProcessor {
+impl<const I: usize> StreamProcessor for DisplayProcessor<I> {
     fn push_sample(&self, sample: f32) {
         self.buffer.push(sample);
     }
@@ -159,9 +159,9 @@ impl StreamProcessor for DisplayProcessor {
         let mut buffer = self.display_buffer.lock().unwrap();
         buffer[self.buffer_index.load(Ordering::Relaxed)] = sample;
         self.buffer_index.fetch_add(1, Ordering::Relaxed);
-        if self.buffer_index.load(Ordering::Relaxed) >= BUFFER_SIZE {
+        if self.buffer_index.load(Ordering::Relaxed) >= I {
             self.buffer_index.swap(0, Ordering::Relaxed);
-            self.signal_drawer.draw_data(&buffer);
+            self.signal_drawer.draw_data(&*buffer);
         }
         Some(sample)
     }

@@ -41,50 +41,51 @@ enum SubCommand {
 }
 
 fn passthrough() {
-    let _streams = hardware::setup_passthrough_processor(DisplayProcessor::new(true));
+    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
+    let _streams = hardware::setup_passthrough_processor(display_processor);
     std::thread::park();
 }
 
 fn naive_pitch_shifter() {
+    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
     let composed_processor = ComposedProcessor::new(
-        DisplayProcessor::new(true),
+        display_processor,
         Segmenter::new(NaivePitchShifter::new(1.2)),
     );
-    let composed_processor =
-        ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
+    let display_processor: DisplayProcessor = DisplayProcessor::new(false);
+    let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
     let _streams = hardware::setup_passthrough_processor(composed_processor);
     std::thread::park();
 }
 
 fn high_pass_filter() {
-    let composed_processor = ComposedProcessor::new(
-        DisplayProcessor::new(true),
-        Segmenter::new(HighPassFilter::new()),
-    );
+    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
     let composed_processor =
-        ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
+        ComposedProcessor::new(display_processor, Segmenter::new(HighPassFilter::new()));
+    let display_processor: DisplayProcessor = DisplayProcessor::new(false);
+    let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
     let _streams = hardware::setup_passthrough_processor(composed_processor);
     std::thread::park();
 }
 
 fn low_pass_filter() {
-    let composed_processor = ComposedProcessor::new(
-        DisplayProcessor::new(true),
-        Segmenter::new(LowPassFilter::new()),
-    );
+    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
     let composed_processor =
-        ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
+        ComposedProcessor::new(display_processor, Segmenter::new(LowPassFilter::new()));
+    let display_processor: DisplayProcessor = DisplayProcessor::new(false);
+    let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
     let _streams = hardware::setup_passthrough_processor(composed_processor);
     std::thread::park();
 }
 
 fn frequency_domain_pitch_shifter() {
+    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
     let composed_processor = ComposedProcessor::new(
-        DisplayProcessor::new(true),
+        display_processor,
         Segmenter::new(FrequencyDomainPitchShifter::new()),
     );
-    let composed_processor =
-        ComposedProcessor::new(composed_processor, DisplayProcessor::new(false));
+    let display_processor: DisplayProcessor = DisplayProcessor::new(false);
+    let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
     let _streams = hardware::setup_passthrough_processor(composed_processor);
     std::thread::park();
 }
@@ -95,10 +96,10 @@ fn play() {
     let barrier = Arc::new(Barrier::new(2));
     let barrier_clone = barrier.clone();
     let once = std::sync::Once::new();
-
+    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
     let pitch_halver = ComposedProcessor::new(
         Segmenter::new(FrequencyDomainPitchShifter::new()),
-        DisplayProcessor::new(true),
+        display_processor,
     );
 
     for t in (0..SAMPLE_RATE * 5).map(|x| x as f32 / SAMPLE_RATE as f32) {
