@@ -13,6 +13,7 @@ use std::f32::consts::TAU;
 use std::sync::Arc;
 use std::sync::Barrier;
 
+mod complex_interpolation;
 mod display;
 mod hardware;
 mod interpolation;
