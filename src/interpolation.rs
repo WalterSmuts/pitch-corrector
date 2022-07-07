@@ -1,61 +1,54 @@
-pub trait Interpolate {
-    fn interpolate_sample(&self, index: f32, method: InterpolationMethod) -> f32;
-    fn interpolate_samples(&self, buffer: &mut [f32], method: InterpolationMethod);
-}
-
-trait LinearInterpolate {
+pub trait Interpolater {
     fn interpolate_sample(&self, index: f32) -> f32;
-}
 
-trait WhittakerShannonInterpolate {
-    fn interpolate_sample(&self, index: f32) -> f32;
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Copy, Clone)]
-pub enum InterpolationMethod {
-    Linear,
-    WhittakerShannon,
-}
-
-impl Interpolate for [f32] {
-    fn interpolate_sample(&self, index: f32, method: InterpolationMethod) -> f32 {
-        match method {
-            InterpolationMethod::Linear => LinearInterpolate::interpolate_sample(self, index),
-            InterpolationMethod::WhittakerShannon => {
-                WhittakerShannonInterpolate::interpolate_sample(self, index)
-            }
-        }
-    }
-
-    fn interpolate_samples(&self, buffer: &mut [f32], method: InterpolationMethod) {
+    fn interpolate_samples(&self, buffer: &mut [f32]) {
         buffer.iter_mut().for_each(|sample| {
-            *sample = Interpolate::interpolate_sample(self, *sample, method);
+            *sample = self.interpolate_sample(*sample);
         })
     }
 }
 
-impl LinearInterpolate for [f32] {
+pub struct LinearInterpolater<'a> {
+    inner: &'a [f32],
+}
+
+impl<'a> LinearInterpolater<'a> {
+    pub fn new(inner: &'a [f32]) -> Self {
+        Self { inner }
+    }
+}
+
+impl<'a> Interpolater for LinearInterpolater<'a> {
     fn interpolate_sample(&self, index: f32) -> f32 {
         let lower_index = index.floor() as usize;
         let upper_index = index.ceil() as usize;
 
         if lower_index == upper_index {
-            return self[lower_index];
+            return self.inner[lower_index];
         }
 
-        let lower = self[lower_index];
-        let upper = self[upper_index];
+        let lower = self.inner[lower_index];
+        let upper = self.inner[upper_index];
 
         upper * (index - lower_index as f32) + lower * (upper_index as f32 - index)
     }
 }
 
+struct WhittakerShannonInterpolator<'a> {
+    inner: &'a [f32],
+}
+
+impl<'a> WhittakerShannonInterpolator<'a> {
+    pub fn new(inner: &'a [f32]) -> Self {
+        Self { inner }
+    }
+}
+
 // TODO: Investigate fft optimization
-impl WhittakerShannonInterpolate for [f32] {
+impl<'a> Interpolater for WhittakerShannonInterpolator<'a> {
     fn interpolate_sample(&self, j: f32) -> f32 {
         let mut sum = 0.0;
-        for (i, x) in self.iter().enumerate() {
+        for (i, x) in self.inner.iter().enumerate() {
             sum += x * sinc(j - i as f32);
         }
         sum
@@ -73,8 +66,7 @@ fn sinc(x: f32) -> f32 {
 
 #[cfg(test)]
 mod test {
-    use super::Interpolate;
-    use super::InterpolationMethod;
+    use super::*;
     use std::f32::consts::TAU;
 
     const BUFFER_SIZE: usize = 1024;
@@ -97,7 +89,7 @@ mod test {
             let x = rand::random::<f32>() * (BUFFER_SIZE as f32 - 1.0);
             assert_eq!(
                 signal(x),
-                buffer.interpolate_sample(x, InterpolationMethod::Linear)
+                LinearInterpolater::new(&buffer).interpolate_sample(x)
             )
         }
     }
@@ -118,7 +110,7 @@ mod test {
             let x = rand::random::<f32>() * BUFFER_SIZE as f32;
             approx::assert_abs_diff_eq!(
                 signal(x),
-                buffer.interpolate_sample(x, InterpolationMethod::WhittakerShannon),
+                WhittakerShannonInterpolator::new(&buffer).interpolate_sample(x),
                 epsilon = TEST_EQUALITY_EPISLON
             )
         }

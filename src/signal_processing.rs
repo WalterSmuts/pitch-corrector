@@ -1,6 +1,6 @@
 use crate::display::SignalDrawer;
-use crate::interpolation::Interpolate;
-use crate::interpolation::InterpolationMethod;
+use crate::interpolation::Interpolater;
+use crate::interpolation::LinearInterpolater;
 use crossbeam_queue::SegQueue;
 use realfft::num_complex::Complex;
 use realfft::RealToComplex;
@@ -178,7 +178,7 @@ impl BlockProcessor for NaivePitchShifter {
         for (index, sample) in output_buffer.iter_mut().enumerate() {
             *sample = (index as f32 * self.scaling_ratio) % (BUFFER_SIZE as f32 - 1.0);
         }
-        buffer.interpolate_samples(&mut output_buffer, InterpolationMethod::Linear);
+        LinearInterpolater::new(&buffer).interpolate_samples(&mut output_buffer);
         buffer.copy_from_slice(&output_buffer);
     }
 }
