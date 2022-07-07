@@ -1,41 +1,21 @@
-pub trait Interpolate {
-    fn interpolate_sample(&self, index: f32, method: InterpolationMethod) -> f32;
-    fn interpolate_samples(&self, buffer: &mut [f32], method: InterpolationMethod);
-}
-
-trait LinearInterpolate {
+pub trait Interpolate<const METHOD: InterpolationMethod> {
     fn interpolate_sample(&self, index: f32) -> f32;
-}
 
-trait WhittakerShannonInterpolate {
-    fn interpolate_sample(&self, index: f32) -> f32;
+    fn interpolate_samples(&self, buffer: &mut [f32]) {
+        buffer.iter_mut().for_each(|sample| {
+            *sample = self.interpolate_sample(*sample);
+        })
+    }
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum InterpolationMethod {
     Linear,
     WhittakerShannon,
 }
 
-impl Interpolate for [f32] {
-    fn interpolate_sample(&self, index: f32, method: InterpolationMethod) -> f32 {
-        match method {
-            InterpolationMethod::Linear => LinearInterpolate::interpolate_sample(self, index),
-            InterpolationMethod::WhittakerShannon => {
-                WhittakerShannonInterpolate::interpolate_sample(self, index)
-            }
-        }
-    }
-
-    fn interpolate_samples(&self, buffer: &mut [f32], method: InterpolationMethod) {
-        buffer.iter_mut().for_each(|sample| {
-            *sample = Interpolate::interpolate_sample(self, *sample, method);
-        })
-    }
-}
-
-impl LinearInterpolate for [f32] {
+impl Interpolate<{ InterpolationMethod::Linear }> for [f32] {
     fn interpolate_sample(&self, index: f32) -> f32 {
         let lower_index = index.floor() as usize;
         let upper_index = index.ceil() as usize;
@@ -52,7 +32,7 @@ impl LinearInterpolate for [f32] {
 }
 
 // TODO: Investigate fft optimization
-impl WhittakerShannonInterpolate for [f32] {
+impl Interpolate<{ InterpolationMethod::WhittakerShannon }> for [f32] {
     fn interpolate_sample(&self, j: f32) -> f32 {
         let mut sum = 0.0;
         for (i, x) in self.iter().enumerate() {

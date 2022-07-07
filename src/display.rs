@@ -33,7 +33,7 @@ impl SignalDrawer {
         let (width, height) = get_textplots_window_size();
         Chart::new_with_y_range(width, height / 2, 0.0, BUFFER_SIZE as f32, -1.0, 1.0)
             .lineplot(&Shape::Continuous(Box::new(|x| {
-                data.interpolate_sample(x, InterpolationMethod::WhittakerShannon)
+                Interpolate::<{ InterpolationMethod::Linear }>::interpolate_sample(data, x)
             })))
             .display();
     }
@@ -60,7 +60,10 @@ impl SignalDrawer {
 
         Chart::new_with_y_range(width, height / 2, 0.0, BUFFER_SIZE as f32, 0.0, 50.0)
             .lineplot(&Shape::Continuous(Box::new(|x| {
-                vec.interpolate_sample(2.0_f32.powf(x / 113.8), InterpolationMethod::Linear)
+                Interpolate::<{ InterpolationMethod::Linear }>::interpolate_sample(
+                    &*vec,
+                    2.0_f32.powf(x / 113.8),
+                )
             })))
             .display();
     }

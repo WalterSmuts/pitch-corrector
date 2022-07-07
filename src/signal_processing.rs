@@ -179,7 +179,10 @@ impl BlockProcessor for NaivePitchShifter {
         for (index, sample) in output_buffer.iter_mut().enumerate() {
             *sample = (index as f32 * self.scaling_ratio) % (BUFFER_SIZE as f32 - 1.0);
         }
-        buffer.interpolate_samples(&mut output_buffer, InterpolationMethod::Linear);
+        Interpolate::<{ InterpolationMethod::Linear }>::interpolate_samples(
+            buffer,
+            &mut output_buffer,
+        );
         buffer.copy_from_slice(&output_buffer);
     }
 }

@@ -1,3 +1,5 @@
+#![feature(adt_const_params)]
+
 use clap::Parser;
 use cpal::traits::StreamTrait;
 use cpal::Sample;
