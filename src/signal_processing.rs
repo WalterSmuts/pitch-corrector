@@ -11,32 +11,32 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-const BUFFER_SIZE: usize = 1024;
+pub const BUFFER_SIZE: usize = 1024;
 
 pub trait StreamProcessor {
     fn push_sample(&self, sample: f32);
     fn pop_sample(&self) -> Option<f32>;
 }
 
-pub trait BlockProcessor {
-    fn process(&self, buffer: &mut [f32]);
+pub trait BlockProcessor<const BLOCK_SIZE: usize = BUFFER_SIZE> {
+    fn process(&self, buffer: &mut [f32; BLOCK_SIZE]);
 }
 
-pub struct NaivePitchShifter {
+pub struct NaivePitchShifter<const BLOCK_SIZE: usize = BUFFER_SIZE> {
     scaling_ratio: f32,
 }
 
-pub struct HighPassFilter {
+pub struct HighPassFilter<const BLOCK_SIZE: usize = BUFFER_SIZE> {
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
 }
 
-pub struct LowPassFilter {
+pub struct LowPassFilter<const BLOCK_SIZE: usize = BUFFER_SIZE> {
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
 }
 
-pub struct FrequencyDomainPitchShifter {
+pub struct FrequencyDomainPitchShifter<const BLOCK_SIZE: usize = BUFFER_SIZE> {
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
     scaling_ratio: f32,
@@ -49,12 +49,13 @@ pub struct DisplayProcessor<const I: usize = BUFFER_SIZE> {
     signal_drawer: SignalDrawer,
 }
 
-pub struct OverlapAndAddProcessor<T>
+pub struct OverlapAndAddProcessor<T, const BLOCK_SIZE: usize = BUFFER_SIZE>
 where
-    T: BlockProcessor,
+    T: BlockProcessor<BLOCK_SIZE>,
+    [(); BLOCK_SIZE / 2]: Sized,
 {
-    previous_clean_half_buffer: Mutex<Box<[f32]>>,
-    previous_processed_half_buffer: Mutex<Box<[f32]>>,
+    previous_clean_half_buffer: Mutex<[f32; BLOCK_SIZE / 2]>,
+    previous_processed_half_buffer: Mutex<[f32; BLOCK_SIZE / 2]>,
     block_processor: T,
 }
 
@@ -67,9 +68,9 @@ where
     second: S,
 }
 
-pub struct Segmenter<T>
+pub struct Segmenter<T, const BLOCK_SIZE: usize = BUFFER_SIZE>
 where
-    T: BlockProcessor,
+    T: BlockProcessor<BLOCK_SIZE>,
 {
     input_buffer: SegQueue<f32>,
     output_buffer: SegQueue<f32>,
@@ -102,9 +103,9 @@ where
     }
 }
 
-impl<T> Segmenter<T>
+impl<T, const BLOCK_SIZE: usize> Segmenter<T, BLOCK_SIZE>
 where
-    T: BlockProcessor,
+    T: BlockProcessor<BLOCK_SIZE>,
 {
     pub fn new(block_processor: T) -> Self {
         Self {
@@ -115,9 +116,9 @@ where
     }
 }
 
-impl<T> StreamProcessor for Segmenter<T>
+impl<T, const BLOCK_SIZE: usize> StreamProcessor for Segmenter<T, BLOCK_SIZE>
 where
-    T: BlockProcessor,
+    T: BlockProcessor<BLOCK_SIZE>,
 {
     fn pop_sample(&self) -> Option<f32> {
         self.output_buffer.pop()
@@ -125,8 +126,8 @@ where
 
     fn push_sample(&self, sample: f32) {
         self.input_buffer.push(sample);
-        if self.input_buffer.len() > BUFFER_SIZE {
-            let mut buffer = [0.0; BUFFER_SIZE];
+        if self.input_buffer.len() > BLOCK_SIZE {
+            let mut buffer = [0.0; BLOCK_SIZE];
             for sample in &mut buffer {
                 *sample = self.input_buffer.pop().unwrap();
             }
@@ -173,29 +174,29 @@ impl NaivePitchShifter {
     }
 }
 
-impl BlockProcessor for NaivePitchShifter {
-    fn process(&self, buffer: &mut [f32]) {
-        let mut output_buffer = [0.0; BUFFER_SIZE];
+impl<const BLOCK_SIZE: usize> BlockProcessor<BLOCK_SIZE> for NaivePitchShifter<BLOCK_SIZE> {
+    fn process(&self, buffer: &mut [f32; BLOCK_SIZE]) {
+        let mut output_buffer = [0.0; BLOCK_SIZE];
         for (index, sample) in output_buffer.iter_mut().enumerate() {
-            *sample = (index as f32 * self.scaling_ratio) % (BUFFER_SIZE as f32 - 1.0);
+            *sample = (index as f32 * self.scaling_ratio) % (BLOCK_SIZE as f32 - 1.0);
         }
         buffer.interpolate_samples(&mut output_buffer, InterpolationMethod::Linear);
         buffer.copy_from_slice(&output_buffer);
     }
 }
 
-impl HighPassFilter {
+impl<const BLOCK_SIZE: usize> HighPassFilter<BLOCK_SIZE> {
     pub fn new() -> Self {
         let mut real_planner = RealFftPlanner::new();
         Self {
-            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
-            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
+            forward_fft: real_planner.plan_fft_forward(BLOCK_SIZE),
+            inverse_fft: real_planner.plan_fft_inverse(BLOCK_SIZE),
         }
     }
 }
 
-impl BlockProcessor for HighPassFilter {
-    fn process(&self, buffer: &mut [f32]) {
+impl<const BLOCK_SIZE: usize> BlockProcessor<BLOCK_SIZE> for HighPassFilter {
+    fn process(&self, buffer: &mut [f32; BLOCK_SIZE]) {
         let mut spectrum = self.forward_fft.make_output_vec();
         self.forward_fft.process(buffer, &mut spectrum).unwrap();
         spectrum[0..15]
@@ -203,23 +204,23 @@ impl BlockProcessor for HighPassFilter {
             .for_each(|sample| *sample = Complex::new(0.0, 0.0));
         self.inverse_fft.process(&mut spectrum, buffer).unwrap();
         for sample in buffer {
-            *sample /= BUFFER_SIZE as f32;
+            *sample /= BLOCK_SIZE as f32;
         }
     }
 }
 
-impl LowPassFilter {
+impl<const BLOCK_SIZE: usize> LowPassFilter<BLOCK_SIZE> {
     pub fn new() -> Self {
         let mut real_planner = RealFftPlanner::new();
         Self {
-            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
-            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
+            forward_fft: real_planner.plan_fft_forward(BLOCK_SIZE),
+            inverse_fft: real_planner.plan_fft_inverse(BLOCK_SIZE),
         }
     }
 }
 
-impl BlockProcessor for LowPassFilter {
-    fn process(&self, buffer: &mut [f32]) {
+impl<const BLOCK_SIZE: usize> BlockProcessor<BLOCK_SIZE> for LowPassFilter {
+    fn process(&self, buffer: &mut [f32; BLOCK_SIZE]) {
         let mut spectrum = self.forward_fft.make_output_vec();
         self.forward_fft.process(buffer, &mut spectrum).unwrap();
         spectrum[15..]
@@ -227,28 +228,28 @@ impl BlockProcessor for LowPassFilter {
             .for_each(|sample| *sample = Complex::new(0.0, 0.0));
         self.inverse_fft.process(&mut spectrum, buffer).unwrap();
         for sample in buffer {
-            *sample /= BUFFER_SIZE as f32;
+            *sample /= BLOCK_SIZE as f32;
         }
     }
 }
 
-impl FrequencyDomainPitchShifter {
+impl<const BLOCK_SIZE: usize> FrequencyDomainPitchShifter<BLOCK_SIZE> {
     pub fn new() -> Self {
         let mut real_planner = RealFftPlanner::new();
         Self {
-            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
-            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
+            forward_fft: real_planner.plan_fft_forward(BLOCK_SIZE),
+            inverse_fft: real_planner.plan_fft_inverse(BLOCK_SIZE),
             scaling_ratio: 0.5,
         }
     }
 }
 
-impl BlockProcessor for FrequencyDomainPitchShifter {
-    fn process(&self, buffer: &mut [f32]) {
+impl<const BLOCK_SIZE: usize> BlockProcessor<BLOCK_SIZE> for FrequencyDomainPitchShifter {
+    fn process(&self, buffer: &mut [f32; BLOCK_SIZE]) {
         let mut spectrum = self.forward_fft.make_output_vec();
         self.forward_fft.process(buffer, &mut spectrum).unwrap();
         let mut spectrum_out = self.forward_fft.make_output_vec();
-        for (index, sample) in spectrum_out[0..BUFFER_SIZE / 2 + 1].iter_mut().enumerate() {
+        for (index, sample) in spectrum_out[0..BLOCK_SIZE / 2 + 1].iter_mut().enumerate() {
             let index = index as f32 / self.scaling_ratio;
             *sample = if index.ceil() >= spectrum.len() as f32 {
                 Complex::default()
@@ -261,38 +262,44 @@ impl BlockProcessor for FrequencyDomainPitchShifter {
         // zero's are expected.
         let _ = self.inverse_fft.process(&mut spectrum_out, buffer);
         for sample in buffer {
-            *sample /= BUFFER_SIZE as f32;
+            *sample /= BLOCK_SIZE as f32;
         }
     }
 }
 
-impl<T> BlockProcessor for OverlapAndAddProcessor<T>
+impl<T, const BLOCK_SIZE: usize> BlockProcessor<BLOCK_SIZE>
+    for OverlapAndAddProcessor<T, BLOCK_SIZE>
 where
-    T: BlockProcessor,
+    T: BlockProcessor<BLOCK_SIZE>,
+    [(); BLOCK_SIZE / 2]: Sized,
 {
     // TODO: Remove unnecessary allocations
-    fn process(&self, buffer: &mut [f32]) {
+    fn process(&self, buffer: &mut [f32; BLOCK_SIZE]) {
         // Create a temp clone of input buffer
         let temp_input_buffer = buffer.to_vec();
 
         // Get a lock and reference to previous buffer
-        let previous_clean_half_buffer = &mut self.previous_clean_half_buffer.lock().unwrap();
+        let previous_clean_half_buffer_guard = &mut self.previous_clean_half_buffer.lock().unwrap();
+        let previous_clean_half_buffer: &mut [f32; BLOCK_SIZE / 2] =
+            previous_clean_half_buffer_guard;
 
         // Get first block to process (second half of previous and first half on current)
-        let mut first = previous_clean_half_buffer.to_vec();
-        first.append(&mut buffer[..BUFFER_SIZE / 2].to_vec());
+        let mut first = [0.0; BLOCK_SIZE];
+        first[0..BLOCK_SIZE / 2].copy_from_slice(previous_clean_half_buffer);
+        first[BLOCK_SIZE / 2..].copy_from_slice(&buffer[..BLOCK_SIZE / 2]);
 
         // Get second block to process (the current input buffer)
-        let mut second = buffer.to_vec();
+        let mut second = [0.0; BLOCK_SIZE];
+        second.copy_from_slice(buffer);
 
         // Apply hanning window to first block
-        let window = apodize::hanning_iter(BUFFER_SIZE);
+        let window = apodize::hanning_iter(BLOCK_SIZE);
         for (sample, window_sample) in first.iter_mut().zip(window) {
             *sample *= window_sample as f32;
         }
 
         // Apply hanning window to second block
-        let window = apodize::hanning_iter(BUFFER_SIZE);
+        let window = apodize::hanning_iter(BLOCK_SIZE);
         for (sample, window_sample) in second.iter_mut().zip(window) {
             *sample *= window_sample as f32;
         }
@@ -302,9 +309,9 @@ where
         self.block_processor.process(&mut second);
 
         // Overlap and add second half of first block and first half of second block
-        for (first_sample, second_sample) in first[BUFFER_SIZE / 2..]
+        for (first_sample, second_sample) in first[BLOCK_SIZE / 2..]
             .iter_mut()
-            .zip(&second[..BUFFER_SIZE / 2])
+            .zip(&second[..BLOCK_SIZE / 2])
         {
             *first_sample += second_sample;
         }
@@ -314,7 +321,7 @@ where
             &mut self.previous_processed_half_buffer.lock().unwrap();
 
         // Overlap and add first half of first block previous_processed_half_buffer
-        for (first_sample, second_sample) in first[..BUFFER_SIZE / 2]
+        for (first_sample, second_sample) in first[..BLOCK_SIZE / 2]
             .iter_mut()
             .zip(previous_processed_half_buffer.to_vec())
         {
@@ -322,23 +329,24 @@ where
         }
 
         // Save half current buffer for processing next time
-        previous_clean_half_buffer.copy_from_slice(&temp_input_buffer[BUFFER_SIZE / 2..]);
+        previous_clean_half_buffer.copy_from_slice(&temp_input_buffer[BLOCK_SIZE / 2..]);
 
         // Save second part of input buffer windowed and processed
-        previous_processed_half_buffer.copy_from_slice(&second[BUFFER_SIZE / 2..]);
+        previous_processed_half_buffer.copy_from_slice(&second[BLOCK_SIZE / 2..]);
 
         buffer.copy_from_slice(&first);
     }
 }
 
-impl<T> OverlapAndAddProcessor<T>
+impl<T, const BLOCK_SIZE: usize> OverlapAndAddProcessor<T, BLOCK_SIZE>
 where
-    T: BlockProcessor,
+    T: BlockProcessor<BLOCK_SIZE>,
+    [(); BLOCK_SIZE / 2]: Sized,
 {
     pub fn new(block_processor: T) -> Self {
         Self {
-            previous_clean_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
-            previous_processed_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
+            previous_clean_half_buffer: Mutex::new([0.0; BLOCK_SIZE / 2]),
+            previous_processed_half_buffer: Mutex::new([0.0; BLOCK_SIZE / 2]),
             block_processor,
         }
     }
@@ -353,16 +361,16 @@ mod tests {
 
     struct PassthroughBlockProcessor;
 
-    impl BlockProcessor for PassthroughBlockProcessor {
-        fn process(&self, _buffer: &mut [f32]) {
+    impl<const BLOCK_SIZE: usize> BlockProcessor<BLOCK_SIZE> for PassthroughBlockProcessor {
+        fn process(&self, _buffer: &mut [f32; BLOCK_SIZE]) {
             // Do nothing to buffer
         }
     }
 
     struct AmplitudeHalvingBlockProcessor;
 
-    impl BlockProcessor for AmplitudeHalvingBlockProcessor {
-        fn process(&self, buffer: &mut [f32]) {
+    impl<const BLOCK_SIZE: usize> BlockProcessor<BLOCK_SIZE> for AmplitudeHalvingBlockProcessor {
+        fn process(&self, buffer: &mut [f32; BLOCK_SIZE]) {
             for sample in buffer.iter_mut() {
                 *sample /= 2.0;
             }
@@ -371,8 +379,10 @@ mod tests {
 
     #[test]
     fn overlap_and_add_processor_is_transparent() {
-        let passthrough_stream_processor =
-            Segmenter::new(OverlapAndAddProcessor::new(PassthroughBlockProcessor));
+        let passthrough_stream_processor = Segmenter::new(OverlapAndAddProcessor::<
+            PassthroughBlockProcessor,
+            BUFFER_SIZE,
+        >::new(PassthroughBlockProcessor));
         let queue = SegQueue::new();
         for _ in 0..TEST_SAMPLE_SIZE {
             let x = rand::random::<f32>();
@@ -405,7 +415,10 @@ mod tests {
     #[test]
     fn overlap_and_add_processor_and_amplitude_halver_works_as_expected() {
         let passthrough_stream_processor =
-            Segmenter::new(OverlapAndAddProcessor::new(AmplitudeHalvingBlockProcessor));
+            Segmenter::new(OverlapAndAddProcessor::<
+                AmplitudeHalvingBlockProcessor,
+                BUFFER_SIZE,
+            >::new(AmplitudeHalvingBlockProcessor));
         let queue = SegQueue::new();
         for _ in 0..TEST_SAMPLE_SIZE {
             let x = rand::random::<f32>();
@@ -453,7 +466,8 @@ mod tests {
 
     #[test]
     fn segmenter_is_transparent() {
-        let passthrough_stream_processor = Segmenter::new(PassthroughBlockProcessor);
+        let passthrough_stream_processor =
+            Segmenter::<PassthroughBlockProcessor, BUFFER_SIZE>::new(PassthroughBlockProcessor);
         let queue = SegQueue::new();
         for _ in 0..TEST_SAMPLE_SIZE {
             let x = rand::random::<f32>();

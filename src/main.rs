@@ -1,3 +1,6 @@
+#![allow(incomplete_features)]
+#![feature(generic_const_exprs)]
+
 use clap::Parser;
 use cpal::traits::StreamTrait;
 use cpal::Sample;
@@ -18,6 +21,8 @@ mod display;
 mod hardware;
 mod interpolation;
 mod signal_processing;
+
+const UNNECESSARY_BLOCK_SIZE: usize = signal_processing::BUFFER_SIZE;
 
 #[derive(Parser)]
 struct Opts {
@@ -60,8 +65,9 @@ fn naive_pitch_shifter() {
 
 fn high_pass_filter() {
     let display_processor: DisplayProcessor = DisplayProcessor::new(true);
-    let composed_processor =
-        ComposedProcessor::new(display_processor, Segmenter::new(HighPassFilter::new()));
+    let segmenter: Segmenter<HighPassFilter, UNNECESSARY_BLOCK_SIZE> =
+        Segmenter::new(HighPassFilter::new());
+    let composed_processor = ComposedProcessor::new(display_processor, segmenter);
     let display_processor: DisplayProcessor = DisplayProcessor::new(false);
     let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
     let _streams = hardware::setup_passthrough_processor(composed_processor);
@@ -70,8 +76,9 @@ fn high_pass_filter() {
 
 fn low_pass_filter() {
     let display_processor: DisplayProcessor = DisplayProcessor::new(true);
-    let composed_processor =
-        ComposedProcessor::new(display_processor, Segmenter::new(LowPassFilter::new()));
+    let segmenter: Segmenter<LowPassFilter, UNNECESSARY_BLOCK_SIZE> =
+        Segmenter::new(LowPassFilter::new());
+    let composed_processor = ComposedProcessor::new(display_processor, segmenter);
     let display_processor: DisplayProcessor = DisplayProcessor::new(false);
     let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
     let _streams = hardware::setup_passthrough_processor(composed_processor);
@@ -80,10 +87,9 @@ fn low_pass_filter() {
 
 fn frequency_domain_pitch_shifter() {
     let display_processor: DisplayProcessor = DisplayProcessor::new(true);
-    let composed_processor = ComposedProcessor::new(
-        display_processor,
-        Segmenter::new(FrequencyDomainPitchShifter::new()),
-    );
+    let segmenter: Segmenter<FrequencyDomainPitchShifter, UNNECESSARY_BLOCK_SIZE> =
+        Segmenter::new(FrequencyDomainPitchShifter::new());
+    let composed_processor = ComposedProcessor::new(display_processor, segmenter);
     let display_processor: DisplayProcessor = DisplayProcessor::new(false);
     let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
     let _streams = hardware::setup_passthrough_processor(composed_processor);
@@ -97,10 +103,9 @@ fn play() {
     let barrier_clone = barrier.clone();
     let once = std::sync::Once::new();
     let display_processor: DisplayProcessor = DisplayProcessor::new(true);
-    let pitch_halver = ComposedProcessor::new(
-        Segmenter::new(FrequencyDomainPitchShifter::new()),
-        display_processor,
-    );
+    let segmenter: Segmenter<FrequencyDomainPitchShifter, UNNECESSARY_BLOCK_SIZE> =
+        Segmenter::new(FrequencyDomainPitchShifter::new());
+    let pitch_halver = ComposedProcessor::new(segmenter, display_processor);
 
     for t in (0..SAMPLE_RATE * 5).map(|x| x as f32 / SAMPLE_RATE as f32) {
         let sample = (TAU * t * 440.0).sin();
