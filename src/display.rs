@@ -34,7 +34,14 @@ use tui::Terminal;
 
 const BUFFER_SIZE: usize = 1024;
 
+#[derive(PartialEq)]
+enum State {
+    Display,
+    Paused,
+}
+
 pub struct UserInterface {
+    state: State,
     forward_fft: Arc<dyn RealToComplex<f32>>,
     display_buffers: Vec<Arc<Mutex<[f32; BUFFER_SIZE]>>>,
     frame_rate: Duration,
@@ -49,7 +56,9 @@ impl UserInterface {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut last_frame = Instant::now();
         loop {
-            terminal.draw(|f| self.draw_frame(f)).unwrap();
+            if self.state == State::Display {
+                terminal.draw(|f| self.draw_frame(f)).unwrap();
+            }
 
             let timeout = self
                 .frame_rate
@@ -59,6 +68,12 @@ impl UserInterface {
                 if let Event::Key(key) = event::read().unwrap() {
                     if let KeyCode::Char('q') = key.code {
                         return;
+                    }
+                    if let KeyCode::Char(' ') = key.code {
+                        match self.state {
+                            State::Display => self.state = State::Paused,
+                            State::Paused => self.state = State::Display,
+                        }
                     }
                 }
             }
@@ -165,6 +180,7 @@ impl UserInterface {
     pub fn new() -> Self {
         let forward_fft = RealFftPlanner::default().plan_fft_forward(BUFFER_SIZE);
         Self {
+            state: State::Display,
             forward_fft,
             frame_rate: Duration::from_millis(10),
             display_buffers: Vec::new(),
