@@ -104,9 +104,13 @@ impl UserInterface {
     }
 
     fn draw_frame(&self, frame: &mut Frame<CrosstermBackend<Stdout>>) {
+        let mut constraints = Vec::new();
+        for _ in 0..self.display_buffers.len() {
+            constraints.push(Constraint::Ratio(1, self.display_buffers.len() as u32));
+        }
         let outer_layout = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)].as_ref())
+            .constraints(constraints)
             .split(frame.size());
 
         for (index, buffer) in self.display_buffers.iter().enumerate() {
