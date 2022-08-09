@@ -335,6 +335,7 @@ impl<T> OverlapAndAddProcessor<T>
 where
     T: BlockProcessor,
 {
+    #[allow(dead_code)]
     pub fn new(block_processor: T) -> Self {
         Self {
             previous_clean_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
