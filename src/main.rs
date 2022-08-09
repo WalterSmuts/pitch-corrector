@@ -3,6 +3,7 @@ use cpal::traits::StreamTrait;
 use cpal::Sample;
 use cpal::Stream;
 use display::UserInterface;
+use signal_processing::compose;
 use signal_processing::ComposedProcessor;
 use signal_processing::FrequencyDomainPitchShifter;
 use signal_processing::HighPassFilter;
@@ -47,14 +48,13 @@ fn passthrough(user_interface: &mut UserInterface) -> (Stream, Stream) {
 }
 
 fn naive_pitch_shifter(user_interface: &mut UserInterface) -> (Stream, Stream) {
-    let display_processor = user_interface.create_display_processor();
-    let composed_processor = ComposedProcessor::new(
-        display_processor,
-        Segmenter::new(NaivePitchShifter::new(1.2)),
-    );
-    let display_processor = user_interface.create_display_processor();
-    let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
-    hardware::setup_passthrough_processor(composed_processor)
+    hardware::setup_passthrough_processor(compose(
+        compose(
+            user_interface.create_display_processor(),
+            Segmenter::new(NaivePitchShifter::new(1.2)),
+        ),
+        user_interface.create_display_processor(),
+    ))
 }
 
 fn high_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {

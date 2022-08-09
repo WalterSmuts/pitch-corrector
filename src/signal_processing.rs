@@ -102,6 +102,14 @@ where
     }
 }
 
+pub fn compose<F, S>(first: F, second: S) -> impl StreamProcessor
+where
+    F: StreamProcessor,
+    S: StreamProcessor,
+{
+    ComposedProcessor::new(first, second)
+}
+
 impl<T> Segmenter<T>
 where
     T: BlockProcessor,
