@@ -9,6 +9,7 @@ use crossterm::terminal;
 use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
+use log::info;
 use realfft::RealFftPlanner;
 use realfft::RealToComplex;
 use std::io::Stdout;
@@ -31,6 +32,7 @@ use tui::widgets::Dataset;
 use tui::widgets::GraphType;
 use tui::Frame;
 use tui::Terminal;
+use tui_logger::TuiLoggerSmartWidget;
 
 const BUFFER_SIZE: usize = 1024;
 
@@ -38,6 +40,7 @@ const BUFFER_SIZE: usize = 1024;
 enum State {
     Display,
     Paused,
+    Logger,
 }
 
 pub struct UserInterface {
@@ -49,6 +52,7 @@ pub struct UserInterface {
 
 impl UserInterface {
     pub fn run(&mut self) {
+        tui_logger::init_logger(log::LevelFilter::Trace).unwrap();
         terminal::enable_raw_mode().unwrap();
         let mut stdout = std::io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
@@ -56,9 +60,15 @@ impl UserInterface {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut last_frame = Instant::now();
         loop {
-            if self.state == State::Display {
-                terminal.draw(|f| self.draw_frame(f)).unwrap();
-            }
+            match self.state {
+                State::Display => {
+                    terminal.draw(|f| self.draw_frame(f)).unwrap();
+                }
+                State::Logger => {
+                    terminal.draw(|f| self.draw_logger_frame(f)).unwrap();
+                }
+                State::Paused => info!("Paused"),
+            };
 
             let timeout = self
                 .frame_rate
@@ -70,9 +80,15 @@ impl UserInterface {
                         return;
                     }
                     if let KeyCode::Char(' ') = key.code {
+                        self.state = match self.state {
+                            State::Display => State::Paused,
+                            _ => State::Display,
+                        }
+                    }
+                    if let KeyCode::Char('l') = key.code {
                         match self.state {
-                            State::Display => self.state = State::Paused,
-                            State::Paused => self.state = State::Display,
+                            State::Display => self.state = State::Logger,
+                            _ => self.state = State::Display,
                         }
                     }
                 }
@@ -81,6 +97,10 @@ impl UserInterface {
                 last_frame = Instant::now();
             }
         }
+    }
+
+    fn draw_logger_frame(&self, frame: &mut Frame<CrosstermBackend<Stdout>>) {
+        frame.render_widget(TuiLoggerSmartWidget::default(), frame.size());
     }
 
     fn draw_frame(&self, frame: &mut Frame<CrosstermBackend<Stdout>>) {

@@ -17,6 +17,8 @@ ctrlc = "3.2"
 apodize = "1.0.0"
 tui = "0.18.0"
 crossterm = "0.24.0"
+tui-logger = "0.8.0"
+log = "0.4.17"
 
 [dev-dependencies]
 rand = "0.8.5"
