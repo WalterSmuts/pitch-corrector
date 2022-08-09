@@ -4,6 +4,7 @@ use cpal::Sample;
 use cpal::{BufferSize, Stream};
 use cpal::{InputCallbackInfo, OutputCallbackInfo};
 use cpal::{SampleRate, StreamConfig};
+use log::info;
 use std::sync::Arc;
 
 const SAMPLE_RATE: u32 = 44100;
@@ -13,6 +14,7 @@ pub fn setup_passthrough_processor<T: 'static>(processor: T) -> (Stream, Stream)
 where
     T: StreamProcessor + Send + Sync,
 {
+    info!("Setting up hardware");
     let input_passthrough_processor = Arc::new(processor);
     let output_passthrough_processor = input_passthrough_processor.clone();
 

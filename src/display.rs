@@ -52,7 +52,7 @@ pub struct UserInterface {
 
 impl UserInterface {
     pub fn run(&mut self) {
-        tui_logger::init_logger(log::LevelFilter::Trace).unwrap();
+        info!("Running UserInterface");
         terminal::enable_raw_mode().unwrap();
         let mut stdout = std::io::stdout();
         execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
@@ -67,7 +67,7 @@ impl UserInterface {
                 State::Logger => {
                     terminal.draw(|f| self.draw_logger_frame(f)).unwrap();
                 }
-                State::Paused => info!("Paused"),
+                State::Paused => (),
             };
 
             let timeout = self
@@ -198,6 +198,7 @@ impl UserInterface {
 
 impl UserInterface {
     pub fn new() -> Self {
+        info!("Creating new UserInterface");
         let forward_fft = RealFftPlanner::default().plan_fft_forward(BUFFER_SIZE);
         Self {
             state: State::Display,
@@ -210,6 +211,7 @@ impl UserInterface {
 
 impl Drop for UserInterface {
     fn drop(&mut self) {
+        info!("Dropping user UserInterface");
         let stdout = std::io::stdout();
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).unwrap();

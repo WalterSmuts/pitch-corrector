@@ -2,6 +2,7 @@ use crate::complex_interpolation::ComplexInterpolate;
 use crate::interpolation::Interpolate;
 use crate::interpolation::InterpolationMethod;
 use crossbeam_queue::SegQueue;
+use log::info;
 use realfft::num_complex::Complex;
 use realfft::RealToComplex;
 use realfft::{ComplexToReal, RealFftPlanner};
@@ -96,6 +97,7 @@ where
     S: StreamProcessor,
 {
     pub fn new(first: F, second: S) -> Self {
+        info!("Creating new ComposedProcessor");
         Self { first, second }
     }
 }
@@ -105,6 +107,7 @@ where
     T: BlockProcessor,
 {
     pub fn new(block_processor: T) -> Self {
+        info!("Creating new Segmenter");
         Self {
             input_buffer: SegQueue::new(),
             output_buffer: SegQueue::new(),
@@ -138,6 +141,7 @@ where
 
 impl<const I: usize> DisplayProcessor<I> {
     pub fn new() -> Self {
+        info!("Creating new DisplayProcessor");
         Self {
             buffer: SegQueue::new(),
             display_buffer: Arc::new(Mutex::new([0.0; I])),
@@ -169,6 +173,7 @@ impl<const I: usize> StreamProcessor for DisplayProcessor<I> {
 
 impl NaivePitchShifter {
     pub fn new(scaling_ratio: f32) -> Self {
+        info!("Creating new NaivePitchShifter");
         Self { scaling_ratio }
     }
 }
@@ -186,6 +191,7 @@ impl BlockProcessor for NaivePitchShifter {
 
 impl HighPassFilter {
     pub fn new() -> Self {
+        info!("Creating new HighPassFilter");
         let mut real_planner = RealFftPlanner::new();
         Self {
             forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
@@ -210,6 +216,7 @@ impl BlockProcessor for HighPassFilter {
 
 impl LowPassFilter {
     pub fn new() -> Self {
+        info!("Creating new LowPassFilter");
         let mut real_planner = RealFftPlanner::new();
         Self {
             forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
@@ -234,6 +241,7 @@ impl BlockProcessor for LowPassFilter {
 
 impl FrequencyDomainPitchShifter {
     pub fn new() -> Self {
+        info!("Creating new FrequencyDomainPitchShifter");
         let mut real_planner = RealFftPlanner::new();
         Self {
             forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
@@ -337,6 +345,7 @@ where
 {
     #[allow(dead_code)]
     pub fn new(block_processor: T) -> Self {
+        info!("Creating new OverlapAndAddProcessor");
         Self {
             previous_clean_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
             previous_processed_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
