@@ -186,6 +186,20 @@ impl NaivePitchShifter {
     }
 }
 
+macro_rules! pipeline {
+    ($first_processor:expr$(,)?) => {
+        $first_processor
+    };
+
+    ($first_processor:expr, $($other_processors:expr),+ $(,)?) => {
+        $crate::signal_processing::compose(
+            pipeline! {$first_processor},
+            pipeline! { $($other_processors),+ },
+        )
+    };
+}
+pub(crate) use pipeline;
+
 impl BlockProcessor for NaivePitchShifter {
     fn process(&self, buffer: &mut [f32]) {
         let mut output_buffer = [0.0; BUFFER_SIZE];

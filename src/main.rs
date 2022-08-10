@@ -3,8 +3,7 @@ use cpal::traits::StreamTrait;
 use cpal::Sample;
 use cpal::Stream;
 use display::UserInterface;
-use signal_processing::compose;
-use signal_processing::ComposedProcessor;
+use signal_processing::pipeline;
 use signal_processing::FrequencyDomainPitchShifter;
 use signal_processing::HighPassFilter;
 use signal_processing::LowPassFilter;
@@ -48,42 +47,35 @@ fn passthrough(user_interface: &mut UserInterface) -> (Stream, Stream) {
 }
 
 fn naive_pitch_shifter(user_interface: &mut UserInterface) -> (Stream, Stream) {
-    hardware::setup_passthrough_processor(compose(
-        compose(
-            user_interface.create_display_processor(),
-            Segmenter::new(NaivePitchShifter::new(1.2)),
-        ),
+    hardware::setup_passthrough_processor(pipeline!(
+        user_interface.create_display_processor(),
+        Segmenter::new(NaivePitchShifter::new(1.2)),
         user_interface.create_display_processor(),
     ))
 }
 
 fn high_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
-    let display_processor = user_interface.create_display_processor();
-    let composed_processor =
-        ComposedProcessor::new(display_processor, Segmenter::new(HighPassFilter::new()));
-    let display_processor = user_interface.create_display_processor();
-    let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
-    hardware::setup_passthrough_processor(composed_processor)
+    hardware::setup_passthrough_processor(pipeline!(
+        user_interface.create_display_processor(),
+        Segmenter::new(HighPassFilter::new()),
+        user_interface.create_display_processor(),
+    ))
 }
 
 fn low_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
-    let display_processor = user_interface.create_display_processor();
-    let composed_processor =
-        ComposedProcessor::new(display_processor, Segmenter::new(LowPassFilter::new()));
-    let display_processor = user_interface.create_display_processor();
-    let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
-    hardware::setup_passthrough_processor(composed_processor)
+    hardware::setup_passthrough_processor(pipeline!(
+        user_interface.create_display_processor(),
+        Segmenter::new(LowPassFilter::new()),
+        user_interface.create_display_processor(),
+    ))
 }
 
-fn frequency_domain_pitch_shifter(user_inferface: &mut UserInterface) -> (Stream, Stream) {
-    let display_processor = user_inferface.create_display_processor();
-    let composed_processor = ComposedProcessor::new(
-        display_processor,
+fn frequency_domain_pitch_shifter(user_interface: &mut UserInterface) -> (Stream, Stream) {
+    hardware::setup_passthrough_processor(pipeline!(
+        user_interface.create_display_processor(),
         Segmenter::new(FrequencyDomainPitchShifter::new()),
-    );
-    let display_processor = user_inferface.create_display_processor();
-    let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
-    hardware::setup_passthrough_processor(composed_processor)
+        user_interface.create_display_processor(),
+    ))
 }
 
 const SAMPLE_RATE: usize = 44100;
@@ -92,10 +84,9 @@ fn play(user_inferface: &mut UserInterface) -> (Stream, Stream) {
     let barrier = Arc::new(Barrier::new(2));
     let barrier_clone = barrier.clone();
     let once = std::sync::Once::new();
-    let display_processor = user_inferface.create_display_processor();
-    let pitch_halver = ComposedProcessor::new(
+    let pitch_halver = pipeline!(
         Segmenter::new(FrequencyDomainPitchShifter::new()),
-        display_processor,
+        user_inferface.create_display_processor(),
     );
 
     for t in (0..SAMPLE_RATE * 5).map(|x| x as f32 / SAMPLE_RATE as f32) {
