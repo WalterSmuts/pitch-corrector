@@ -7,7 +7,7 @@ use cpal::{SampleRate, StreamConfig};
 use std::sync::Arc;
 
 const SAMPLE_RATE: u32 = 44100;
-const BUFFER_SIZE: usize = 128;
+const BUFFER_SIZE: usize = 256;
 
 pub fn setup_passthrough_processor<T: 'static>(processor: T) -> (Stream, Stream)
 where
