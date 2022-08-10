@@ -1,8 +1,9 @@
 use clap::Parser;
 use cpal::traits::StreamTrait;
 use cpal::Sample;
+use cpal::Stream;
+use display::UserInterface;
 use signal_processing::ComposedProcessor;
-use signal_processing::DisplayProcessor;
 use signal_processing::FrequencyDomainPitchShifter;
 use signal_processing::HighPassFilter;
 use signal_processing::LowPassFilter;
@@ -40,63 +41,58 @@ enum SubCommand {
     Play,
 }
 
-fn passthrough() {
-    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
-    let _streams = hardware::setup_passthrough_processor(display_processor);
-    std::thread::park();
+fn passthrough(user_interface: &mut UserInterface) -> (Stream, Stream) {
+    let display_processor = user_interface.create_display_processor();
+    hardware::setup_passthrough_processor(display_processor)
 }
 
-fn naive_pitch_shifter() {
-    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
+fn naive_pitch_shifter(user_interface: &mut UserInterface) -> (Stream, Stream) {
+    let display_processor = user_interface.create_display_processor();
     let composed_processor = ComposedProcessor::new(
         display_processor,
         Segmenter::new(NaivePitchShifter::new(1.2)),
     );
-    let display_processor: DisplayProcessor = DisplayProcessor::new(false);
+    let display_processor = user_interface.create_display_processor();
     let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
-    let _streams = hardware::setup_passthrough_processor(composed_processor);
-    std::thread::park();
+    hardware::setup_passthrough_processor(composed_processor)
 }
 
-fn high_pass_filter() {
-    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
+fn high_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
+    let display_processor = user_interface.create_display_processor();
     let composed_processor =
         ComposedProcessor::new(display_processor, Segmenter::new(HighPassFilter::new()));
-    let display_processor: DisplayProcessor = DisplayProcessor::new(false);
+    let display_processor = user_interface.create_display_processor();
     let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
-    let _streams = hardware::setup_passthrough_processor(composed_processor);
-    std::thread::park();
+    hardware::setup_passthrough_processor(composed_processor)
 }
 
-fn low_pass_filter() {
-    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
+fn low_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
+    let display_processor = user_interface.create_display_processor();
     let composed_processor =
         ComposedProcessor::new(display_processor, Segmenter::new(LowPassFilter::new()));
-    let display_processor: DisplayProcessor = DisplayProcessor::new(false);
+    let display_processor = user_interface.create_display_processor();
     let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
-    let _streams = hardware::setup_passthrough_processor(composed_processor);
-    std::thread::park();
+    hardware::setup_passthrough_processor(composed_processor)
 }
 
-fn frequency_domain_pitch_shifter() {
-    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
+fn frequency_domain_pitch_shifter(user_inferface: &mut UserInterface) -> (Stream, Stream) {
+    let display_processor = user_inferface.create_display_processor();
     let composed_processor = ComposedProcessor::new(
         display_processor,
         Segmenter::new(FrequencyDomainPitchShifter::new()),
     );
-    let display_processor: DisplayProcessor = DisplayProcessor::new(false);
+    let display_processor = user_inferface.create_display_processor();
     let composed_processor = ComposedProcessor::new(composed_processor, display_processor);
-    let _streams = hardware::setup_passthrough_processor(composed_processor);
-    std::thread::park();
+    hardware::setup_passthrough_processor(composed_processor)
 }
 
 const SAMPLE_RATE: usize = 44100;
 
-fn play() {
+fn play(user_inferface: &mut UserInterface) -> (Stream, Stream) {
     let barrier = Arc::new(Barrier::new(2));
     let barrier_clone = barrier.clone();
     let once = std::sync::Once::new();
-    let display_processor: DisplayProcessor = DisplayProcessor::new(true);
+    let display_processor = user_inferface.create_display_processor();
     let pitch_halver = ComposedProcessor::new(
         Segmenter::new(FrequencyDomainPitchShifter::new()),
         display_processor,
@@ -119,33 +115,24 @@ fn play() {
         }
     });
     stream.play().unwrap();
-    barrier.wait();
+    barrier.wait(); // TODO: FIX this return
+    todo!()
 }
 
 fn main() {
     let opts: Opts = Opts::parse();
-    ctrlc::set_handler(move || {
-        reset_screen();
-        std::process::exit(130);
-    })
-    .expect("Error setting Ctrl-C handler");
+    let mut user_inferface = UserInterface::new();
 
-    print!("{}", ansi_escapes::ClearScreen);
-    print!("{}", termion::cursor::Hide);
-
-    match opts.subcmd {
-        SubCommand::Passthrough => passthrough(),
-        SubCommand::NaivePitchShifter => naive_pitch_shifter(),
-        SubCommand::HighPassFilter => high_pass_filter(),
-        SubCommand::LowPassFilter => low_pass_filter(),
-        SubCommand::FrequencyDomainPitchShifter => frequency_domain_pitch_shifter(),
-        SubCommand::Play => play(),
-    }
-    reset_screen();
-}
-
-fn reset_screen() {
-    print!("{}", ansi_escapes::CursorTo::AbsoluteX(0));
-    print!("{}", ansi_escapes::ClearScreen);
-    print!("{}", termion::cursor::Show);
+    // Don't drop streams otherwize we drop the threads doing the data processing
+    let _streams = match opts.subcmd {
+        SubCommand::Passthrough => passthrough(&mut user_inferface),
+        SubCommand::NaivePitchShifter => naive_pitch_shifter(&mut user_inferface),
+        SubCommand::HighPassFilter => high_pass_filter(&mut user_inferface),
+        SubCommand::LowPassFilter => low_pass_filter(&mut user_inferface),
+        SubCommand::FrequencyDomainPitchShifter => {
+            frequency_domain_pitch_shifter(&mut user_inferface)
+        }
+        SubCommand::Play => play(&mut user_inferface),
+    };
+    user_inferface.run();
 }

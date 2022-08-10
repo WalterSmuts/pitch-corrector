@@ -1,74 +1,189 @@
-use crate::interpolation::Interpolate;
-use crate::interpolation::InterpolationMethod;
-use realfft::{RealFftPlanner, RealToComplex};
+use crate::signal_processing::DisplayProcessor;
+use crossterm::event;
+use crossterm::event::DisableMouseCapture;
+use crossterm::event::EnableMouseCapture;
+use crossterm::event::Event;
+use crossterm::event::KeyCode;
+use crossterm::execute;
+use crossterm::terminal;
+use crossterm::terminal::disable_raw_mode;
+use crossterm::terminal::EnterAlternateScreen;
+use crossterm::terminal::LeaveAlternateScreen;
+use realfft::RealFftPlanner;
+use realfft::RealToComplex;
+use std::io::Stdout;
 use std::sync::Arc;
-use textplots::Shape;
-use textplots::{Chart, Plot};
+use std::sync::Mutex;
+use std::time::Duration;
+use std::time::Instant;
+use tui::backend::CrosstermBackend;
+use tui::layout;
+use tui::layout::Constraint;
+use tui::layout::Direction;
+use tui::layout::Layout;
+use tui::symbols;
+use tui::text::Span;
+use tui::widgets::Axis;
+use tui::widgets::Block;
+use tui::widgets::Borders;
+use tui::widgets::Chart;
+use tui::widgets::Dataset;
+use tui::widgets::GraphType;
+use tui::Frame;
+use tui::Terminal;
 
 const BUFFER_SIZE: usize = 1024;
 
-pub struct SignalDrawer {
-    fft: Arc<dyn RealToComplex<f32>>,
-    should_clear_screen: bool,
+pub struct UserInterface {
+    forward_fft: Arc<dyn RealToComplex<f32>>,
+    display_buffers: Vec<Arc<Mutex<[f32; BUFFER_SIZE]>>>,
+    frame_rate: Duration,
 }
 
-impl SignalDrawer {
-    pub fn new(should_clear_screen: bool) -> Self {
+impl UserInterface {
+    pub fn run(&mut self) {
+        terminal::enable_raw_mode().unwrap();
+        let mut stdout = std::io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut last_frame = Instant::now();
+        loop {
+            terminal.draw(|f| self.draw_frame(f)).unwrap();
+
+            let timeout = self
+                .frame_rate
+                .checked_sub(last_frame.elapsed())
+                .unwrap_or_else(|| Duration::from_secs(0));
+            if crossterm::event::poll(timeout).unwrap() {
+                if let Event::Key(key) = event::read().unwrap() {
+                    if let KeyCode::Char('q') = key.code {
+                        return;
+                    }
+                }
+            }
+            if last_frame.elapsed() >= self.frame_rate {
+                last_frame = Instant::now();
+            }
+        }
+    }
+
+    fn draw_frame(&self, frame: &mut Frame<CrosstermBackend<Stdout>>) {
+        let outer_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)].as_ref())
+            .split(frame.size());
+
+        for (index, buffer) in self.display_buffers.iter().enumerate() {
+            let layout = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)].as_ref())
+                .split(outer_layout[index]);
+
+            let buffer = buffer.lock().unwrap();
+
+            let signal_data: Vec<_> = buffer
+                .iter()
+                .enumerate()
+                .map(|(index, value)| (index as f64, *value as f64))
+                .collect();
+
+            let dataset = Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .data(&signal_data);
+
+            let chart = Chart::new(vec![dataset])
+                .block(
+                    Block::default()
+                        .title("Waveform")
+                        .borders(Borders::ALL)
+                        .title_alignment(layout::Alignment::Center),
+                )
+                .x_axis(
+                    Axis::default()
+                        .title("Time (Samples @ 44100 Hz)")
+                        .bounds([0.0, BUFFER_SIZE as f64]),
+                )
+                .y_axis(
+                    Axis::default()
+                        .labels(vec![Span::raw("-1.0"), Span::raw("0.0"), Span::raw("1.0")])
+                        .title("Amplitude")
+                        .bounds([-1.0, 1.0]),
+                );
+
+            frame.render_widget(chart, layout[0]);
+
+            let mut spectrum = self.forward_fft.make_output_vec();
+            self.forward_fft
+                .process(&mut buffer.clone(), &mut spectrum)
+                .unwrap();
+
+            let spectrum_data: Vec<_> = spectrum
+                .into_iter()
+                .enumerate()
+                .map(|(index, bin)| (index as f64, bin.norm() as f64))
+                .collect();
+
+            let dataset = Dataset::default()
+                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
+                .data(&spectrum_data);
+
+            let chart = Chart::new(vec![dataset])
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title_alignment(layout::Alignment::Center)
+                        .title("Power Spectral Density"),
+                )
+                .x_axis(
+                    Axis::default()
+                        .title("Frequency")
+                        .bounds([0.0, BUFFER_SIZE as f64 / 2.0 + 1.0]),
+                )
+                .y_axis(
+                    Axis::default()
+                        .labels(vec![Span::raw("0.0"), Span::raw("25.0"), Span::raw("50.0")])
+                        .title("Power")
+                        .bounds([0.0, 50.0]),
+                );
+
+            frame.render_widget(chart, layout[1]);
+        }
+    }
+
+    pub fn create_display_processor(&mut self) -> DisplayProcessor {
+        let display_processor = DisplayProcessor::new();
+        self.display_buffers
+            .push(display_processor.clone_display_buffer());
+        display_processor
+    }
+}
+
+impl UserInterface {
+    pub fn new() -> Self {
+        let forward_fft = RealFftPlanner::default().plan_fft_forward(BUFFER_SIZE);
         Self {
-            fft: RealFftPlanner::<f32>::new().plan_fft_forward(BUFFER_SIZE),
-            should_clear_screen,
+            forward_fft,
+            frame_rate: Duration::from_millis(10),
+            display_buffers: Vec::new(),
         }
-    }
-
-    pub fn draw_data(&self, data: &[f32]) {
-        if self.should_clear_screen {
-            print!("{}", ansi_escapes::CursorTo::TopLeft);
-        }
-        self.draw_psd(data);
-        self.draw_waveform(data);
-    }
-
-    fn draw_waveform(&self, data: &[f32]) {
-        println!("Waveform:");
-        let (width, height) = get_textplots_window_size();
-        Chart::new_with_y_range(width, height / 2, 0.0, BUFFER_SIZE as f32, -1.0, 1.0)
-            .lineplot(&Shape::Continuous(Box::new(|x| {
-                data.interpolate_sample(x, InterpolationMethod::WhittakerShannon)
-            })))
-            .display();
-    }
-
-    fn draw_psd(&self, data: &[f32]) {
-        println!("Power Spectral Density:");
-        let (width, height) = get_textplots_window_size();
-
-        let mut ff_data = [0.0; BUFFER_SIZE].to_vec();
-        ff_data.copy_from_slice(&data[0..BUFFER_SIZE]);
-
-        let window = apodize::hanning_iter(BUFFER_SIZE);
-        for (sample, window_sample) in ff_data.iter_mut().zip(window) {
-            *sample *= window_sample as f32;
-        }
-
-        let mut spectrum = self.fft.make_output_vec();
-        self.fft.process(&mut ff_data, &mut spectrum).unwrap();
-
-        let vec: Vec<_> = spectrum
-            .into_iter()
-            .map(|complex| complex.norm_sqr())
-            .collect();
-
-        Chart::new_with_y_range(width, height / 2, 0.0, BUFFER_SIZE as f32, 0.0, 50.0)
-            .lineplot(&Shape::Continuous(Box::new(|x| {
-                vec.interpolate_sample(2.0_f32.powf(x / 113.8), InterpolationMethod::Linear)
-            })))
-            .display();
     }
 }
 
-fn get_textplots_window_size() -> (u32, u32) {
-    let (mut width, height) = termion::terminal_size().unwrap();
-    width = width * 2 - 11;
-    let height = height as f32 * 1.6;
-    (width as u32, height as u32 - 10)
+impl Drop for UserInterface {
+    fn drop(&mut self) {
+        let stdout = std::io::stdout();
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend).unwrap();
+        disable_raw_mode().unwrap();
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )
+        .unwrap();
+        terminal.show_cursor().unwrap();
+    }
 }

@@ -1,5 +1,4 @@
 use crate::complex_interpolation::ComplexInterpolate;
-use crate::display::SignalDrawer;
 use crate::interpolation::Interpolate;
 use crate::interpolation::InterpolationMethod;
 use crossbeam_queue::SegQueue;
@@ -44,9 +43,8 @@ pub struct FrequencyDomainPitchShifter {
 
 pub struct DisplayProcessor<const I: usize = BUFFER_SIZE> {
     buffer: SegQueue<f32>,
-    display_buffer: Mutex<[f32; I]>,
+    display_buffer: Arc<Mutex<[f32; I]>>,
     buffer_index: AtomicUsize,
-    signal_drawer: SignalDrawer,
 }
 
 pub struct OverlapAndAddProcessor<T>
@@ -139,13 +137,16 @@ where
 }
 
 impl<const I: usize> DisplayProcessor<I> {
-    pub fn new(should_clear_screen: bool) -> Self {
+    pub fn new() -> Self {
         Self {
             buffer: SegQueue::new(),
-            display_buffer: Mutex::new([0.0; I]),
+            display_buffer: Arc::new(Mutex::new([0.0; I])),
             buffer_index: AtomicUsize::new(0),
-            signal_drawer: SignalDrawer::new(should_clear_screen),
         }
+    }
+
+    pub fn clone_display_buffer(&self) -> Arc<Mutex<[f32; I]>> {
+        self.display_buffer.clone()
     }
 }
 
@@ -161,7 +162,6 @@ impl<const I: usize> StreamProcessor for DisplayProcessor<I> {
         self.buffer_index.fetch_add(1, Ordering::Relaxed);
         if self.buffer_index.load(Ordering::Relaxed) >= I {
             self.buffer_index.swap(0, Ordering::Relaxed);
-            self.signal_drawer.draw_data(&*buffer);
         }
         Some(sample)
     }
