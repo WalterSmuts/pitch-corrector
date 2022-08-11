@@ -12,6 +12,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 const BUFFER_SIZE: usize = 1024;
+const SAMPLE_RATE: usize = 44100;
 
 pub trait StreamProcessor {
     fn push_sample(&self, sample: f32);
@@ -29,11 +30,13 @@ pub struct NaivePitchShifter {
 pub struct HighPassFilter {
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
+    cutoff_bin: Option<usize>,
 }
 
 pub struct LowPassFilter {
     forward_fft: Arc<dyn RealToComplex<f32>>,
     inverse_fft: Arc<dyn ComplexToReal<f32>>,
+    cutoff_bin: Option<usize>,
 }
 
 pub struct FrequencyDomainPitchShifter {
@@ -149,7 +152,7 @@ where
 
 impl<const I: usize> DisplayProcessor<I> {
     pub fn new() -> Self {
-        info!("Creating new DisplayProcessor");
+        info!("Creating new DisplayProcessor of size {}", I);
         Self {
             buffer: SegQueue::new(),
             display_buffer: Arc::new(Mutex::new([0.0; I])),
@@ -211,13 +214,32 @@ impl BlockProcessor for NaivePitchShifter {
     }
 }
 
+const fn frequency_to_bin(frequency: usize) -> usize {
+    let highest_bin = BUFFER_SIZE / 2 + 1;
+    let highest_frequency = SAMPLE_RATE / 2;
+    highest_bin * frequency / highest_frequency
+}
+
+const fn get_cutoff_bin(frequency: usize) -> Option<usize> {
+    let cutoff_bin = frequency_to_bin(frequency);
+
+    if cutoff_bin > (BUFFER_SIZE / 2 + 1) {
+        None
+    } else {
+        Some(cutoff_bin)
+    }
+}
+
 impl HighPassFilter {
-    pub fn new() -> Self {
+    pub fn new(cutoff_frequency: usize) -> Self {
         info!("Creating new HighPassFilter");
         let mut real_planner = RealFftPlanner::new();
+        let cutoff_bin = get_cutoff_bin(cutoff_frequency);
+
         Self {
             forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
             inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
+            cutoff_bin,
         }
     }
 }
@@ -226,9 +248,11 @@ impl BlockProcessor for HighPassFilter {
     fn process(&self, buffer: &mut [f32]) {
         let mut spectrum = self.forward_fft.make_output_vec();
         self.forward_fft.process(buffer, &mut spectrum).unwrap();
-        spectrum[0..15]
-            .iter_mut()
-            .for_each(|sample| *sample = Complex::new(0.0, 0.0));
+        if let Some(cutoff_bin) = self.cutoff_bin {
+            spectrum[0..cutoff_bin]
+                .iter_mut()
+                .for_each(|sample| *sample = Complex::new(0.0, 0.0));
+        }
         self.inverse_fft.process(&mut spectrum, buffer).unwrap();
         for sample in buffer {
             *sample /= BUFFER_SIZE as f32;
@@ -237,12 +261,15 @@ impl BlockProcessor for HighPassFilter {
 }
 
 impl LowPassFilter {
-    pub fn new() -> Self {
+    pub fn new(cutoff_frequency: usize) -> Self {
         info!("Creating new LowPassFilter");
         let mut real_planner = RealFftPlanner::new();
+        let cutoff_bin = get_cutoff_bin(cutoff_frequency);
+
         Self {
             forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
             inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
+            cutoff_bin,
         }
     }
 }
@@ -251,9 +278,11 @@ impl BlockProcessor for LowPassFilter {
     fn process(&self, buffer: &mut [f32]) {
         let mut spectrum = self.forward_fft.make_output_vec();
         self.forward_fft.process(buffer, &mut spectrum).unwrap();
-        spectrum[15..]
-            .iter_mut()
-            .for_each(|sample| *sample = Complex::new(0.0, 0.0));
+        if let Some(cutoff_bin) = self.cutoff_bin {
+            spectrum[cutoff_bin..]
+                .iter_mut()
+                .for_each(|sample| *sample = Complex::new(0.0, 0.0));
+        }
         self.inverse_fft.process(&mut spectrum, buffer).unwrap();
         for sample in buffer {
             *sample /= BUFFER_SIZE as f32;

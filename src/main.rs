@@ -20,6 +20,8 @@ mod hardware;
 mod interpolation;
 mod signal_processing;
 
+const FILTER_CUTOFF_FREQUENCY: usize = 440;
+
 #[derive(Parser)]
 struct Opts {
     #[clap(subcommand)]
@@ -57,7 +59,7 @@ fn naive_pitch_shifter(user_interface: &mut UserInterface) -> (Stream, Stream) {
 fn high_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
     hardware::setup_passthrough_processor(pipeline!(
         user_interface.create_display_processor(),
-        Segmenter::new(HighPassFilter::new()),
+        Segmenter::new(HighPassFilter::new(FILTER_CUTOFF_FREQUENCY)),
         user_interface.create_display_processor(),
     ))
 }
@@ -65,7 +67,7 @@ fn high_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
 fn low_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
     hardware::setup_passthrough_processor(pipeline!(
         user_interface.create_display_processor(),
-        Segmenter::new(LowPassFilter::new()),
+        Segmenter::new(LowPassFilter::new(FILTER_CUTOFF_FREQUENCY)),
         user_interface.create_display_processor(),
     ))
 }
