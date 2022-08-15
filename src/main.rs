@@ -119,6 +119,7 @@ fn play(user_inferface: &mut UserInterface) -> (Stream, Stream) {
 
 fn main() {
     tui_logger::init_logger(log::LevelFilter::Trace).unwrap();
+    log_panics::init();
     let opts: Opts = Opts::parse();
     let mut user_inferface = UserInterface::new();
 
