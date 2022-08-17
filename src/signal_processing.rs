@@ -40,8 +40,6 @@ pub struct LowPassFilter {
 }
 
 pub struct FrequencyDomainPitchShifter {
-    forward_fft: Arc<dyn RealToComplex<f32>>,
-    inverse_fft: Arc<dyn ComplexToReal<f32>>,
     scaling_ratio: f32,
 }
 
@@ -309,20 +307,13 @@ impl FrequencyDomainBlockProcessor for LowPassFilter {
 impl FrequencyDomainPitchShifter {
     pub fn new() -> Self {
         info!("Creating new FrequencyDomainPitchShifter");
-        let mut real_planner = RealFftPlanner::new();
-        Self {
-            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
-            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
-            scaling_ratio: 0.5,
-        }
+        Self { scaling_ratio: 0.5 }
     }
 }
 
-impl BlockProcessor for FrequencyDomainPitchShifter {
-    fn process(&self, buffer: &mut [f32]) {
-        let mut spectrum = self.forward_fft.make_output_vec();
-        self.forward_fft.process(buffer, &mut spectrum).unwrap();
-        let mut spectrum_out = self.forward_fft.make_output_vec();
+impl FrequencyDomainBlockProcessor for FrequencyDomainPitchShifter {
+    fn process(&self, spectrum: &mut [Complex<f32>]) {
+        let mut spectrum_out = [Complex::default(); BUFFER_SIZE];
         for (index, sample) in spectrum_out[0..BUFFER_SIZE / 2 + 1].iter_mut().enumerate() {
             let index = index as f32 / self.scaling_ratio;
             *sample = if index.ceil() >= spectrum.len() as f32 {
@@ -331,13 +322,7 @@ impl BlockProcessor for FrequencyDomainPitchShifter {
                 spectrum.interpolate_sample(index)
             };
         }
-
-        // Ignore result because we're working with f32's and they may have small values when
-        // zero's are expected.
-        let _ = self.inverse_fft.process(&mut spectrum_out, buffer);
-        for sample in buffer {
-            *sample /= BUFFER_SIZE as f32;
-        }
+        spectrum.copy_from_slice(&spectrum_out);
     }
 }
 

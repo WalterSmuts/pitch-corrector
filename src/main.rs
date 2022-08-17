@@ -80,7 +80,9 @@ fn low_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
 fn frequency_domain_pitch_shifter(user_interface: &mut UserInterface) -> (Stream, Stream) {
     hardware::setup_passthrough_processor(pipeline!(
         user_interface.create_display_processor(),
-        Segmenter::new(FrequencyDomainPitchShifter::new()),
+        Segmenter::new(TimeToFrequencyDomainBlockProcessorConverter::new(
+            FrequencyDomainPitchShifter::new()
+        )),
         user_interface.create_display_processor(),
     ))
 }
@@ -92,7 +94,9 @@ fn play(user_inferface: &mut UserInterface) -> (Stream, Stream) {
     let barrier_clone = barrier.clone();
     let once = std::sync::Once::new();
     let pitch_halver = pipeline!(
-        Segmenter::new(FrequencyDomainPitchShifter::new()),
+        Segmenter::new(TimeToFrequencyDomainBlockProcessorConverter::new(
+            FrequencyDomainPitchShifter::new()
+        )),
         user_inferface.create_display_processor(),
     );
 
