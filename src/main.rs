@@ -10,6 +10,7 @@ use signal_processing::LowPassFilter;
 use signal_processing::NaivePitchShifter;
 use signal_processing::Segmenter;
 use signal_processing::StreamProcessor;
+use signal_processing::TimeToFrequencyDomainBlockProcessorConverter;
 use std::f32::consts::TAU;
 use std::sync::Arc;
 use std::sync::Barrier;
@@ -59,7 +60,9 @@ fn naive_pitch_shifter(user_interface: &mut UserInterface) -> (Stream, Stream) {
 fn high_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
     hardware::setup_passthrough_processor(pipeline!(
         user_interface.create_display_processor(),
-        Segmenter::new(HighPassFilter::new(FILTER_CUTOFF_FREQUENCY)),
+        Segmenter::new(TimeToFrequencyDomainBlockProcessorConverter::new(
+            HighPassFilter::new(FILTER_CUTOFF_FREQUENCY)
+        )),
         user_interface.create_display_processor(),
     ))
 }
@@ -67,7 +70,9 @@ fn high_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
 fn low_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
     hardware::setup_passthrough_processor(pipeline!(
         user_interface.create_display_processor(),
-        Segmenter::new(LowPassFilter::new(FILTER_CUTOFF_FREQUENCY)),
+        Segmenter::new(TimeToFrequencyDomainBlockProcessorConverter::new(
+            LowPassFilter::new(FILTER_CUTOFF_FREQUENCY)
+        )),
         user_interface.create_display_processor(),
     ))
 }

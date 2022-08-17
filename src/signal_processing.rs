@@ -23,19 +23,19 @@ pub trait BlockProcessor {
     fn process(&self, buffer: &mut [f32]);
 }
 
+pub trait FrequencyDomainBlockProcessor {
+    fn process(&self, buffer: &mut [Complex<f32>]);
+}
+
 pub struct NaivePitchShifter {
     scaling_ratio: f32,
 }
 
 pub struct HighPassFilter {
-    forward_fft: Arc<dyn RealToComplex<f32>>,
-    inverse_fft: Arc<dyn ComplexToReal<f32>>,
     cutoff_bin: Option<usize>,
 }
 
 pub struct LowPassFilter {
-    forward_fft: Arc<dyn RealToComplex<f32>>,
-    inverse_fft: Arc<dyn ComplexToReal<f32>>,
     cutoff_bin: Option<usize>,
 }
 
@@ -76,6 +76,44 @@ where
     input_buffer: SegQueue<f32>,
     output_buffer: SegQueue<f32>,
     block_processor: T,
+}
+
+pub struct TimeToFrequencyDomainBlockProcessorConverter<T>
+where
+    T: FrequencyDomainBlockProcessor,
+{
+    forward_fft: Arc<dyn RealToComplex<f32>>,
+    inverse_fft: Arc<dyn ComplexToReal<f32>>,
+    frequency_domain_block_processor: T,
+}
+
+impl<T> TimeToFrequencyDomainBlockProcessorConverter<T>
+where
+    T: FrequencyDomainBlockProcessor,
+{
+    pub fn new(frequency_domain_block_processor: T) -> Self {
+        let mut real_planner = RealFftPlanner::new();
+        Self {
+            frequency_domain_block_processor,
+            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
+            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
+        }
+    }
+}
+
+impl<T> BlockProcessor for TimeToFrequencyDomainBlockProcessorConverter<T>
+where
+    T: FrequencyDomainBlockProcessor,
+{
+    fn process(&self, buffer: &mut [f32]) {
+        let mut spectrum = self.forward_fft.make_output_vec();
+        self.forward_fft.process(buffer, &mut spectrum).unwrap();
+        self.frequency_domain_block_processor.process(&mut spectrum);
+        self.inverse_fft.process(&mut spectrum, buffer).unwrap();
+        for sample in buffer {
+            *sample /= BUFFER_SIZE as f32;
+        }
+    }
 }
 
 impl<F, S> StreamProcessor for ComposedProcessor<F, S>
@@ -233,29 +271,18 @@ const fn get_cutoff_bin(frequency: usize) -> Option<usize> {
 impl HighPassFilter {
     pub fn new(cutoff_frequency: usize) -> Self {
         info!("Creating new HighPassFilter");
-        let mut real_planner = RealFftPlanner::new();
         let cutoff_bin = get_cutoff_bin(cutoff_frequency);
 
-        Self {
-            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
-            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
-            cutoff_bin,
-        }
+        Self { cutoff_bin }
     }
 }
 
-impl BlockProcessor for HighPassFilter {
-    fn process(&self, buffer: &mut [f32]) {
-        let mut spectrum = self.forward_fft.make_output_vec();
-        self.forward_fft.process(buffer, &mut spectrum).unwrap();
+impl FrequencyDomainBlockProcessor for HighPassFilter {
+    fn process(&self, spectrum: &mut [Complex<f32>]) {
         if let Some(cutoff_bin) = self.cutoff_bin {
             spectrum[0..cutoff_bin]
                 .iter_mut()
                 .for_each(|sample| *sample = Complex::new(0.0, 0.0));
-        }
-        self.inverse_fft.process(&mut spectrum, buffer).unwrap();
-        for sample in buffer {
-            *sample /= BUFFER_SIZE as f32;
         }
     }
 }
@@ -263,29 +290,18 @@ impl BlockProcessor for HighPassFilter {
 impl LowPassFilter {
     pub fn new(cutoff_frequency: usize) -> Self {
         info!("Creating new LowPassFilter");
-        let mut real_planner = RealFftPlanner::new();
         let cutoff_bin = get_cutoff_bin(cutoff_frequency);
 
-        Self {
-            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
-            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
-            cutoff_bin,
-        }
+        Self { cutoff_bin }
     }
 }
 
-impl BlockProcessor for LowPassFilter {
-    fn process(&self, buffer: &mut [f32]) {
-        let mut spectrum = self.forward_fft.make_output_vec();
-        self.forward_fft.process(buffer, &mut spectrum).unwrap();
+impl FrequencyDomainBlockProcessor for LowPassFilter {
+    fn process(&self, spectrum: &mut [Complex<f32>]) {
         if let Some(cutoff_bin) = self.cutoff_bin {
             spectrum[cutoff_bin..]
                 .iter_mut()
                 .for_each(|sample| *sample = Complex::new(0.0, 0.0));
-        }
-        self.inverse_fft.process(&mut spectrum, buffer).unwrap();
-        for sample in buffer {
-            *sample /= BUFFER_SIZE as f32;
         }
     }
 }
