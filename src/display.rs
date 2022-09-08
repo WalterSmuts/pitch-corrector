@@ -9,9 +9,8 @@ use crossterm::terminal;
 use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
+use easyfft::dyn_size::DynFft;
 use log::info;
-use realfft::RealFftPlanner;
-use realfft::RealToComplex;
 use std::io::Stdout;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -45,7 +44,6 @@ enum State {
 
 pub struct UserInterface {
     state: State,
-    forward_fft: Arc<dyn RealToComplex<f32>>,
     display_buffers: Vec<Arc<Mutex<[f32; BUFFER_SIZE]>>>,
     frame_rate: Duration,
 }
@@ -152,11 +150,7 @@ impl UserInterface {
                 );
 
             frame.render_widget(chart, layout[0]);
-
-            let mut spectrum = self.forward_fft.make_output_vec();
-            self.forward_fft
-                .process(&mut buffer.clone(), &mut spectrum)
-                .unwrap();
+            let spectrum = buffer.fft();
 
             let spectrum_data: Vec<_> = spectrum
                 .into_iter()
@@ -203,10 +197,8 @@ impl UserInterface {
 impl UserInterface {
     pub fn new() -> Self {
         info!("Creating new UserInterface");
-        let forward_fft = RealFftPlanner::default().plan_fft_forward(BUFFER_SIZE);
         Self {
             state: State::Display,
-            forward_fft,
             frame_rate: Duration::from_millis(10),
             display_buffers: Vec::new(),
         }

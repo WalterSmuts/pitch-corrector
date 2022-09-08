@@ -1,4 +1,4 @@
-use realfft::num_complex::Complex;
+use easyfft::num_complex::Complex;
 
 pub trait ComplexInterpolate {
     fn interpolate_sample(&self, index: f32) -> Complex<f32>;

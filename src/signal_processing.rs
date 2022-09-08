@@ -2,10 +2,11 @@ use crate::complex_interpolation::ComplexInterpolate;
 use crate::interpolation::Interpolate;
 use crate::interpolation::InterpolationMethod;
 use crossbeam_queue::SegQueue;
+use easyfft::dyn_size::realfft::DynRealDft;
+use easyfft::dyn_size::realfft::DynRealFft;
+use easyfft::dyn_size::realfft::DynRealIfft;
+use easyfft::num_complex::Complex;
 use log::info;
-use realfft::num_complex::Complex;
-use realfft::RealToComplex;
-use realfft::{ComplexToReal, RealFftPlanner};
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -24,7 +25,7 @@ pub trait BlockProcessor {
 }
 
 pub trait FrequencyDomainBlockProcessor {
-    fn process(&self, buffer: &mut [Complex<f32>]);
+    fn process(&self, buffer: &mut DynRealDft<f32>);
 }
 
 pub struct NaivePitchShifter {
@@ -32,11 +33,11 @@ pub struct NaivePitchShifter {
 }
 
 pub struct HighPassFilter {
-    cutoff_bin: Option<usize>,
+    frequency_response: DynRealDft<f32>,
 }
 
 pub struct LowPassFilter {
-    cutoff_bin: Option<usize>,
+    frequency_response: DynRealDft<f32>,
 }
 
 pub struct FrequencyDomainPitchShifter {
@@ -80,8 +81,6 @@ pub struct TimeToFrequencyDomainBlockProcessorConverter<T>
 where
     T: FrequencyDomainBlockProcessor,
 {
-    forward_fft: Arc<dyn RealToComplex<f32>>,
-    inverse_fft: Arc<dyn ComplexToReal<f32>>,
     frequency_domain_block_processor: T,
 }
 
@@ -90,11 +89,8 @@ where
     T: FrequencyDomainBlockProcessor,
 {
     pub fn new(frequency_domain_block_processor: T) -> Self {
-        let mut real_planner = RealFftPlanner::new();
         Self {
             frequency_domain_block_processor,
-            forward_fft: real_planner.plan_fft_forward(BUFFER_SIZE),
-            inverse_fft: real_planner.plan_fft_inverse(BUFFER_SIZE),
         }
     }
 }
@@ -104,10 +100,9 @@ where
     T: FrequencyDomainBlockProcessor,
 {
     fn process(&self, buffer: &mut [f32]) {
-        let mut spectrum = self.forward_fft.make_output_vec();
-        self.forward_fft.process(buffer, &mut spectrum).unwrap();
+        let mut spectrum = buffer.real_fft();
         self.frequency_domain_block_processor.process(&mut spectrum);
-        self.inverse_fft.process(&mut spectrum, buffer).unwrap();
+        buffer.copy_from_slice(&spectrum.real_ifft());
         for sample in buffer {
             *sample /= BUFFER_SIZE as f32;
         }
@@ -270,18 +265,28 @@ impl HighPassFilter {
     pub fn new(cutoff_frequency: usize) -> Self {
         info!("Creating new HighPassFilter");
         let cutoff_bin = get_cutoff_bin(cutoff_frequency);
+        let zeroth_bin = if cutoff_bin.is_some() { 0.0 } else { 1.0 };
 
-        Self { cutoff_bin }
+        let mut frequncy_bins = vec![Complex::default(); BUFFER_SIZE / 2];
+        let frequncy_bins = if let Some(cutoff_bin) = cutoff_bin {
+            for bin in frequncy_bins[cutoff_bin..].iter_mut() {
+                *bin = Complex::new(1.0, 0.0);
+            }
+            frequncy_bins.into_boxed_slice()
+        } else {
+            frequncy_bins.into_boxed_slice()
+        };
+
+        let frequency_response = DynRealDft::new(zeroth_bin, &frequncy_bins, BUFFER_SIZE);
+
+        Self { frequency_response }
     }
 }
 
 impl FrequencyDomainBlockProcessor for HighPassFilter {
-    fn process(&self, spectrum: &mut [Complex<f32>]) {
-        if let Some(cutoff_bin) = self.cutoff_bin {
-            spectrum[0..cutoff_bin]
-                .iter_mut()
-                .for_each(|sample| *sample = Complex::new(0.0, 0.0));
-        }
+    fn process(&self, spectrum: &mut DynRealDft<f32>) {
+        let processed_dyn_real_dft = spectrum as &DynRealDft<f32> * &self.frequency_response;
+        spectrum.clone_from(&processed_dyn_real_dft);
     }
 }
 
@@ -289,18 +294,28 @@ impl LowPassFilter {
     pub fn new(cutoff_frequency: usize) -> Self {
         info!("Creating new LowPassFilter");
         let cutoff_bin = get_cutoff_bin(cutoff_frequency);
+        let zeroth_bin = if cutoff_bin.is_some() { 0.0 } else { 1.0 };
 
-        Self { cutoff_bin }
+        let mut frequncy_bins = vec![Complex::default(); BUFFER_SIZE / 2];
+        let frequncy_bins = if let Some(cutoff_bin) = cutoff_bin {
+            for bin in frequncy_bins[..cutoff_bin].iter_mut() {
+                *bin = Complex::new(1.0, 0.0);
+            }
+            frequncy_bins.into_boxed_slice()
+        } else {
+            frequncy_bins.into_boxed_slice()
+        };
+
+        let frequency_response = DynRealDft::new(zeroth_bin, &frequncy_bins, BUFFER_SIZE);
+
+        Self { frequency_response }
     }
 }
 
 impl FrequencyDomainBlockProcessor for LowPassFilter {
-    fn process(&self, spectrum: &mut [Complex<f32>]) {
-        if let Some(cutoff_bin) = self.cutoff_bin {
-            spectrum[cutoff_bin..]
-                .iter_mut()
-                .for_each(|sample| *sample = Complex::new(0.0, 0.0));
-        }
+    fn process(&self, spectrum: &mut DynRealDft<f32>) {
+        let processed_dyn_real_dft = spectrum as &DynRealDft<f32> * &self.frequency_response;
+        spectrum.clone_from(&processed_dyn_real_dft);
     }
 }
 
@@ -312,17 +327,24 @@ impl FrequencyDomainPitchShifter {
 }
 
 impl FrequencyDomainBlockProcessor for FrequencyDomainPitchShifter {
-    fn process(&self, spectrum: &mut [Complex<f32>]) {
-        let mut spectrum_out = [Complex::default(); BUFFER_SIZE];
-        for (index, sample) in spectrum_out[0..BUFFER_SIZE / 2 + 1].iter_mut().enumerate() {
-            let index = index as f32 / self.scaling_ratio;
-            *sample = if index.ceil() >= spectrum.len() as f32 {
-                Complex::default()
-            } else {
-                spectrum.interpolate_sample(index)
-            };
-        }
-        spectrum.copy_from_slice(&spectrum_out);
+    fn process(&self, spectrum: &mut DynRealDft<f32>) {
+        let interpolation_clone = spectrum.clone();
+
+        spectrum
+            .get_frequency_bins_mut()
+            .iter_mut()
+            .enumerate()
+            .for_each(|(index, bin)| {
+                let index = index as f32 / self.scaling_ratio;
+                *bin =
+                    if index.ceil() >= (interpolation_clone.get_frequency_bins().len() - 1) as f32 {
+                        Complex::default()
+                    } else {
+                        interpolation_clone
+                            .get_frequency_bins()
+                            .interpolate_sample(index)
+                    }
+            });
     }
 }
 
