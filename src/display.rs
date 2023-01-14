@@ -153,7 +153,7 @@ impl UserInterface {
             let spectrum = buffer.fft();
 
             let spectrum_data: Vec<_> = spectrum
-                .into_iter()
+                .iter()
                 .enumerate()
                 .map(|(index, bin)| (index as f64, bin.norm() as f64))
                 .collect();
