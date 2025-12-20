@@ -1,8 +1,8 @@
 use crate::signal_processing::StreamProcessor;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::Sample;
 use cpal::{BufferSize, Stream};
 use cpal::{InputCallbackInfo, OutputCallbackInfo};
+use cpal::{Sample, SizedSample};
 use cpal::{SampleRate, StreamConfig};
 use log::info;
 use std::sync::Arc;
@@ -27,7 +27,7 @@ where
 
     let output_stream = get_output_stream(move |data: &mut [f32], _| {
         for sample in data.iter_mut() {
-            *sample = Sample::from(&output_passthrough_processor.pop_sample().unwrap_or(0.0));
+            *sample = output_passthrough_processor.pop_sample().unwrap_or(0.0);
         }
     });
     output_stream.play().unwrap();
@@ -36,7 +36,7 @@ where
 
 fn get_input_stream<T, D>(handler: D) -> cpal::Stream
 where
-    T: Sample,
+    T: Sample + SizedSample,
     D: FnMut(&[T], &InputCallbackInfo) + Send + 'static,
 {
     let host = cpal::default_host();
@@ -53,13 +53,14 @@ where
             },
             handler,
             |_| panic!("Error from ALSA on input"),
+            None,
         )
         .unwrap()
 }
 
 pub fn get_output_stream<T, D>(handler: D) -> cpal::Stream
 where
-    T: Sample,
+    T: Sample + SizedSample,
     D: FnMut(&mut [T], &OutputCallbackInfo) + Send + 'static,
 {
     let host = cpal::default_host();
@@ -76,6 +77,7 @@ where
             },
             handler,
             |_| panic!("Error from ALSA on output"),
+            None,
         )
         .unwrap()
 }

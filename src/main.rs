@@ -1,6 +1,5 @@
 use clap::Parser;
 use cpal::traits::StreamTrait;
-use cpal::Sample;
 use cpal::Stream;
 use display::UserInterface;
 use signal_processing::pipeline;
@@ -108,7 +107,7 @@ fn play(user_inferface: &mut UserInterface) -> (Stream, Stream) {
     let stream = hardware::get_output_stream(move |data: &mut [f32], _| {
         for datum in data.iter_mut() {
             if let Some(sample) = pitch_halver.pop_sample() {
-                *datum = Sample::from(&sample);
+                *datum = sample;
             } else {
                 once.call_once(|| {
                     barrier_clone.wait();
