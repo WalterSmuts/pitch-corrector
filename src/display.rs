@@ -11,26 +11,25 @@ use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
 use easyfft::dyn_size::DynFft;
 use log::info;
-use std::io::Stdout;
+use ratatui::backend::CrosstermBackend;
+use ratatui::layout;
+use ratatui::layout::Constraint;
+use ratatui::layout::Direction;
+use ratatui::layout::Layout;
+use ratatui::symbols;
+use ratatui::text::Span;
+use ratatui::widgets::Axis;
+use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
+use ratatui::widgets::Chart;
+use ratatui::widgets::Dataset;
+use ratatui::widgets::GraphType;
+use ratatui::Frame;
+use ratatui::Terminal;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
-use tui::backend::CrosstermBackend;
-use tui::layout;
-use tui::layout::Constraint;
-use tui::layout::Direction;
-use tui::layout::Layout;
-use tui::symbols;
-use tui::text::Span;
-use tui::widgets::Axis;
-use tui::widgets::Block;
-use tui::widgets::Borders;
-use tui::widgets::Chart;
-use tui::widgets::Dataset;
-use tui::widgets::GraphType;
-use tui::Frame;
-use tui::Terminal;
 use tui_logger::TuiLoggerSmartWidget;
 
 const BUFFER_SIZE: usize = 1024;
@@ -97,11 +96,11 @@ impl UserInterface {
         }
     }
 
-    fn draw_logger_frame(&self, frame: &mut Frame<CrosstermBackend<Stdout>>) {
-        frame.render_widget(TuiLoggerSmartWidget::default(), frame.size());
+    fn draw_logger_frame(&self, frame: &mut Frame) {
+        frame.render_widget(TuiLoggerSmartWidget::default(), frame.area());
     }
 
-    fn draw_frame(&self, frame: &mut Frame<CrosstermBackend<Stdout>>) {
+    fn draw_frame(&self, frame: &mut Frame) {
         let mut constraints = Vec::new();
         for _ in 0..self.display_buffers.len() {
             constraints.push(Constraint::Ratio(1, self.display_buffers.len() as u32));
@@ -109,7 +108,7 @@ impl UserInterface {
         let outer_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
-            .split(frame.size());
+            .split(frame.area());
 
         for (index, buffer) in self.display_buffers.iter().enumerate() {
             let layout = Layout::default()
