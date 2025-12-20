@@ -2,6 +2,7 @@ use easyfft::num_complex::Complex;
 
 pub trait ComplexInterpolate {
     fn interpolate_sample(&self, index: f32) -> Complex<f32>;
+    #[allow(dead_code)]
     fn interpolate_samples(&self, buffer: &[f32]) -> Vec<Complex<f32>>;
 }
 
