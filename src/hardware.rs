@@ -10,9 +10,9 @@ use std::sync::Arc;
 const SAMPLE_RATE: u32 = 44100;
 const BUFFER_SIZE: usize = 256;
 
-pub fn setup_passthrough_processor<T: 'static>(processor: T) -> (Stream, Stream)
+pub fn setup_passthrough_processor<T>(processor: T) -> (Stream, Stream)
 where
-    T: StreamProcessor + Send + Sync,
+    T: StreamProcessor + Send + Sync + 'static,
 {
     info!("Setting up hardware");
     let input_passthrough_processor = Arc::new(processor);
