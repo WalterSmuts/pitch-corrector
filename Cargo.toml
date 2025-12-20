@@ -7,21 +7,21 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "3.1", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
 cpal = "0.16"
-ansi-escapes = "0.1"
+ansi-escapes = "0.2"
 crossbeam-queue = "0.3"
-termion = "1.5"
-ctrlc = "3.2"
+termion = "4.0"
+ctrlc = "3.4"
 apodize = "1.0.0"
 ratatui = "0.29"
-crossterm = "0.24.0"
-tui-logger = "0.13"
+crossterm = "0.29"
+tui-logger = "0.17"
 log-panics = "2.1.0"
-log = "0.4.17"
+log = "0.4"
 easyfft = "0.4.2"
 
 
 [dev-dependencies]
-rand = "0.8.5"
+rand = "0.9"
 approx = "0.5.1"
