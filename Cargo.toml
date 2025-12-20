@@ -19,8 +19,8 @@ crossterm = "0.24.0"
 tui-logger = "0.8.0"
 log-panics = "2.1.0"
 log = "0.4.17"
-easyfft = "0.3"
-array-append = "0.1.0"
+easyfft = "0.4.2"
+
 
 [dev-dependencies]
 rand = "0.8.5"
