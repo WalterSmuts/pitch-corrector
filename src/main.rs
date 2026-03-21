@@ -1,3 +1,6 @@
+#[cfg(test)]
+#[global_allocator]
+static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 use clap::Parser;
 use cpal::traits::StreamTrait;
 use cpal::Stream;

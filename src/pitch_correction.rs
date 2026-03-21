@@ -29,7 +29,7 @@ fn nearest_scale_note(freq: f32) -> f32 {
 }
 
 fn pitch_correction_ratio(frame: &[f32]) -> f32 {
-    let detector = YinPitchDetector::new();
+    let mut detector = YinPitchDetector::new();
     match detector.detect(frame) {
         Some(freq) => {
             let target = nearest_scale_note(freq);

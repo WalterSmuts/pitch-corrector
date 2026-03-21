@@ -1,7 +1,7 @@
 use crate::complex_interpolation::ComplexInterpolate;
 use crate::interpolation::Interpolate;
 use crate::interpolation::InterpolationMethod;
-use crossbeam_queue::SegQueue;
+use crossbeam_queue::ArrayQueue;
 use easyfft::dyn_size::realfft::DynRealDft;
 use easyfft::dyn_size::realfft::DynRealFft;
 use easyfft::dyn_size::realfft::DynRealIfft;
@@ -47,8 +47,8 @@ pub struct FrequencyDomainPitchShifter {
 pub struct PhaseVocoderPitchShifter<F: Fn(&[f32]) -> f32 + Send + Sync> {
     ratio_fn: F,
     hop_size: usize,
-    input_buffer: SegQueue<f32>,
-    output_buffer: SegQueue<f32>,
+    input_buffer: ArrayQueue<f32>,
+    output_buffer: ArrayQueue<f32>,
     state: Mutex<PhaseVocoderState>,
 }
 
@@ -58,10 +58,20 @@ struct PhaseVocoderState {
     prev_input_phase: Vec<f32>,
     prev_output_phase: Vec<f32>,
     output_accum: Vec<f32>,
+    magnitudes: Vec<f32>,
+    true_freq: Vec<f32>,
+    new_magnitudes: Vec<f32>,
+    new_freq: Vec<f32>,
+    new_bins: Vec<Complex<f32>>,
+    windowed: Vec<f32>,
+    window: Vec<f32>,
+    analysis_spectrum: Option<DynRealDft<f32>>,
+    synthesis_spectrum: Option<DynRealDft<f32>>,
+    ifft_output: Vec<f32>,
 }
 
 pub struct DisplayProcessor<const I: usize = BUFFER_SIZE> {
-    buffer: SegQueue<f32>,
+    buffer: ArrayQueue<f32>,
     display_buffer: Arc<Mutex<[f32; I]>>,
     buffer_index: AtomicUsize,
 }
@@ -72,7 +82,14 @@ where
 {
     previous_clean_half_buffer: Mutex<Box<[f32]>>,
     previous_processed_half_buffer: Mutex<Box<[f32]>>,
+    scratch: Mutex<OlaBuffers>,
+    window: Box<[f32]>,
     block_processor: T,
+}
+
+struct OlaBuffers {
+    first: Box<[f32; BUFFER_SIZE]>,
+    second: Box<[f32; BUFFER_SIZE]>,
 }
 
 pub struct ComposedProcessor<F, S>
@@ -88,8 +105,8 @@ pub struct Segmenter<T>
 where
     T: BlockProcessor,
 {
-    input_buffer: SegQueue<f32>,
-    output_buffer: SegQueue<f32>,
+    input_buffer: ArrayQueue<f32>,
+    output_buffer: ArrayQueue<f32>,
     block_processor: T,
 }
 
@@ -98,6 +115,8 @@ where
     T: FrequencyDomainBlockProcessor,
 {
     frequency_domain_block_processor: T,
+    spectrum: Mutex<Option<DynRealDft<f32>>>,
+    ifft_buf: Mutex<Vec<f32>>,
 }
 
 impl<T> TimeToFrequencyDomainBlockProcessorConverter<T>
@@ -107,6 +126,12 @@ where
     pub fn new(frequency_domain_block_processor: T) -> Self {
         Self {
             frequency_domain_block_processor,
+            spectrum: Mutex::new(Some(DynRealDft::new(
+                0.0,
+                &vec![Complex::default(); BUFFER_SIZE / 2],
+                BUFFER_SIZE,
+            ))),
+            ifft_buf: Mutex::new(vec![0.0; BUFFER_SIZE]),
         }
     }
 }
@@ -116,9 +141,14 @@ where
     T: FrequencyDomainBlockProcessor,
 {
     fn process(&self, buffer: &mut [f32]) {
-        let mut spectrum = buffer.real_fft();
-        self.frequency_domain_block_processor.process(&mut spectrum);
-        buffer.copy_from_slice(&spectrum.real_ifft());
+        let mut spectrum_opt = self.spectrum.lock().unwrap();
+        let spectrum = spectrum_opt.as_mut().unwrap();
+        buffer.real_fft_using(spectrum);
+        self.frequency_domain_block_processor.process(spectrum);
+
+        let mut ifft_buf = self.ifft_buf.lock().unwrap();
+        spectrum.real_ifft_using(&mut ifft_buf);
+        buffer.copy_from_slice(&ifft_buf);
         for sample in buffer {
             *sample /= BUFFER_SIZE as f32;
         }
@@ -167,8 +197,8 @@ where
     pub fn new(block_processor: T) -> Self {
         info!("Creating new Segmenter");
         Self {
-            input_buffer: SegQueue::new(),
-            output_buffer: SegQueue::new(),
+            input_buffer: ArrayQueue::new(BUFFER_SIZE * 4),
+            output_buffer: ArrayQueue::new(BUFFER_SIZE * 4),
             block_processor,
         }
     }
@@ -183,7 +213,9 @@ where
     }
 
     fn push_sample(&self, sample: f32) {
-        self.input_buffer.push(sample);
+        if self.input_buffer.push(sample).is_err() {
+            log::warn!("Input buffer overflow");
+        }
         if self.input_buffer.len() > BUFFER_SIZE {
             let mut buffer = [0.0; BUFFER_SIZE];
             for sample in &mut buffer {
@@ -191,7 +223,9 @@ where
             }
             self.block_processor.process(&mut buffer);
             for sample in buffer {
-                self.output_buffer.push(sample);
+                if self.output_buffer.push(sample).is_err() {
+                    log::warn!("Output buffer overflow");
+                }
             }
         }
     }
@@ -201,7 +235,7 @@ impl<const I: usize> DisplayProcessor<I> {
     pub fn new() -> Self {
         info!("Creating new DisplayProcessor of size {}", I);
         Self {
-            buffer: SegQueue::new(),
+            buffer: ArrayQueue::new(BUFFER_SIZE * 4),
             display_buffer: Arc::new(Mutex::new([0.0; I])),
             buffer_index: AtomicUsize::new(0),
         }
@@ -214,7 +248,9 @@ impl<const I: usize> DisplayProcessor<I> {
 
 impl<const I: usize> StreamProcessor for DisplayProcessor<I> {
     fn push_sample(&self, sample: f32) {
-        self.buffer.push(sample);
+        if self.buffer.push(sample).is_err() {
+            log::warn!("Display buffer overflow");
+        }
     }
 
     fn pop_sample(&self) -> Option<f32> {
@@ -301,8 +337,11 @@ impl HighPassFilter {
 
 impl FrequencyDomainBlockProcessor for HighPassFilter {
     fn process(&self, spectrum: &mut DynRealDft<f32>) {
-        let processed_dyn_real_dft = spectrum as &DynRealDft<f32> * &self.frequency_response;
-        spectrum.clone_from(&processed_dyn_real_dft);
+        let resp_bins = self.frequency_response.get_frequency_bins();
+        for (s, r) in spectrum.get_frequency_bins_mut().iter_mut().zip(resp_bins) {
+            *s *= r;
+        }
+        *spectrum.get_offset_mut() *= self.frequency_response.get_offset();
     }
 }
 
@@ -330,8 +369,11 @@ impl LowPassFilter {
 
 impl FrequencyDomainBlockProcessor for LowPassFilter {
     fn process(&self, spectrum: &mut DynRealDft<f32>) {
-        let processed_dyn_real_dft = spectrum as &DynRealDft<f32> * &self.frequency_response;
-        spectrum.clone_from(&processed_dyn_real_dft);
+        let resp_bins = self.frequency_response.get_frequency_bins();
+        for (s, r) in spectrum.get_frequency_bins_mut().iter_mut().zip(resp_bins) {
+            *s *= r;
+        }
+        *spectrum.get_offset_mut() *= self.frequency_response.get_offset();
     }
 }
 
@@ -376,108 +418,148 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
     pub fn with_ratio_fn(ratio_fn: F) -> Self {
         info!("Creating new PhaseVocoderPitchShifter with dynamic ratio");
         let hop_size = BUFFER_SIZE / 4;
+        let window: Vec<f32> = apodize::hanning_iter(BUFFER_SIZE)
+            .map(|w| w as f32)
+            .collect();
         Self {
             ratio_fn,
             hop_size,
-            input_buffer: SegQueue::new(),
-            output_buffer: SegQueue::new(),
+            input_buffer: ArrayQueue::new(BUFFER_SIZE * 4),
+            output_buffer: ArrayQueue::new(BUFFER_SIZE * 4),
             state: Mutex::new(PhaseVocoderState {
                 input_frame: vec![0.0; BUFFER_SIZE],
                 input_pos: 0,
                 prev_input_phase: vec![],
                 prev_output_phase: vec![],
                 output_accum: vec![0.0; BUFFER_SIZE],
+                magnitudes: vec![],
+                true_freq: vec![],
+                new_magnitudes: vec![],
+                new_freq: vec![],
+                new_bins: vec![],
+                windowed: vec![0.0; BUFFER_SIZE],
+                window,
+                analysis_spectrum: Some(DynRealDft::new(
+                    0.0,
+                    &vec![Complex::default(); BUFFER_SIZE / 2],
+                    BUFFER_SIZE,
+                )),
+                synthesis_spectrum: Some(DynRealDft::new(
+                    0.0,
+                    &vec![Complex::default(); BUFFER_SIZE / 2],
+                    BUFFER_SIZE,
+                )),
+                ifft_output: vec![0.0; BUFFER_SIZE],
             }),
         }
     }
 
-    fn process_frame(
-        state: &mut PhaseVocoderState,
-        scaling_ratio: f32,
-        hop_size: usize,
-    ) -> Vec<f32> {
+    fn process_frame(state: &mut PhaseVocoderState, scaling_ratio: f32, hop_size: usize) {
         let expected_phase_advance = |bin: usize| -> f32 {
             std::f32::consts::TAU * bin as f32 * hop_size as f32 / BUFFER_SIZE as f32
         };
 
-        // Apply analysis window
-        let window: Vec<f64> = apodize::hanning_iter(BUFFER_SIZE).collect();
-        let windowed: Vec<f32> = state
+        // Apply analysis window into pre-allocated buffer
+        for (i, (s, w)) in state
             .input_frame
             .iter()
-            .zip(window.iter())
-            .map(|(s, w)| s * *w as f32)
-            .collect();
+            .zip(state.window.iter())
+            .enumerate()
+        {
+            state.windowed[i] = s * w;
+        }
 
-        // FFT
-        let spectrum = windowed.real_fft();
+        // FFT into pre-allocated spectrum
+        state
+            .windowed
+            .real_fft_using(state.analysis_spectrum.as_mut().unwrap());
+        let spectrum = state.analysis_spectrum.as_ref().unwrap();
         let bins = spectrum.get_frequency_bins();
         let num_bins = bins.len();
 
-        // Resize state vectors on first call
+        // Resize scratch vectors on first call
         if state.prev_input_phase.len() != num_bins {
             state.prev_input_phase.resize(num_bins, 0.0);
             state.prev_output_phase.resize(num_bins, 0.0);
+            state.magnitudes.resize(num_bins, 0.0);
+            state.true_freq.resize(num_bins, 0.0);
+            state.new_magnitudes.resize(num_bins, 0.0);
+            state.new_freq.resize(num_bins, 0.0);
+            state.new_bins.resize(BUFFER_SIZE / 2, Complex::default());
         }
 
         // Analysis: compute magnitude and true frequency per bin
-        let mut magnitudes = vec![0.0f32; num_bins];
-        let mut true_freq = vec![0.0f32; num_bins];
-
         for k in 0..num_bins {
-            magnitudes[k] = bins[k].norm();
+            state.magnitudes[k] = bins[k].norm();
             let phase = bins[k].arg();
             let mut phase_diff = phase - state.prev_input_phase[k];
             state.prev_input_phase[k] = phase;
 
             phase_diff -= expected_phase_advance(k + 1);
-
             phase_diff = phase_diff.rem_euclid(std::f32::consts::TAU);
             if phase_diff > std::f32::consts::PI {
                 phase_diff -= std::f32::consts::TAU;
             }
 
-            true_freq[k] = expected_phase_advance(k + 1) + phase_diff;
+            state.true_freq[k] = expected_phase_advance(k + 1) + phase_diff;
         }
 
         // Synthesis: shift bins and resynthesize phases
-        let mut new_magnitudes = vec![0.0f32; num_bins];
-        let mut new_freq = vec![0.0f32; num_bins];
+        for v in state.new_magnitudes.iter_mut() {
+            *v = 0.0;
+        }
+        for v in state.new_freq.iter_mut() {
+            *v = 0.0;
+        }
+        for b in state.new_bins.iter_mut() {
+            *b = Complex::default();
+        }
 
         for k in 0..num_bins {
             let target = (k as f32 / scaling_ratio) as usize;
             if target < num_bins {
-                new_magnitudes[k] += magnitudes[target];
-                new_freq[k] = true_freq[target] * scaling_ratio;
+                state.new_magnitudes[k] += state.magnitudes[target];
+                state.new_freq[k] = state.true_freq[target] * scaling_ratio;
             }
         }
 
         // Accumulate output phase
-        let mut new_bins = vec![Complex::default(); BUFFER_SIZE / 2];
         for k in 0..num_bins {
-            state.prev_output_phase[k] += new_freq[k];
-            new_bins[k] = Complex::from_polar(new_magnitudes[k], state.prev_output_phase[k]);
+            state.prev_output_phase[k] += state.new_freq[k];
+            state.new_bins[k] =
+                Complex::from_polar(state.new_magnitudes[k], state.prev_output_phase[k]);
         }
 
-        // IFFT
-        let new_spectrum = DynRealDft::new(0.0, &new_bins.into_boxed_slice(), BUFFER_SIZE);
-        let mut output = new_spectrum.real_ifft().to_vec();
-        for s in output.iter_mut() {
+        // IFFT into pre-allocated buffer
+        {
+            let synth = state.synthesis_spectrum.as_mut().unwrap();
+            *synth.get_offset_mut() = 0.0;
+            let n = synth.get_frequency_bins().len();
+            synth
+                .get_frequency_bins_mut()
+                .copy_from_slice(&state.new_bins[..n]);
+        }
+        state
+            .synthesis_spectrum
+            .as_ref()
+            .unwrap()
+            .real_ifft_using(&mut state.ifft_output);
+        for s in state.ifft_output.iter_mut() {
             *s /= BUFFER_SIZE as f32;
         }
 
         // Apply synthesis window
-        for (s, w) in output.iter_mut().zip(window.iter()) {
-            *s *= *w as f32;
+        for (s, w) in state.ifft_output.iter_mut().zip(state.window.iter()) {
+            *s *= w;
         }
-
-        output
     }
 }
 
 impl<F: Fn(&[f32]) -> f32 + Send + Sync> StreamProcessor for PhaseVocoderPitchShifter<F> {
     fn push_sample(&self, sample: f32) {
-        self.input_buffer.push(sample);
+        if self.input_buffer.push(sample).is_err() {
+            log::warn!("Input buffer overflow");
+        }
 
         if self.input_buffer.len() >= self.hop_size {
             let mut state = self.state.lock().unwrap();
@@ -495,16 +577,18 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> StreamProcessor for PhaseVocoderPitchSh
             state.input_pos = BUFFER_SIZE;
 
             let scaling_ratio = (self.ratio_fn)(&state.input_frame);
-            let output = Self::process_frame(&mut state, scaling_ratio, self.hop_size);
+            Self::process_frame(&mut state, scaling_ratio, self.hop_size);
 
             // Overlap-add into accumulator
-            for (i, s) in output.iter().enumerate() {
-                state.output_accum[i] += s;
+            for i in 0..state.ifft_output.len() {
+                state.output_accum[i] += state.ifft_output[i];
             }
 
             // Output hop_size samples
             for i in 0..self.hop_size {
-                self.output_buffer.push(state.output_accum[i]);
+                if self.output_buffer.push(state.output_accum[i]).is_err() {
+                    log::warn!("Output buffer overflow");
+                }
             }
 
             // Shift accumulator
@@ -524,61 +608,48 @@ impl<T> BlockProcessor for OverlapAndAddProcessor<T>
 where
     T: BlockProcessor,
 {
-    // TODO: Remove unnecessary allocations
     fn process(&self, buffer: &mut [f32]) {
-        // Create a temp clone of input buffer
-        let temp_input_buffer = buffer.to_vec();
-
-        // Get a lock and reference to previous buffer
+        let mut scratch = self.scratch.lock().unwrap();
         let previous_clean_half_buffer = &mut self.previous_clean_half_buffer.lock().unwrap();
 
-        // Get first block to process (second half of previous and first half on current)
-        let mut first = previous_clean_half_buffer.to_vec();
-        first.append(&mut buffer[..BUFFER_SIZE / 2].to_vec());
+        // Build first block: previous second half + current first half
+        scratch.first[..BUFFER_SIZE / 2].copy_from_slice(previous_clean_half_buffer);
+        scratch.first[BUFFER_SIZE / 2..].copy_from_slice(&buffer[..BUFFER_SIZE / 2]);
 
-        // Get second block to process (the current input buffer)
-        let mut second = buffer.to_vec();
+        // Build second block: current input buffer
+        scratch.second.copy_from_slice(buffer);
 
-        // Process each block separately (no pre-windowing)
-        self.block_processor.process(&mut first);
-        self.block_processor.process(&mut second);
+        // Save second half of clean input for next call
+        previous_clean_half_buffer.copy_from_slice(&buffer[BUFFER_SIZE / 2..]);
+
+        // Process each block
+        self.block_processor.process(&mut *scratch.first);
+        self.block_processor.process(&mut *scratch.second);
 
         // Apply hanning window AFTER processing for smooth reconstruction
-        let window: Vec<f64> = apodize::hanning_iter(BUFFER_SIZE).collect();
-        for (sample, window_sample) in first.iter_mut().zip(window.iter()) {
-            *sample *= *window_sample as f32;
+        for (sample, w) in scratch.first.iter_mut().zip(self.window.iter()) {
+            *sample *= w;
         }
-        for (sample, window_sample) in second.iter_mut().zip(window.iter()) {
-            *sample *= *window_sample as f32;
+        for (sample, w) in scratch.second.iter_mut().zip(self.window.iter()) {
+            *sample *= w;
         }
 
         // Overlap and add second half of first block and first half of second block
-        for (first_sample, second_sample) in first[BUFFER_SIZE / 2..]
-            .iter_mut()
-            .zip(&second[..BUFFER_SIZE / 2])
-        {
-            *first_sample += second_sample;
+        for i in 0..BUFFER_SIZE / 2 {
+            scratch.first[BUFFER_SIZE / 2 + i] += scratch.second[i];
         }
 
-        // Lock and get reference to previous half buffer
+        // Overlap and add first half of first block with previous processed tail
         let previous_processed_half_buffer =
             &mut self.previous_processed_half_buffer.lock().unwrap();
-
-        // Overlap and add first half of first block previous_processed_half_buffer
-        for (first_sample, second_sample) in first[..BUFFER_SIZE / 2]
-            .iter_mut()
-            .zip(previous_processed_half_buffer.to_vec())
-        {
-            *first_sample += second_sample;
+        for i in 0..BUFFER_SIZE / 2 {
+            scratch.first[i] += previous_processed_half_buffer[i];
         }
 
-        // Save half current buffer for processing next time
-        previous_clean_half_buffer.copy_from_slice(&temp_input_buffer[BUFFER_SIZE / 2..]);
+        // Save second half of second block for next call
+        previous_processed_half_buffer.copy_from_slice(&scratch.second[BUFFER_SIZE / 2..]);
 
-        // Save second part of input buffer windowed and processed
-        previous_processed_half_buffer.copy_from_slice(&second[BUFFER_SIZE / 2..]);
-
-        buffer.copy_from_slice(&first);
+        buffer.copy_from_slice(&*scratch.first);
     }
 }
 
@@ -589,9 +660,17 @@ where
     #[allow(dead_code)]
     pub fn new(block_processor: T) -> Self {
         info!("Creating new OverlapAndAddProcessor");
+        let window: Box<[f32]> = apodize::hanning_iter(BUFFER_SIZE)
+            .map(|w| w as f32)
+            .collect();
         Self {
             previous_clean_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
             previous_processed_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
+            scratch: Mutex::new(OlaBuffers {
+                first: Box::new([0.0; BUFFER_SIZE]),
+                second: Box::new([0.0; BUFFER_SIZE]),
+            }),
+            window,
             block_processor,
         }
     }
@@ -601,24 +680,27 @@ const DEFAULT_YIN_THRESHOLD: f32 = 0.15;
 
 pub struct YinPitchDetector {
     threshold: f32,
+    cmnd: Vec<f32>,
 }
 
 impl YinPitchDetector {
     pub fn new() -> Self {
         Self {
             threshold: DEFAULT_YIN_THRESHOLD,
+            cmnd: vec![0.0; BUFFER_SIZE / 2],
         }
     }
 
-    pub fn detect(&self, buffer: &[f32]) -> Option<f32> {
+    pub fn detect(&mut self, buffer: &[f32]) -> Option<f32> {
         let half_len = buffer.len() / 2;
         if half_len < 2 {
             return None;
         }
 
-        let cmnd = self.cumulative_mean_normalized_difference(buffer, half_len);
-        let tau = self.absolute_threshold(&cmnd)?;
-        let refined_tau = parabolic_interpolation(&cmnd, tau);
+        self.cmnd.resize(half_len, 0.0);
+        self.cumulative_mean_normalized_difference(buffer, half_len);
+        let tau = self.absolute_threshold()?;
+        let refined_tau = parabolic_interpolation(&self.cmnd, tau);
         let frequency = SAMPLE_RATE as f32 / refined_tau;
 
         if frequency < 50.0 || frequency > 4000.0 {
@@ -628,9 +710,8 @@ impl YinPitchDetector {
         Some(frequency)
     }
 
-    fn cumulative_mean_normalized_difference(&self, buffer: &[f32], half_len: usize) -> Vec<f32> {
-        let mut cmnd = vec![0.0f32; half_len];
-        cmnd[0] = 1.0;
+    fn cumulative_mean_normalized_difference(&mut self, buffer: &[f32], half_len: usize) {
+        self.cmnd[0] = 1.0;
 
         let mut running_sum = 0.0;
         for tau in 1..half_len {
@@ -640,18 +721,16 @@ impl YinPitchDetector {
                 diff += delta * delta;
             }
             running_sum += diff;
-            cmnd[tau] = diff * tau as f32 / running_sum;
+            self.cmnd[tau] = diff * tau as f32 / running_sum;
         }
-
-        cmnd
     }
 
-    fn absolute_threshold(&self, cmnd: &[f32]) -> Option<usize> {
+    fn absolute_threshold(&self) -> Option<usize> {
         let min_tau = 2;
-        for tau in min_tau..cmnd.len() {
-            if cmnd[tau] < self.threshold {
+        for tau in min_tau..self.cmnd.len() {
+            if self.cmnd[tau] < self.threshold {
                 let mut best = tau;
-                while best + 1 < cmnd.len() && cmnd[best + 1] < cmnd[best] {
+                while best + 1 < self.cmnd.len() && self.cmnd[best + 1] < self.cmnd[best] {
                     best += 1;
                 }
                 return Some(best);
@@ -700,7 +779,7 @@ mod tests {
     fn overlap_and_add_processor_is_transparent() {
         let passthrough_stream_processor =
             Segmenter::new(OverlapAndAddProcessor::new(PassthroughBlockProcessor));
-        let queue = SegQueue::new();
+        let queue = ArrayQueue::new(BUFFER_SIZE * 4);
         for _ in 0..TEST_SAMPLE_SIZE {
             let x = rand::random::<f32>();
             passthrough_stream_processor.push_sample(x);
@@ -733,7 +812,7 @@ mod tests {
     fn overlap_and_add_processor_and_amplitude_halver_works_as_expected() {
         let passthrough_stream_processor =
             Segmenter::new(OverlapAndAddProcessor::new(AmplitudeHalvingBlockProcessor));
-        let queue = SegQueue::new();
+        let queue = ArrayQueue::new(BUFFER_SIZE * 4);
         for _ in 0..TEST_SAMPLE_SIZE {
             let x = rand::random::<f32>();
             passthrough_stream_processor.push_sample(x);
@@ -781,7 +860,7 @@ mod tests {
     #[test]
     fn segmenter_is_transparent() {
         let passthrough_stream_processor = Segmenter::new(PassthroughBlockProcessor);
-        let queue = SegQueue::new();
+        let queue = ArrayQueue::new(BUFFER_SIZE * 4);
         for _ in 0..TEST_SAMPLE_SIZE {
             let x = rand::random::<f32>();
             passthrough_stream_processor.push_sample(x);
@@ -1006,7 +1085,7 @@ mod tests {
 
     #[test]
     fn yin_detects_440hz() {
-        let detector = YinPitchDetector::new();
+        let mut detector = YinPitchDetector::new();
         let buffer = generate_sine(440.0, 1024);
         let freq = detector.detect(&buffer).unwrap();
         approx::assert_abs_diff_eq!(freq, 440.0, epsilon = 2.0);
@@ -1014,7 +1093,7 @@ mod tests {
 
     #[test]
     fn yin_detects_220hz() {
-        let detector = YinPitchDetector::new();
+        let mut detector = YinPitchDetector::new();
         let buffer = generate_sine(220.0, 1024);
         let freq = detector.detect(&buffer).unwrap();
         approx::assert_abs_diff_eq!(freq, 220.0, epsilon = 2.0);
@@ -1022,7 +1101,7 @@ mod tests {
 
     #[test]
     fn yin_detects_100hz() {
-        let detector = YinPitchDetector::new();
+        let mut detector = YinPitchDetector::new();
         let buffer = generate_sine(100.0, 2048);
         let freq = detector.detect(&buffer).unwrap();
         approx::assert_abs_diff_eq!(freq, 100.0, epsilon = 2.0);
@@ -1030,17 +1109,66 @@ mod tests {
 
     #[test]
     fn yin_returns_none_for_silence() {
-        let detector = YinPitchDetector::new();
+        let mut detector = YinPitchDetector::new();
         let buffer = vec![0.0; 1024];
         assert!(detector.detect(&buffer).is_none());
     }
 
     #[test]
     fn yin_returns_none_for_noise() {
-        let detector = YinPitchDetector::new();
+        let mut detector = YinPitchDetector::new();
         let buffer: Vec<f32> = (0..1024)
             .map(|_| rand::random::<f32>() * 2.0 - 1.0)
             .collect();
         let _ = detector.detect(&buffer);
+    }
+
+    #[test]
+    fn phase_vocoder_no_alloc_after_warmup() {
+        let processor = PhaseVocoderPitchShifter::new(0.5);
+
+        // Warmup: let it allocate internal buffers and easyfft thread-local scratch
+        let warmup = BUFFER_SIZE * 10;
+        for i in 0..warmup {
+            let sample = (std::f32::consts::TAU * 440.0 * i as f32 / SAMPLE_RATE as f32).sin();
+            processor.push_sample(sample);
+        }
+        while processor.pop_sample().is_some() {}
+
+        // Steady state: no allocations allowed
+        assert_no_alloc::assert_no_alloc(|| {
+            for i in 0..BUFFER_SIZE * 2 {
+                let sample = (std::f32::consts::TAU * 440.0 * i as f32 / SAMPLE_RATE as f32).sin();
+                processor.push_sample(sample);
+            }
+            while processor.pop_sample().is_some() {}
+        });
+    }
+
+    #[test]
+    fn ola_no_alloc_after_warmup() {
+        use easyfft::dyn_size::realfft::{DynRealFft, DynRealIfft};
+
+        // Test raw easyfft _using calls
+        let mut buf = vec![0.0f32; BUFFER_SIZE];
+        let mut spectrum = buf.real_fft();
+        let mut out = vec![0.0f32; BUFFER_SIZE];
+        spectrum.real_ifft_using(&mut out);
+        buf.real_fft_using(&mut spectrum);
+        spectrum.real_ifft_using(&mut out);
+
+        assert_no_alloc::assert_no_alloc(|| {
+            buf.real_fft_using(&mut spectrum);
+            spectrum.real_ifft_using(&mut out);
+        });
+
+        // Now test our converter wrapper with LowPassFilter
+        let converter = TimeToFrequencyDomainBlockProcessorConverter::new(LowPassFilter::new(440));
+        let mut buf2 = [0.0f32; BUFFER_SIZE];
+        converter.process(&mut buf2);
+        converter.process(&mut buf2);
+        assert_no_alloc::assert_no_alloc(|| {
+            converter.process(&mut buf2);
+        });
     }
 }
