@@ -39,7 +39,11 @@ enum SubCommand {
     /// Passthrough microphone to speakers but filter out high frequencies
     LowPassFilter,
     /// Passthrough microphone to speakers but shift pitch in the frequency domain
-    FrequencyDomainPitchShifter,
+    FrequencyDomainPitchShifter {
+        /// Pitch scaling ratio (e.g. 0.5 = down one octave, 2.0 = up one octave)
+        #[clap(default_value = "0.5")]
+        ratio: f32,
+    },
     /// Play sine wave
     Play,
 }
@@ -81,11 +85,16 @@ fn low_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
     ))
 }
 
-fn frequency_domain_pitch_shifter(user_interface: &mut UserInterface) -> (Stream, Stream) {
+fn frequency_domain_pitch_shifter(
+    user_interface: &mut UserInterface,
+    ratio: f32,
+) -> (Stream, Stream) {
     hardware::setup_passthrough_processor(pipeline!(
         user_interface.create_display_processor(),
         Segmenter::new(OverlapAndAddProcessor::new(
-            TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new())
+            TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new(
+                ratio
+            ))
         )),
         user_interface.create_display_processor(),
     ))
@@ -99,7 +108,9 @@ fn play(user_inferface: &mut UserInterface) -> (Stream, Stream) {
     let once = std::sync::Once::new();
     let pitch_halver = pipeline!(
         Segmenter::new(OverlapAndAddProcessor::new(
-            TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new())
+            TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new(
+                0.5
+            ))
         )),
         user_inferface.create_display_processor(),
     );
@@ -137,8 +148,8 @@ fn main() {
         SubCommand::NaivePitchShifter => naive_pitch_shifter(&mut user_inferface),
         SubCommand::HighPassFilter => high_pass_filter(&mut user_inferface),
         SubCommand::LowPassFilter => low_pass_filter(&mut user_inferface),
-        SubCommand::FrequencyDomainPitchShifter => {
-            frequency_domain_pitch_shifter(&mut user_inferface)
+        SubCommand::FrequencyDomainPitchShifter { ratio } => {
+            frequency_domain_pitch_shifter(&mut user_inferface, ratio)
         }
         SubCommand::Play => play(&mut user_inferface),
     };

@@ -320,9 +320,9 @@ impl FrequencyDomainBlockProcessor for LowPassFilter {
 }
 
 impl FrequencyDomainPitchShifter {
-    pub fn new() -> Self {
+    pub fn new(scaling_ratio: f32) -> Self {
         info!("Creating new FrequencyDomainPitchShifter");
-        Self { scaling_ratio: 0.5 }
+        Self { scaling_ratio }
     }
 }
 
