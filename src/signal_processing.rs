@@ -597,6 +597,80 @@ where
     }
 }
 
+const DEFAULT_YIN_THRESHOLD: f32 = 0.15;
+
+pub struct YinPitchDetector {
+    threshold: f32,
+}
+
+impl YinPitchDetector {
+    pub fn new() -> Self {
+        Self {
+            threshold: DEFAULT_YIN_THRESHOLD,
+        }
+    }
+
+    pub fn detect(&self, buffer: &[f32]) -> Option<f32> {
+        let half_len = buffer.len() / 2;
+        if half_len < 2 {
+            return None;
+        }
+
+        let cmnd = self.cumulative_mean_normalized_difference(buffer, half_len);
+        let tau = self.absolute_threshold(&cmnd)?;
+        let refined_tau = parabolic_interpolation(&cmnd, tau);
+        let frequency = SAMPLE_RATE as f32 / refined_tau;
+
+        if frequency < 50.0 || frequency > 4000.0 {
+            return None;
+        }
+
+        Some(frequency)
+    }
+
+    fn cumulative_mean_normalized_difference(&self, buffer: &[f32], half_len: usize) -> Vec<f32> {
+        let mut cmnd = vec![0.0f32; half_len];
+        cmnd[0] = 1.0;
+
+        let mut running_sum = 0.0;
+        for tau in 1..half_len {
+            let mut diff = 0.0;
+            for i in 0..half_len {
+                let delta = buffer[i] - buffer[i + tau];
+                diff += delta * delta;
+            }
+            running_sum += diff;
+            cmnd[tau] = diff * tau as f32 / running_sum;
+        }
+
+        cmnd
+    }
+
+    fn absolute_threshold(&self, cmnd: &[f32]) -> Option<usize> {
+        let min_tau = 2;
+        for tau in min_tau..cmnd.len() {
+            if cmnd[tau] < self.threshold {
+                let mut best = tau;
+                while best + 1 < cmnd.len() && cmnd[best + 1] < cmnd[best] {
+                    best += 1;
+                }
+                return Some(best);
+            }
+        }
+        None
+    }
+}
+
+fn parabolic_interpolation(cmnd: &[f32], tau: usize) -> f32 {
+    if tau < 1 || tau >= cmnd.len() - 1 {
+        return tau as f32;
+    }
+    let alpha = cmnd[tau - 1];
+    let beta = cmnd[tau];
+    let gamma = cmnd[tau + 1];
+    let peak = 0.5 * (alpha - gamma) / (alpha - 2.0 * beta + gamma);
+    tau as f32 + peak
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,5 +996,51 @@ mod tests {
             max_amp > 0.01,
             "Output appears silent, max amplitude: {max_amp}"
         );
+    }
+
+    fn generate_sine(freq: f32, num_samples: usize) -> Vec<f32> {
+        (0..num_samples)
+            .map(|i| (std::f32::consts::TAU * freq * i as f32 / SAMPLE_RATE as f32).sin())
+            .collect()
+    }
+
+    #[test]
+    fn yin_detects_440hz() {
+        let detector = YinPitchDetector::new();
+        let buffer = generate_sine(440.0, 1024);
+        let freq = detector.detect(&buffer).unwrap();
+        approx::assert_abs_diff_eq!(freq, 440.0, epsilon = 2.0);
+    }
+
+    #[test]
+    fn yin_detects_220hz() {
+        let detector = YinPitchDetector::new();
+        let buffer = generate_sine(220.0, 1024);
+        let freq = detector.detect(&buffer).unwrap();
+        approx::assert_abs_diff_eq!(freq, 220.0, epsilon = 2.0);
+    }
+
+    #[test]
+    fn yin_detects_100hz() {
+        let detector = YinPitchDetector::new();
+        let buffer = generate_sine(100.0, 2048);
+        let freq = detector.detect(&buffer).unwrap();
+        approx::assert_abs_diff_eq!(freq, 100.0, epsilon = 2.0);
+    }
+
+    #[test]
+    fn yin_returns_none_for_silence() {
+        let detector = YinPitchDetector::new();
+        let buffer = vec![0.0; 1024];
+        assert!(detector.detect(&buffer).is_none());
+    }
+
+    #[test]
+    fn yin_returns_none_for_noise() {
+        let detector = YinPitchDetector::new();
+        let buffer: Vec<f32> = (0..1024)
+            .map(|_| rand::random::<f32>() * 2.0 - 1.0)
+            .collect();
+        let _ = detector.detect(&buffer);
     }
 }
