@@ -294,7 +294,7 @@ impl LowPassFilter {
     pub fn new(cutoff_frequency: usize) -> Self {
         info!("Creating new LowPassFilter");
         let cutoff_bin = get_cutoff_bin(cutoff_frequency);
-        let zeroth_bin = if cutoff_bin.is_some() { 0.0 } else { 1.0 };
+        let zeroth_bin = 1.0;
 
         let mut frequncy_bins = vec![Complex::default(); BUFFER_SIZE / 2];
         let frequncy_bins = if let Some(cutoff_bin) = cutoff_bin {
@@ -367,21 +367,18 @@ where
         // Get second block to process (the current input buffer)
         let mut second = buffer.to_vec();
 
-        // Apply hanning window to first block
-        let window = apodize::hanning_iter(BUFFER_SIZE);
-        for (sample, window_sample) in first.iter_mut().zip(window) {
-            *sample *= window_sample as f32;
-        }
-
-        // Apply hanning window to second block
-        let window = apodize::hanning_iter(BUFFER_SIZE);
-        for (sample, window_sample) in second.iter_mut().zip(window) {
-            *sample *= window_sample as f32;
-        }
-
-        // Process each block separately
+        // Process each block separately (no pre-windowing)
         self.block_processor.process(&mut first);
         self.block_processor.process(&mut second);
+
+        // Apply hanning window AFTER processing for smooth reconstruction
+        let window: Vec<f64> = apodize::hanning_iter(BUFFER_SIZE).collect();
+        for (sample, window_sample) in first.iter_mut().zip(window.iter()) {
+            *sample *= *window_sample as f32;
+        }
+        for (sample, window_sample) in second.iter_mut().zip(window.iter()) {
+            *sample *= *window_sample as f32;
+        }
 
         // Overlap and add second half of first block and first half of second block
         for (first_sample, second_sample) in first[BUFFER_SIZE / 2..]
@@ -551,10 +548,10 @@ mod tests {
     }
 
     #[test]
-    fn low_pass_filter_has_discontinuities_without_ola() {
+    fn low_pass_filter_no_discontinuities_with_ola() {
         let freq = 100.0;
-        let processor = Segmenter::new(TimeToFrequencyDomainBlockProcessorConverter::new(
-            LowPassFilter::new(440),
+        let processor = Segmenter::new(OverlapAndAddProcessor::new(
+            TimeToFrequencyDomainBlockProcessorConverter::new(LowPassFilter::new(440)),
         ));
 
         let num_samples = BUFFER_SIZE * 10;
@@ -579,28 +576,29 @@ mod tests {
             max_delta = max_delta.max(delta);
         }
 
-        // BUG: Without OLA, block boundaries cause discontinuities
+        // With OLA, block boundaries are smooth
         assert!(
-            max_delta > max_expected_delta,
-            "Expected discontinuities without OLA, but max delta was only {max_delta}"
+            max_delta < max_expected_delta,
+            "Discontinuity detected: max delta {max_delta} exceeds {max_expected_delta}"
         );
     }
 
     #[test]
-    fn low_pass_filter_zeroes_dc_component() {
+    fn low_pass_filter_preserves_dc_component() {
         let cutoff = 440;
         let filter = LowPassFilter::new(cutoff);
 
+        // Feed a signal with DC offset through the filter
         let mut buffer: [f32; BUFFER_SIZE] = [0.5; BUFFER_SIZE];
         let converter = TimeToFrequencyDomainBlockProcessorConverter::new(filter);
         converter.process(&mut buffer);
 
         let mean: f32 = buffer.iter().sum::<f32>() / buffer.len() as f32;
 
-        // BUG: DC (zeroth bin) is set to 0.0, so the filter removes DC
+        // DC should be preserved by a low-pass filter
         assert!(
-            mean.abs() < 0.01,
-            "Expected DC to be zeroed, but mean was {mean}"
+            (mean - 0.5).abs() < 0.01,
+            "DC should be preserved, but mean was {mean}"
         );
     }
 }

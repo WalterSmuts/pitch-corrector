@@ -7,6 +7,7 @@ use signal_processing::FrequencyDomainPitchShifter;
 use signal_processing::HighPassFilter;
 use signal_processing::LowPassFilter;
 use signal_processing::NaivePitchShifter;
+use signal_processing::OverlapAndAddProcessor;
 use signal_processing::Segmenter;
 use signal_processing::StreamProcessor;
 use signal_processing::TimeToFrequencyDomainBlockProcessorConverter;
@@ -59,8 +60,10 @@ fn naive_pitch_shifter(user_interface: &mut UserInterface) -> (Stream, Stream) {
 fn high_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
     hardware::setup_passthrough_processor(pipeline!(
         user_interface.create_display_processor(),
-        Segmenter::new(TimeToFrequencyDomainBlockProcessorConverter::new(
-            HighPassFilter::new(FILTER_CUTOFF_FREQUENCY)
+        Segmenter::new(OverlapAndAddProcessor::new(
+            TimeToFrequencyDomainBlockProcessorConverter::new(HighPassFilter::new(
+                FILTER_CUTOFF_FREQUENCY
+            ))
         )),
         user_interface.create_display_processor(),
     ))
@@ -69,8 +72,10 @@ fn high_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
 fn low_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
     hardware::setup_passthrough_processor(pipeline!(
         user_interface.create_display_processor(),
-        Segmenter::new(TimeToFrequencyDomainBlockProcessorConverter::new(
-            LowPassFilter::new(FILTER_CUTOFF_FREQUENCY)
+        Segmenter::new(OverlapAndAddProcessor::new(
+            TimeToFrequencyDomainBlockProcessorConverter::new(LowPassFilter::new(
+                FILTER_CUTOFF_FREQUENCY
+            ))
         )),
         user_interface.create_display_processor(),
     ))
@@ -79,8 +84,8 @@ fn low_pass_filter(user_interface: &mut UserInterface) -> (Stream, Stream) {
 fn frequency_domain_pitch_shifter(user_interface: &mut UserInterface) -> (Stream, Stream) {
     hardware::setup_passthrough_processor(pipeline!(
         user_interface.create_display_processor(),
-        Segmenter::new(TimeToFrequencyDomainBlockProcessorConverter::new(
-            FrequencyDomainPitchShifter::new()
+        Segmenter::new(OverlapAndAddProcessor::new(
+            TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new())
         )),
         user_interface.create_display_processor(),
     ))
@@ -93,8 +98,8 @@ fn play(user_inferface: &mut UserInterface) -> (Stream, Stream) {
     let barrier_clone = barrier.clone();
     let once = std::sync::Once::new();
     let pitch_halver = pipeline!(
-        Segmenter::new(TimeToFrequencyDomainBlockProcessorConverter::new(
-            FrequencyDomainPitchShifter::new()
+        Segmenter::new(OverlapAndAddProcessor::new(
+            TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new())
         )),
         user_inferface.create_display_processor(),
     );
