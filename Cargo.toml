@@ -8,7 +8,7 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
-cpal = "0.16"
+cpal = "0.17"
 ansi-escapes = "0.2"
 crossbeam-queue = "0.3"
 termion = "4.0"
