@@ -549,4 +549,58 @@ mod tests {
             assert_eq!(stream_sample, queue.pop().unwrap());
         }
     }
+
+    #[test]
+    fn low_pass_filter_has_discontinuities_without_ola() {
+        let freq = 100.0;
+        let processor = Segmenter::new(TimeToFrequencyDomainBlockProcessorConverter::new(
+            LowPassFilter::new(440),
+        ));
+
+        let num_samples = BUFFER_SIZE * 10;
+        for i in 0..num_samples {
+            let sample = (std::f32::consts::TAU * freq * i as f32 / SAMPLE_RATE as f32).sin();
+            processor.push_sample(sample);
+        }
+
+        for _ in 0..BUFFER_SIZE * 2 {
+            let _ = processor.pop_sample();
+        }
+
+        let mut output = Vec::new();
+        while let Some(s) = processor.pop_sample() {
+            output.push(s);
+        }
+
+        let max_expected_delta = 0.05;
+        let mut max_delta: f32 = 0.0;
+        for window in output.windows(2) {
+            let delta = (window[1] - window[0]).abs();
+            max_delta = max_delta.max(delta);
+        }
+
+        // BUG: Without OLA, block boundaries cause discontinuities
+        assert!(
+            max_delta > max_expected_delta,
+            "Expected discontinuities without OLA, but max delta was only {max_delta}"
+        );
+    }
+
+    #[test]
+    fn low_pass_filter_zeroes_dc_component() {
+        let cutoff = 440;
+        let filter = LowPassFilter::new(cutoff);
+
+        let mut buffer: [f32; BUFFER_SIZE] = [0.5; BUFFER_SIZE];
+        let converter = TimeToFrequencyDomainBlockProcessorConverter::new(filter);
+        converter.process(&mut buffer);
+
+        let mean: f32 = buffer.iter().sum::<f32>() / buffer.len() as f32;
+
+        // BUG: DC (zeroth bin) is set to 0.0, so the filter removes DC
+        assert!(
+            mean.abs() < 0.01,
+            "Expected DC to be zeroed, but mean was {mean}"
+        );
+    }
 }
