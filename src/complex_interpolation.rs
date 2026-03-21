@@ -68,4 +68,20 @@ mod test {
             epsilon = TEST_EQUALITY_EPISLON
         );
     }
+
+    #[test]
+    fn phase_wrapping_interpolation_goes_through_zero() {
+        // Two bins with phases near ±π
+        let a = Complex::from_polar(1.0, std::f32::consts::PI - 0.1);
+        let b = Complex::from_polar(1.0, -std::f32::consts::PI + 0.1);
+        let array = [a, b];
+
+        let mid = array.interpolate_sample(0.5);
+        // BUG: naive interpolation goes through 0 instead of through ±π
+        assert!(
+            mid.arg().abs() < 1.0,
+            "Expected phase near 0 (bug), but was {}",
+            mid.arg()
+        );
+    }
 }
