@@ -44,8 +44,8 @@ pub struct FrequencyDomainPitchShifter {
     scaling_ratio: f32,
 }
 
-pub struct PhaseVocoderPitchShifter {
-    scaling_ratio: f32,
+pub struct PhaseVocoderPitchShifter<F: Fn(&[f32]) -> f32 + Send + Sync> {
+    ratio_fn: F,
     hop_size: usize,
     input_buffer: SegQueue<f32>,
     output_buffer: SegQueue<f32>,
@@ -364,12 +364,20 @@ impl FrequencyDomainBlockProcessor for FrequencyDomainPitchShifter {
     }
 }
 
-impl PhaseVocoderPitchShifter {
-    pub fn new(scaling_ratio: f32) -> Self {
-        info!("Creating new PhaseVocoderPitchShifter");
+impl PhaseVocoderPitchShifter<fn(&[f32]) -> f32> {
+    pub fn new(
+        scaling_ratio: f32,
+    ) -> PhaseVocoderPitchShifter<impl Fn(&[f32]) -> f32 + Send + Sync> {
+        PhaseVocoderPitchShifter::with_ratio_fn(move |_: &[f32]| scaling_ratio)
+    }
+}
+
+impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
+    pub fn with_ratio_fn(ratio_fn: F) -> Self {
+        info!("Creating new PhaseVocoderPitchShifter with dynamic ratio");
         let hop_size = BUFFER_SIZE / 4;
         Self {
-            scaling_ratio,
+            ratio_fn,
             hop_size,
             input_buffer: SegQueue::new(),
             output_buffer: SegQueue::new(),
@@ -467,7 +475,7 @@ impl PhaseVocoderPitchShifter {
     }
 }
 
-impl StreamProcessor for PhaseVocoderPitchShifter {
+impl<F: Fn(&[f32]) -> f32 + Send + Sync> StreamProcessor for PhaseVocoderPitchShifter<F> {
     fn push_sample(&self, sample: f32) {
         self.input_buffer.push(sample);
 
@@ -484,9 +492,10 @@ impl StreamProcessor for PhaseVocoderPitchShifter {
             if state.input_pos < BUFFER_SIZE {
                 return;
             }
-            state.input_pos = BUFFER_SIZE; // Keep processing every hop after initial fill
+            state.input_pos = BUFFER_SIZE;
 
-            let output = Self::process_frame(&mut state, self.scaling_ratio, self.hop_size);
+            let scaling_ratio = (self.ratio_fn)(&state.input_frame);
+            let output = Self::process_frame(&mut state, scaling_ratio, self.hop_size);
 
             // Overlap-add into accumulator
             for (i, s) in output.iter().enumerate() {
