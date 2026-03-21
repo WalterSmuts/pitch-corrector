@@ -601,4 +601,124 @@ mod tests {
             "DC should be preserved, but mean was {mean}"
         );
     }
+
+    #[test]
+    fn frequency_domain_pitch_shifter_no_distortion() {
+        let input_freq = 440.0;
+        let expected_freq = input_freq * 0.5;
+        let processor = Segmenter::new(OverlapAndAddProcessor::new(
+            TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new(
+                0.5,
+            )),
+        ));
+
+        let num_samples = BUFFER_SIZE * 10;
+        for i in 0..num_samples {
+            let sample = (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
+            processor.push_sample(sample);
+        }
+
+        // Skip transients
+        for _ in 0..BUFFER_SIZE * 3 {
+            let _ = processor.pop_sample();
+        }
+
+        // Collect output and check for discontinuities
+        let mut output = Vec::new();
+        while let Some(s) = processor.pop_sample() {
+            output.push(s);
+        }
+
+        // Max delta for a sine at expected_freq (220Hz) at 44100Hz
+        // is sin(TAU * 220 / 44100) ≈ 0.031
+        let max_expected_delta = 0.1;
+        let mut max_delta: f32 = 0.0;
+        for window in output.windows(2) {
+            let delta = (window[1] - window[0]).abs();
+            max_delta = max_delta.max(delta);
+        }
+
+        assert!(
+            max_delta < max_expected_delta,
+            "Discontinuity detected: max delta {max_delta} exceeds {max_expected_delta}"
+        );
+
+        // Verify output has energy at expected frequency
+        let mut block = [0.0f32; BUFFER_SIZE];
+        block.copy_from_slice(&output[..BUFFER_SIZE]);
+        let spectrum = block.real_fft();
+        let bins = spectrum.get_frequency_bins();
+
+        let expected_bin = frequency_to_bin(expected_freq as usize);
+        let peak_bin = bins
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.norm().partial_cmp(&b.1.norm()).unwrap())
+            .unwrap()
+            .0;
+
+        assert!(
+            (peak_bin as i32 - expected_bin as i32).unsigned_abs() <= 2,
+            "Expected peak near bin {expected_bin} ({}Hz), got bin {peak_bin}",
+            expected_freq
+        );
+    }
+
+    #[test]
+    fn frequency_domain_pitch_shifter_up_no_distortion() {
+        let input_freq = 220.0;
+        let scaling_ratio = 2.0;
+        let expected_freq = input_freq * scaling_ratio;
+        let processor = Segmenter::new(OverlapAndAddProcessor::new(
+            TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new(
+                scaling_ratio as f32,
+            )),
+        ));
+
+        let num_samples = BUFFER_SIZE * 10;
+        for i in 0..num_samples {
+            let sample = (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
+            processor.push_sample(sample);
+        }
+
+        for _ in 0..BUFFER_SIZE * 3 {
+            let _ = processor.pop_sample();
+        }
+
+        let mut output = Vec::new();
+        while let Some(s) = processor.pop_sample() {
+            output.push(s);
+        }
+
+        let max_expected_delta = 0.15;
+        let mut max_delta: f32 = 0.0;
+        for window in output.windows(2) {
+            let delta = (window[1] - window[0]).abs();
+            max_delta = max_delta.max(delta);
+        }
+
+        assert!(
+            max_delta < max_expected_delta,
+            "Discontinuity detected: max delta {max_delta} exceeds {max_expected_delta}"
+        );
+
+        let mut block = [0.0f32; BUFFER_SIZE];
+        block.copy_from_slice(&output[..BUFFER_SIZE]);
+        let spectrum = block.real_fft();
+        let bins = spectrum.get_frequency_bins();
+
+        let expected_bin = frequency_to_bin(expected_freq as usize);
+        let peak_bin = bins
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.norm().partial_cmp(&b.1.norm()).unwrap())
+            .unwrap()
+            .0;
+
+        assert!(
+            (peak_bin as i32 - expected_bin as i32).unsigned_abs() <= 2,
+            "Expected peak near bin {expected_bin} ({}Hz), got bin {peak_bin}",
+            expected_freq
+        );
+    }
 }
