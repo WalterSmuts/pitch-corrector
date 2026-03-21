@@ -116,7 +116,7 @@ where
 {
     fn push_sample(&self, sample: f32) {
         self.first.push_sample(sample);
-        if let Some(sample) = self.first.pop_sample() {
+        while let Some(sample) = self.first.pop_sample() {
             self.second.push_sample(sample);
         }
     }
