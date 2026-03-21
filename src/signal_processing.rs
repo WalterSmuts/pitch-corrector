@@ -489,7 +489,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
         }
 
         // Analysis: compute magnitude and true frequency per bin
-        for k in 0..num_bins {
+        for (k, _) in bins.iter().enumerate().take(num_bins) {
             state.magnitudes[k] = bins[k].norm();
             let phase = bins[k].arg();
             let mut phase_diff = phase - state.prev_input_phase[k];
@@ -703,7 +703,7 @@ impl YinPitchDetector {
         let refined_tau = parabolic_interpolation(&self.cmnd, tau);
         let frequency = SAMPLE_RATE as f32 / refined_tau;
 
-        if frequency < 50.0 || frequency > 4000.0 {
+        if !(50.0..=4000.0).contains(&frequency) {
             return None;
         }
 
@@ -783,7 +783,7 @@ mod tests {
         for _ in 0..TEST_SAMPLE_SIZE {
             let x = rand::random::<f32>();
             passthrough_stream_processor.push_sample(x);
-            queue.push(x);
+            let _ = queue.push(x);
         }
 
         // Get rid of transients
@@ -816,7 +816,7 @@ mod tests {
         for _ in 0..TEST_SAMPLE_SIZE {
             let x = rand::random::<f32>();
             passthrough_stream_processor.push_sample(x);
-            queue.push(x);
+            let _ = queue.push(x);
         }
 
         // Get rid of transients
@@ -864,7 +864,7 @@ mod tests {
         for _ in 0..TEST_SAMPLE_SIZE {
             let x = rand::random::<f32>();
             passthrough_stream_processor.push_sample(x);
-            queue.push(x);
+            let _ = queue.push(x);
         }
 
         while let Some(stream_sample) = passthrough_stream_processor.pop_sample() {
@@ -996,7 +996,7 @@ mod tests {
         let expected_freq = input_freq * scaling_ratio;
         let processor = Segmenter::new(OverlapAndAddProcessor::new(
             TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new(
-                scaling_ratio as f32,
+                scaling_ratio,
             )),
         ));
 
@@ -1150,7 +1150,7 @@ mod tests {
         use easyfft::dyn_size::realfft::{DynRealFft, DynRealIfft};
 
         // Test raw easyfft _using calls
-        let mut buf = vec![0.0f32; BUFFER_SIZE];
+        let buf = vec![0.0f32; BUFFER_SIZE];
         let mut spectrum = buf.real_fft();
         let mut out = vec![0.0f32; BUFFER_SIZE];
         spectrum.real_ifft_using(&mut out);
