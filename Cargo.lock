@@ -291,6 +291,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "console_log"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be8aed40e4edbf4d3b4431ab260b63fdc40f5780a4766824329ea0f1eefe3c0f"
+dependencies = [
+ "log",
+ "web-sys",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -321,9 +331,7 @@ dependencies = [
 
 [[package]]
 name = "cpal"
-version = "0.17.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8942da362c0f0d895d7cac616263f2f9424edc5687364dfd1d25ef7eba506d7"
+version = "0.18.0"
 dependencies = [
  "alsa",
  "coreaudio-rs",
@@ -1060,17 +1068,22 @@ dependencies = [
  "assert_no_alloc",
  "bitflags 2.10.0",
  "clap",
+ "console_log",
  "cpal",
  "crossbeam-queue",
  "crossterm 0.29.0",
  "ctrlc",
  "easyfft",
+ "js-sys",
  "log",
  "log-panics",
  "rand",
  "ratatui",
  "termion",
  "tui-logger",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

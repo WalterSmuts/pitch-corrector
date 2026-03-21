@@ -1,25 +1,17 @@
-#[cfg(test)]
-#[global_allocator]
-static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 use clap::Parser;
 use cpal::Stream;
-use display::UserInterface;
-use signal_processing::pipeline;
-use signal_processing::FrequencyDomainPitchShifter;
-use signal_processing::HighPassFilter;
-use signal_processing::LowPassFilter;
-use signal_processing::NaivePitchShifter;
-use signal_processing::OverlapAndAddProcessor;
-use signal_processing::PhaseVocoderPitchShifter;
-use signal_processing::Segmenter;
-use signal_processing::TimeToFrequencyDomainBlockProcessorConverter;
-
-mod complex_interpolation;
-mod display;
-mod hardware;
-mod interpolation;
-mod pitch_correction;
-mod signal_processing;
+use pitch_corrector::display::UserInterface;
+use pitch_corrector::hardware;
+use pitch_corrector::pitch_correction;
+use pitch_corrector::signal_processing::pipeline;
+use pitch_corrector::signal_processing::FrequencyDomainPitchShifter;
+use pitch_corrector::signal_processing::HighPassFilter;
+use pitch_corrector::signal_processing::LowPassFilter;
+use pitch_corrector::signal_processing::NaivePitchShifter;
+use pitch_corrector::signal_processing::OverlapAndAddProcessor;
+use pitch_corrector::signal_processing::PhaseVocoderPitchShifter;
+use pitch_corrector::signal_processing::Segmenter;
+use pitch_corrector::signal_processing::TimeToFrequencyDomainBlockProcessorConverter;
 
 const FILTER_CUTOFF_FREQUENCY: usize = 440;
 

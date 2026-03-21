@@ -12,7 +12,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-const BUFFER_SIZE: usize = 1024;
+pub const BUFFER_SIZE: usize = 1024;
 const SAMPLE_RATE: usize = 44100;
 
 pub trait StreamProcessor {
@@ -73,7 +73,7 @@ struct PhaseVocoderState {
 pub struct DisplayProcessor<const I: usize = BUFFER_SIZE> {
     buffer: ArrayQueue<f32>,
     display_buffer: Arc<Mutex<[f32; I]>>,
-    buffer_index: AtomicUsize,
+    buffer_index: Arc<AtomicUsize>,
 }
 
 pub struct OverlapAndAddProcessor<T>
@@ -213,9 +213,7 @@ where
     }
 
     fn push_sample(&self, sample: f32) {
-        if self.input_buffer.push(sample).is_err() {
-            log::warn!("Input buffer overflow");
-        }
+        let _ = self.input_buffer.push(sample);
         if self.input_buffer.len() > BUFFER_SIZE {
             let mut buffer = [0.0; BUFFER_SIZE];
             for sample in &mut buffer {
@@ -235,22 +233,24 @@ impl<const I: usize> DisplayProcessor<I> {
     pub fn new() -> Self {
         info!("Creating new DisplayProcessor of size {}", I);
         Self {
-            buffer: ArrayQueue::new(BUFFER_SIZE * 4),
+            buffer: ArrayQueue::new(I * 4),
             display_buffer: Arc::new(Mutex::new([0.0; I])),
-            buffer_index: AtomicUsize::new(0),
+            buffer_index: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     pub fn clone_display_buffer(&self) -> Arc<Mutex<[f32; I]>> {
         self.display_buffer.clone()
     }
+
+    pub fn clone_write_index(&self) -> Arc<AtomicUsize> {
+        self.buffer_index.clone()
+    }
 }
 
 impl<const I: usize> StreamProcessor for DisplayProcessor<I> {
     fn push_sample(&self, sample: f32) {
-        if self.buffer.push(sample).is_err() {
-            log::warn!("Display buffer overflow");
-        }
+        let _ = self.buffer.push(sample);
     }
 
     fn pop_sample(&self) -> Option<f32> {
@@ -272,6 +272,7 @@ impl NaivePitchShifter {
     }
 }
 
+#[macro_export]
 macro_rules! pipeline {
     ($first_processor:expr$(,)?) => {
         $first_processor
@@ -284,7 +285,7 @@ macro_rules! pipeline {
         )
     };
 }
-pub(crate) use pipeline;
+pub use pipeline;
 
 impl BlockProcessor for NaivePitchShifter {
     fn process(&self, buffer: &mut [f32]) {
@@ -557,9 +558,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
 
 impl<F: Fn(&[f32]) -> f32 + Send + Sync> StreamProcessor for PhaseVocoderPitchShifter<F> {
     fn push_sample(&self, sample: f32) {
-        if self.input_buffer.push(sample).is_err() {
-            log::warn!("Input buffer overflow");
-        }
+        let _ = self.input_buffer.push(sample);
 
         if self.input_buffer.len() >= self.hop_size {
             let mut state = self.state.lock().unwrap();
@@ -586,9 +585,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> StreamProcessor for PhaseVocoderPitchSh
 
             // Output hop_size samples
             for i in 0..self.hop_size {
-                if self.output_buffer.push(state.output_accum[i]).is_err() {
-                    log::warn!("Output buffer overflow");
-                }
+                let _ = self.output_buffer.push(state.output_accum[i]);
             }
 
             // Shift accumulator

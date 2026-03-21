@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Pitch Corrector</title>
+    <style>
+        body {
+            background: #1a1a2e;
+            color: #eee;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        canvas {
+            border: 1px solid #444;
+            margin: 10px 0;
+        }
+        .controls {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            margin: 10px 0;
+        }
+        button {
+            background: #16213e;
+            color: #eee;
+            border: 1px solid #555;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-family: monospace;
+            font-size: 16px;
+        }
+        button:hover { background: #0f3460; }
+        #status { color: #888; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>🎤 Pitch Corrector</h1>
+    <div id="status">Click Start to begin</div>
+    <div class="controls">
+        <button id="start-btn">▶ Start</button>
+        <button id="stop-btn" disabled>⏹ Stop</button>
+    </div>
+    <h3>Spectrogram</h3>
+    <canvas id="spectrogram" width="1200" height="500"></canvas>
+
+    <script type="module">
+        import init, { WebPitchCorrector } from './pkg/pitch_corrector.js';
+
+        let corrector = null;
+        let animFrame = null;
+        let columnX = 0;
+
+        async function start() {
+            await init();
+            try {
+                corrector = new WebPitchCorrector();
+                document.getElementById('status').textContent = '🔴 Passthrough active';
+                document.getElementById('start-btn').disabled = true;
+                document.getElementById('stop-btn').disabled = false;
+
+                const canvas = document.getElementById('spectrogram');
+                const ctx = canvas.getContext('2d');
+
+                function draw() {
+                    if (!corrector) return;
+                    corrector.draw_spectrogram(canvas, columnX);
+                    columnX = (columnX + 1) % canvas.width;
+
+                    ctx.strokeStyle = '#ff0';
+                    ctx.beginPath();
+                    ctx.moveTo((columnX + 1) % canvas.width, 0);
+                    ctx.lineTo((columnX + 1) % canvas.width, canvas.height);
+                    ctx.stroke();
+
+                    animFrame = requestAnimationFrame(draw);
+                }
+                draw();
+            } catch (e) {
+                document.getElementById('status').textContent = 'Error: ' + e;
+            }
+        }
+
+        function stop() {
+            if (animFrame) cancelAnimationFrame(animFrame);
+            if (corrector) corrector.free();
+            corrector = null;
+            columnX = 0;
+            document.getElementById('status').textContent = 'Stopped';
+            document.getElementById('start-btn').disabled = false;
+            document.getElementById('stop-btn').disabled = true;
+        }
+
+        document.getElementById('start-btn').addEventListener('click', start);
+        document.getElementById('stop-btn').addEventListener('click', stop);
+    </script>
+</body>
+</html>

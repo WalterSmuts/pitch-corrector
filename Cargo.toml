@@ -4,26 +4,57 @@ version = "0.1.0"
 authors = ["Walter Smuts <wssmts@amazon.com>"]
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[features]
+default = ["native"]
+native = ["clap", "ansi-escapes", "termion", "ctrlc", "ratatui", "crossterm", "tui-logger", "log-panics"]
+web = ["wasm-bindgen", "web-sys", "js-sys", "console_log", "wasm-bindgen-futures"]
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
-cpal = "0.17"
-ansi-escapes = "0.2"
+cpal = { path = "../cpal", features = ["wasm-bindgen"] }
 crossbeam-queue = "0.3"
-termion = "4.0"
-ctrlc = "3.4"
 apodize = "1.0.0"
 bitflags = "2"
-ratatui = "0.29"
-crossterm = "0.29"
-tui-logger = "0.17"
-log-panics = "2.1.0"
 log = "0.4"
 easyfft = "0.4.2"
 
+# Native-only
+clap = { version = "4.5", features = ["derive"], optional = true }
+ansi-escapes = { version = "0.2", optional = true }
+termion = { version = "4.0", optional = true }
+ctrlc = { version = "3.4", optional = true }
+ratatui = { version = "0.29", optional = true }
+crossterm = { version = "0.29", optional = true }
+tui-logger = { version = "0.17", optional = true }
+log-panics = { version = "2.1.0", optional = true }
+
+# Web-only
+wasm-bindgen = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys = { version = "0.3", optional = true }
+console_log = { version = "1.0", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "Window",
+    "Document",
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "HtmlInputElement",
+    "HtmlElement",
+    "Element",
+    "Event",
+    "InputEvent",
+    "EventTarget",
+] }
 
 [dev-dependencies]
 rand = "0.9"
 approx = "0.5.1"
 assert_no_alloc = { version = "1.1", features = ["warn_debug"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "pitch-corrector"
+path = "src/main.rs"
+required-features = ["native"]

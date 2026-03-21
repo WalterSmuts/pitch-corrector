@@ -72,7 +72,7 @@ where
 
     device
         .build_input_stream(
-            &config,
+            config,
             handler,
             |err| error!("Input stream error: {}", err),
             None,
@@ -106,7 +106,7 @@ where
 
     device
         .build_output_stream(
-            &config,
+            config,
             handler,
             |err| error!("Output stream error: {}", err),
             None,
