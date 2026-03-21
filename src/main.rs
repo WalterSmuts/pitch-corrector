@@ -8,6 +8,7 @@ use signal_processing::HighPassFilter;
 use signal_processing::LowPassFilter;
 use signal_processing::NaivePitchShifter;
 use signal_processing::OverlapAndAddProcessor;
+use signal_processing::PhaseVocoderPitchShifter;
 use signal_processing::Segmenter;
 use signal_processing::StreamProcessor;
 use signal_processing::TimeToFrequencyDomainBlockProcessorConverter;
@@ -40,6 +41,12 @@ enum SubCommand {
     LowPassFilter,
     /// Passthrough microphone to speakers but shift pitch in the frequency domain
     FrequencyDomainPitchShifter {
+        /// Pitch scaling ratio (e.g. 0.5 = down one octave, 2.0 = up one octave)
+        #[clap(default_value = "0.5")]
+        ratio: f32,
+    },
+    /// Pitch shift using phase vocoder (better quality)
+    PhaseVocoder {
         /// Pitch scaling ratio (e.g. 0.5 = down one octave, 2.0 = up one octave)
         #[clap(default_value = "0.5")]
         ratio: f32,
@@ -102,6 +109,14 @@ fn frequency_domain_pitch_shifter(
 
 const SAMPLE_RATE: usize = 44100;
 
+fn phase_vocoder(user_interface: &mut UserInterface, ratio: f32) -> (Stream, Stream) {
+    hardware::setup_passthrough_processor(pipeline!(
+        user_interface.create_display_processor(),
+        PhaseVocoderPitchShifter::new(ratio),
+        user_interface.create_display_processor(),
+    ))
+}
+
 fn play(user_inferface: &mut UserInterface) -> (Stream, Stream) {
     let barrier = Arc::new(Barrier::new(2));
     let barrier_clone = barrier.clone();
@@ -151,6 +166,7 @@ fn main() {
         SubCommand::FrequencyDomainPitchShifter { ratio } => {
             frequency_domain_pitch_shifter(&mut user_inferface, ratio)
         }
+        SubCommand::PhaseVocoder { ratio } => phase_vocoder(&mut user_inferface, ratio),
         SubCommand::Play => play(&mut user_inferface),
     };
     log_panics::init();

@@ -44,6 +44,22 @@ pub struct FrequencyDomainPitchShifter {
     scaling_ratio: f32,
 }
 
+pub struct PhaseVocoderPitchShifter {
+    scaling_ratio: f32,
+    hop_size: usize,
+    input_buffer: SegQueue<f32>,
+    output_buffer: SegQueue<f32>,
+    state: Mutex<PhaseVocoderState>,
+}
+
+struct PhaseVocoderState {
+    input_frame: Vec<f32>,
+    input_pos: usize,
+    prev_input_phase: Vec<f32>,
+    prev_output_phase: Vec<f32>,
+    output_accum: Vec<f32>,
+}
+
 pub struct DisplayProcessor<const I: usize = BUFFER_SIZE> {
     buffer: SegQueue<f32>,
     display_buffer: Arc<Mutex<[f32; I]>>,
@@ -345,6 +361,153 @@ impl FrequencyDomainBlockProcessor for FrequencyDomainPitchShifter {
                             .interpolate_sample(index)
                     }
             });
+    }
+}
+
+impl PhaseVocoderPitchShifter {
+    pub fn new(scaling_ratio: f32) -> Self {
+        info!("Creating new PhaseVocoderPitchShifter");
+        let hop_size = BUFFER_SIZE / 4;
+        Self {
+            scaling_ratio,
+            hop_size,
+            input_buffer: SegQueue::new(),
+            output_buffer: SegQueue::new(),
+            state: Mutex::new(PhaseVocoderState {
+                input_frame: vec![0.0; BUFFER_SIZE],
+                input_pos: 0,
+                prev_input_phase: vec![],
+                prev_output_phase: vec![],
+                output_accum: vec![0.0; BUFFER_SIZE],
+            }),
+        }
+    }
+
+    fn process_frame(
+        state: &mut PhaseVocoderState,
+        scaling_ratio: f32,
+        hop_size: usize,
+    ) -> Vec<f32> {
+        let expected_phase_advance = |bin: usize| -> f32 {
+            std::f32::consts::TAU * bin as f32 * hop_size as f32 / BUFFER_SIZE as f32
+        };
+
+        // Apply analysis window
+        let window: Vec<f64> = apodize::hanning_iter(BUFFER_SIZE).collect();
+        let windowed: Vec<f32> = state
+            .input_frame
+            .iter()
+            .zip(window.iter())
+            .map(|(s, w)| s * *w as f32)
+            .collect();
+
+        // FFT
+        let spectrum = windowed.real_fft();
+        let bins = spectrum.get_frequency_bins();
+        let num_bins = bins.len();
+
+        // Resize state vectors on first call
+        if state.prev_input_phase.len() != num_bins {
+            state.prev_input_phase.resize(num_bins, 0.0);
+            state.prev_output_phase.resize(num_bins, 0.0);
+        }
+
+        // Analysis: compute magnitude and true frequency per bin
+        let mut magnitudes = vec![0.0f32; num_bins];
+        let mut true_freq = vec![0.0f32; num_bins];
+
+        for k in 0..num_bins {
+            magnitudes[k] = bins[k].norm();
+            let phase = bins[k].arg();
+            let mut phase_diff = phase - state.prev_input_phase[k];
+            state.prev_input_phase[k] = phase;
+
+            phase_diff -= expected_phase_advance(k + 1);
+
+            phase_diff = phase_diff.rem_euclid(std::f32::consts::TAU);
+            if phase_diff > std::f32::consts::PI {
+                phase_diff -= std::f32::consts::TAU;
+            }
+
+            true_freq[k] = expected_phase_advance(k + 1) + phase_diff;
+        }
+
+        // Synthesis: shift bins and resynthesize phases
+        let mut new_magnitudes = vec![0.0f32; num_bins];
+        let mut new_freq = vec![0.0f32; num_bins];
+
+        for k in 0..num_bins {
+            let target = (k as f32 / scaling_ratio) as usize;
+            if target < num_bins {
+                new_magnitudes[k] += magnitudes[target];
+                new_freq[k] = true_freq[target] * scaling_ratio;
+            }
+        }
+
+        // Accumulate output phase
+        let mut new_bins = vec![Complex::default(); BUFFER_SIZE / 2];
+        for k in 0..num_bins {
+            state.prev_output_phase[k] += new_freq[k];
+            new_bins[k] = Complex::from_polar(new_magnitudes[k], state.prev_output_phase[k]);
+        }
+
+        // IFFT
+        let new_spectrum = DynRealDft::new(0.0, &new_bins.into_boxed_slice(), BUFFER_SIZE);
+        let mut output = new_spectrum.real_ifft().to_vec();
+        for s in output.iter_mut() {
+            *s /= BUFFER_SIZE as f32;
+        }
+
+        // Apply synthesis window
+        for (s, w) in output.iter_mut().zip(window.iter()) {
+            *s *= *w as f32;
+        }
+
+        output
+    }
+}
+
+impl StreamProcessor for PhaseVocoderPitchShifter {
+    fn push_sample(&self, sample: f32) {
+        self.input_buffer.push(sample);
+
+        if self.input_buffer.len() >= self.hop_size {
+            let mut state = self.state.lock().unwrap();
+
+            // Shift input frame left by hop_size
+            state.input_frame.copy_within(self.hop_size.., 0);
+            for i in (BUFFER_SIZE - self.hop_size)..BUFFER_SIZE {
+                state.input_frame[i] = self.input_buffer.pop().unwrap();
+            }
+
+            state.input_pos += self.hop_size;
+            if state.input_pos < BUFFER_SIZE {
+                return;
+            }
+            state.input_pos = BUFFER_SIZE; // Keep processing every hop after initial fill
+
+            let output = Self::process_frame(&mut state, self.scaling_ratio, self.hop_size);
+
+            // Overlap-add into accumulator
+            for (i, s) in output.iter().enumerate() {
+                state.output_accum[i] += s;
+            }
+
+            // Output hop_size samples
+            for i in 0..self.hop_size {
+                self.output_buffer.push(state.output_accum[i]);
+            }
+
+            // Shift accumulator
+            state.output_accum.copy_within(self.hop_size.., 0);
+            for i in (BUFFER_SIZE - self.hop_size)..BUFFER_SIZE {
+                state.output_accum[i] = 0.0;
+            }
+        }
+    }
+
+    fn pop_sample(&self) -> Option<f32> {
+        self.output_buffer.pop()
     }
 }
 
@@ -719,6 +882,36 @@ mod tests {
             (peak_bin as i32 - expected_bin as i32).unsigned_abs() <= 2,
             "Expected peak near bin {expected_bin} ({}Hz), got bin {peak_bin}",
             expected_freq
+        );
+    }
+
+    #[test]
+    fn phase_vocoder_pitch_shifter_produces_output() {
+        let input_freq = 440.0;
+        let processor = PhaseVocoderPitchShifter::new(0.5);
+
+        let num_samples = BUFFER_SIZE * 10;
+        for i in 0..num_samples {
+            let sample = (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
+            processor.push_sample(sample);
+        }
+
+        let mut output = Vec::new();
+        while let Some(s) = processor.pop_sample() {
+            output.push(s);
+        }
+
+        assert!(
+            output.len() > BUFFER_SIZE,
+            "Expected output samples, got {}",
+            output.len()
+        );
+
+        // Check output isn't silence
+        let max_amp: f32 = output.iter().map(|s| s.abs()).fold(0.0, f32::max);
+        assert!(
+            max_amp > 0.01,
+            "Output appears silent, max amplitude: {max_amp}"
         );
     }
 }
