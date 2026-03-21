@@ -2,7 +2,6 @@
 #[global_allocator]
 static A: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 use clap::Parser;
-use cpal::traits::StreamTrait;
 use cpal::Stream;
 use display::UserInterface;
 use signal_processing::pipeline;
@@ -13,11 +12,7 @@ use signal_processing::NaivePitchShifter;
 use signal_processing::OverlapAndAddProcessor;
 use signal_processing::PhaseVocoderPitchShifter;
 use signal_processing::Segmenter;
-use signal_processing::StreamProcessor;
 use signal_processing::TimeToFrequencyDomainBlockProcessorConverter;
-use std::f32::consts::TAU;
-use std::sync::Arc;
-use std::sync::Barrier;
 
 mod complex_interpolation;
 mod display;
@@ -55,8 +50,6 @@ enum SubCommand {
         #[clap(default_value = "0.5")]
         ratio: f32,
     },
-    /// Play sine wave
-    Play,
     /// Auto-tune: detect pitch and correct to nearest scale note
     PitchCorrector,
 }
@@ -113,8 +106,6 @@ fn frequency_domain_pitch_shifter(
     ))
 }
 
-const SAMPLE_RATE: usize = 44100;
-
 fn phase_vocoder(user_interface: &mut UserInterface, ratio: f32) -> (Stream, Stream) {
     hardware::setup_passthrough_processor(pipeline!(
         user_interface.create_display_processor(),
@@ -129,40 +120,6 @@ fn pitch_corrector(user_interface: &mut UserInterface) -> (Stream, Stream) {
         pitch_correction::new_pitch_corrector(),
         user_interface.create_display_processor(),
     ))
-}
-
-fn play(user_inferface: &mut UserInterface) -> (Stream, Stream) {
-    let barrier = Arc::new(Barrier::new(2));
-    let barrier_clone = barrier.clone();
-    let once = std::sync::Once::new();
-    let pitch_halver = pipeline!(
-        Segmenter::new(OverlapAndAddProcessor::new(
-            TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new(
-                0.5
-            ))
-        )),
-        user_inferface.create_display_processor(),
-    );
-
-    for t in (0..SAMPLE_RATE * 5).map(|x| x as f32 / SAMPLE_RATE as f32) {
-        let sample = (TAU * t * 440.0).sin();
-        pitch_halver.push_sample(sample);
-    }
-
-    let stream = hardware::get_output_stream(move |data: &mut [f32], _| {
-        for datum in data.iter_mut() {
-            if let Some(sample) = pitch_halver.pop_sample() {
-                *datum = sample;
-            } else {
-                once.call_once(|| {
-                    barrier_clone.wait();
-                });
-            }
-        }
-    });
-    stream.play().unwrap();
-    barrier.wait(); // TODO: FIX this return
-    todo!()
 }
 
 fn main() {
@@ -182,7 +139,6 @@ fn main() {
         }
         SubCommand::PhaseVocoder { ratio } => phase_vocoder(&mut user_inferface, ratio),
         SubCommand::PitchCorrector => pitch_corrector(&mut user_inferface),
-        SubCommand::Play => play(&mut user_inferface),
     };
     log_panics::init();
     user_inferface.run();
