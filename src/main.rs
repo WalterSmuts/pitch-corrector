@@ -20,6 +20,7 @@ mod complex_interpolation;
 mod display;
 mod hardware;
 mod interpolation;
+mod pitch_correction;
 mod signal_processing;
 
 const FILTER_CUTOFF_FREQUENCY: usize = 440;
@@ -53,6 +54,8 @@ enum SubCommand {
     },
     /// Play sine wave
     Play,
+    /// Auto-tune: detect pitch and correct to nearest scale note
+    PitchCorrector,
 }
 
 fn passthrough(user_interface: &mut UserInterface) -> (Stream, Stream) {
@@ -117,6 +120,14 @@ fn phase_vocoder(user_interface: &mut UserInterface, ratio: f32) -> (Stream, Str
     ))
 }
 
+fn pitch_corrector(user_interface: &mut UserInterface) -> (Stream, Stream) {
+    hardware::setup_passthrough_processor(pipeline!(
+        user_interface.create_display_processor(),
+        pitch_correction::new_pitch_corrector(),
+        user_interface.create_display_processor(),
+    ))
+}
+
 fn play(user_inferface: &mut UserInterface) -> (Stream, Stream) {
     let barrier = Arc::new(Barrier::new(2));
     let barrier_clone = barrier.clone();
@@ -167,6 +178,7 @@ fn main() {
             frequency_domain_pitch_shifter(&mut user_inferface, ratio)
         }
         SubCommand::PhaseVocoder { ratio } => phase_vocoder(&mut user_inferface, ratio),
+        SubCommand::PitchCorrector => pitch_corrector(&mut user_inferface),
         SubCommand::Play => play(&mut user_inferface),
     };
     log_panics::init();
