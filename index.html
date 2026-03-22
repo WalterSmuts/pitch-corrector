@@ -194,9 +194,6 @@
                 const outputSpec = document.getElementById('output-spectrogram');
                 const outputContour = document.getElementById('output-contour');
 
-                let inputContourX = 0;
-                let outputContourX = 0;
-
                 function draw() {
                     if (!corrector) return;
                     corrector.draw_spectrogram(outputSpec, columnX);
