@@ -1,6 +1,7 @@
 use crate::signal_processing::{PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector};
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 
 bitflags::bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,10 +111,10 @@ impl PitchCorrector {
         let shift_clone = shift.clone();
         let notes_clone = note_set.clone();
         let prev_target = AtomicU32::new(0.0f32.to_bits());
+        let detector = Mutex::new(YinPitchDetector::new());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
             let current_notes = Notes::from_bits_truncate(notes_clone.load(Ordering::Relaxed));
-            let mut detector = YinPitchDetector::new();
-            let correction = match detector.detect(frame) {
+            let correction = match detector.lock().unwrap().detect(frame) {
                 Some(freq) => {
                     let target = nearest_note(freq, current_notes);
 
