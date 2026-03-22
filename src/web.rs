@@ -199,74 +199,90 @@ impl WebPitchCorrector {
     }
 
     pub fn draw_pitch_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        let ctx: CanvasRenderingContext2d = canvas
-            .get_context("2d")
-            .unwrap()
-            .unwrap()
-            .dyn_into()
-            .unwrap();
+        draw_contour(
+            canvas,
+            column_x,
+            &self.contour_buffer,
+            &self.contour_index,
+            "rgb(50,255,120)",
+        );
+    }
+}
 
-        let height = canvas.height() as f32;
-        let raw_buffer = self.contour_buffer.lock().unwrap();
-        let idx = self.contour_index.load(Ordering::Relaxed) % CONTOUR_SIZE;
-        let mut buffer = vec![0.0f32; CONTOUR_SIZE];
-        buffer[..CONTOUR_SIZE - idx].copy_from_slice(&raw_buffer[idx..]);
-        buffer[CONTOUR_SIZE - idx..].copy_from_slice(&raw_buffer[..idx]);
-        drop(raw_buffer);
+fn draw_contour(
+    canvas: &HtmlCanvasElement,
+    column_x: f32,
+    buffer: &Arc<Mutex<[f32; CONTOUR_SIZE]>>,
+    index: &Arc<AtomicUsize>,
+    color: &str,
+) {
+    let ctx: CanvasRenderingContext2d = canvas
+        .get_context("2d")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
 
-        let energy: f32 = buffer.iter().map(|s| s * s).sum::<f32>() / buffer.len() as f32;
+    let height = canvas.height() as f32;
+    let raw_buffer = buffer.lock().unwrap();
+    let idx = index.load(Ordering::Relaxed) % CONTOUR_SIZE;
+    let mut buf = vec![0.0f32; CONTOUR_SIZE];
+    buf[..CONTOUR_SIZE - idx].copy_from_slice(&raw_buffer[idx..]);
+    buf[CONTOUR_SIZE - idx..].copy_from_slice(&raw_buffer[..idx]);
+    drop(raw_buffer);
 
-        let mut detector = YinPitchDetector::new();
-        let pitch = if energy > 0.0001 {
-            detector.detect(&buffer)
+    let energy: f32 = buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32;
+
+    let mut detector = YinPitchDetector::new();
+    let pitch = if energy > 0.0001 {
+        detector.detect(&buf)
+    } else {
+        None
+    };
+
+    // Background
+    ctx.set_fill_style_str("rgb(10,10,20)");
+    ctx.fill_rect(column_x as f64, 0.0, 2.0, height as f64);
+
+    // Semitone grid lines with note names
+    let note_names = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    for semitone in 0..12 {
+        let y = height * (1.0 - semitone as f32 / 12.0);
+        let alpha = if semitone == 0 || semitone == 4 || semitone == 7 {
+            0.3
         } else {
-            None
+            0.1
         };
+        ctx.set_stroke_style_str(&format!("rgba(255,255,255,{alpha})"));
+        ctx.begin_path();
+        ctx.move_to(column_x as f64, y as f64);
+        ctx.line_to((column_x + 2.0) as f64, y as f64);
+        ctx.stroke();
 
-        // Background
-        ctx.set_fill_style_str("rgb(10,10,20)");
-        ctx.fill_rect(column_x as f64, 0.0, 2.0, height as f64);
-
-        // Semitone grid lines with note names
-        let note_names = [
-            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-        ];
-        for semitone in 0..12 {
-            let y = height * (1.0 - semitone as f32 / 12.0);
-            let alpha = if semitone == 0 || semitone == 4 || semitone == 7 {
-                0.3
-            } else {
-                0.1
-            };
-            ctx.set_stroke_style_str(&format!("rgba(255,255,255,{alpha})"));
-            ctx.begin_path();
-            ctx.move_to(column_x as f64, y as f64);
-            ctx.line_to((column_x + 2.0) as f64, y as f64);
-            ctx.stroke();
-
-            if column_x < 2.0 {
-                ctx.set_fill_style_str("rgba(255,255,255,0.5)");
-                ctx.set_font("10px monospace");
-                let _ = ctx.fill_text(note_names[semitone], 4.0, (y - 3.0) as f64);
-            }
+        if column_x < 2.0 {
+            ctx.set_fill_style_str("rgba(255,255,255,0.5)");
+            ctx.set_font("10px monospace");
+            let _ = ctx.fill_text(note_names[semitone], 4.0, (y - 3.0) as f64);
         }
+    }
 
-        // Detected pitch wrapped to one octave
-        if let Some(freq) = pitch {
-            let semitones_from_c = 12.0 * (freq / 16.3516).log2();
-            let semitone_in_octave = semitones_from_c.rem_euclid(12.0);
-            let y = height * (1.0 - semitone_in_octave / 12.0);
-            ctx.set_fill_style_str("rgb(50,255,120)");
-            ctx.begin_path();
-            let _ = ctx.arc(
-                (column_x + 1.0) as f64,
-                y as f64,
-                4.0,
-                0.0,
-                std::f64::consts::TAU,
-            );
-            ctx.fill();
-        }
+    // Detected pitch wrapped to one octave
+    if let Some(freq) = pitch {
+        let semitones_from_c = 12.0 * (freq / 16.3516).log2();
+        let semitone_in_octave = semitones_from_c.rem_euclid(12.0);
+        let y = height * (1.0 - semitone_in_octave / 12.0);
+        ctx.set_fill_style_str(color);
+        ctx.begin_path();
+        let _ = ctx.arc(
+            (column_x + 1.0) as f64,
+            y as f64,
+            4.0,
+            0.0,
+            std::f64::consts::TAU,
+        );
+        ctx.fill();
     }
 }
 
