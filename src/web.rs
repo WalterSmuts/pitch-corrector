@@ -1,7 +1,7 @@
 use crate::pitch_correction::{Notes, PitchCorrector};
 use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -24,6 +24,7 @@ pub struct WebPitchCorrector {
     input_contour_index: Arc<AtomicUsize>,
     shift_control: Arc<AtomicU32>,
     notes_control: Arc<AtomicU16>,
+    sweep_active: Arc<AtomicBool>,
 }
 
 #[wasm_bindgen]
@@ -79,12 +80,33 @@ impl WebPitchCorrector {
             .default_output_config()
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
 
+        let sweep_active = Arc::new(AtomicBool::new(false));
+        let sweep_flag = sweep_active.clone();
+        let sweep_phase = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let sweep_phase_clone = sweep_phase.clone();
+
         let input_stream = input_device
             .build_input_stream(
                 input_config.into(),
                 move |data: &[f32], _| {
-                    for &sample in data {
-                        input_processor.push_sample(sample);
+                    if sweep_flag.load(Ordering::Relaxed) {
+                        // Generate rising sine sweep: 100Hz to 1000Hz over ~10 seconds
+                        let mut phase = f32::from_bits(sweep_phase_clone.load(Ordering::Relaxed));
+                        for _ in data {
+                            let freq = 100.0 + (phase / 480000.0) * 900.0; // 10s at 48kHz
+                            let sample =
+                                (phase * freq * std::f32::consts::TAU / 48000.0).sin() * 0.5;
+                            input_processor.push_sample(sample);
+                            phase += 1.0;
+                            if phase >= 480000.0 {
+                                phase = 0.0;
+                            }
+                        }
+                        sweep_phase_clone.store(phase.to_bits(), Ordering::Relaxed);
+                    } else {
+                        for &sample in data {
+                            input_processor.push_sample(sample);
+                        }
                     }
                 },
                 |err| log::error!("Input error: {}", err),
@@ -125,6 +147,7 @@ impl WebPitchCorrector {
             input_contour_index,
             shift_control,
             notes_control,
+            sweep_active,
         })
     }
 
@@ -143,6 +166,10 @@ impl WebPitchCorrector {
 
     pub fn get_notes(&self) -> u16 {
         self.notes_control.load(Ordering::Relaxed)
+    }
+
+    pub fn set_sweep(&self, active: bool) {
+        self.sweep_active.store(active, Ordering::Relaxed);
     }
 
     pub fn scale_bits(preset: &str, root: u8) -> u16 {

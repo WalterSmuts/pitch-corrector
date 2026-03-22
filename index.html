@@ -44,6 +44,7 @@
     <div class="controls">
         <button id="start-btn">▶ Start</button>
         <button id="stop-btn" disabled>⏹ Stop</button>
+        <button id="sweep-btn" disabled>🎵 Sine Sweep</button>
     </div>
 
     <div class="section">
@@ -186,6 +187,7 @@
                 document.getElementById('status').textContent = '🔴 Pitch correction active';
                 document.getElementById('start-btn').disabled = true;
                 document.getElementById('stop-btn').disabled = false;
+                document.getElementById('sweep-btn').disabled = false;
 
                 const inputSpec = document.getElementById('input-spectrogram');
                 const inputContour = document.getElementById('input-contour');
@@ -223,6 +225,7 @@
             document.getElementById('status').textContent = 'Stopped';
             document.getElementById('start-btn').disabled = false;
             document.getElementById('stop-btn').disabled = true;
+            document.getElementById('sweep-btn').disabled = true;
         }
 
         // View toggle
@@ -240,6 +243,13 @@
 
         document.getElementById('start-btn').addEventListener('click', start);
         document.getElementById('stop-btn').addEventListener('click', stop);
+        document.getElementById('sweep-btn').addEventListener('click', () => {
+            const btn = document.getElementById('sweep-btn');
+            const active = !btn.classList.contains('active');
+            btn.classList.toggle('active');
+            btn.textContent = active ? '🎵 Sweep On' : '🎵 Sine Sweep';
+            if (corrector) corrector.set_sweep(active);
+        });
     </script>
 </body>
 </html>

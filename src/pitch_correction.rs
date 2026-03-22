@@ -109,20 +109,37 @@ impl PitchCorrector {
         let note_set = Arc::new(AtomicU16::new(notes.bits()));
         let shift_clone = shift.clone();
         let notes_clone = note_set.clone();
+        let prev_target = AtomicU32::new(0.0f32.to_bits());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
+            // Energy gate: skip silent frames
+            let energy = frame.iter().map(|s| s * s).sum::<f32>() / frame.len() as f32;
+            if energy < 0.0001 {
+                return (2.0f32).powf(f32::from_bits(shift_clone.load(Ordering::Relaxed)) / 12.0);
+            }
+
             let current_notes = Notes::from_bits_truncate(notes_clone.load(Ordering::Relaxed));
             let mut detector = YinPitchDetector::new();
             let correction = match detector.detect(frame) {
                 Some(freq) => {
                     let target = nearest_note(freq, current_notes);
-                    let ratio = target / freq;
-                    log::info!(
-                        "Pitch: {:.1}Hz -> {:.1}Hz (ratio: {:.3})",
-                        freq,
-                        target,
-                        ratio
-                    );
-                    ratio
+
+                    // Schmitt trigger: only switch note if detected pitch has
+                    // crossed more than half a semitone past the previous target
+                    let prev = f32::from_bits(prev_target.load(Ordering::Relaxed));
+                    let final_target = if prev > 0.0 && target != prev {
+                        let dist_from_prev = (12.0 * (freq / prev).log2()).abs();
+                        if dist_from_prev < 0.5 {
+                            prev
+                        } else {
+                            prev_target.store(target.to_bits(), Ordering::Relaxed);
+                            target
+                        }
+                    } else {
+                        prev_target.store(target.to_bits(), Ordering::Relaxed);
+                        target
+                    };
+
+                    final_target / freq
                 }
                 None => 1.0,
             };
