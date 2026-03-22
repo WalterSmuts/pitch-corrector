@@ -114,14 +114,6 @@ fn phase_vocoder(user_interface: &mut UserInterface, ratio: f32) -> (Stream, Str
     ))
 }
 
-fn pitch_corrector(user_interface: &mut UserInterface) -> (Stream, Stream) {
-    hardware::setup_passthrough_processor(pipeline!(
-        user_interface.create_display_processor(),
-        pitch_correction::new_pitch_corrector(),
-        user_interface.create_display_processor(),
-    ))
-}
-
 fn main() {
     tui_logger::init_logger(log::LevelFilter::Trace).unwrap();
     tui_logger::set_default_level(log::LevelFilter::Trace);
@@ -138,7 +130,39 @@ fn main() {
             frequency_domain_pitch_shifter(&mut user_inferface, ratio)
         }
         SubCommand::PhaseVocoder { ratio } => phase_vocoder(&mut user_inferface, ratio),
-        SubCommand::PitchCorrector => pitch_corrector(&mut user_inferface),
+        SubCommand::PitchCorrector => {
+            let corrector = pitch_correction::PitchCorrector::new();
+            let shift = corrector.shift_control();
+            let _streams = hardware::setup_passthrough_processor(pipeline!(
+                user_inferface.create_display_processor(),
+                corrector,
+                user_inferface.create_display_processor(),
+            ));
+            log_panics::init();
+            user_inferface.run_with_key_handler(move |key| {
+                use crossterm::event::KeyCode;
+                let get = || f32::from_bits(shift.load(std::sync::atomic::Ordering::Relaxed));
+                let set = |v: f32| shift.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                match key {
+                    KeyCode::Up => {
+                        let s = get() + 1.0;
+                        set(s);
+                        log::info!("Pitch shift: {:.0} semitones", s);
+                    }
+                    KeyCode::Down => {
+                        let s = get() - 1.0;
+                        set(s);
+                        log::info!("Pitch shift: {:.0} semitones", s);
+                    }
+                    KeyCode::Char('0') => {
+                        set(0.0);
+                        log::info!("Pitch shift: reset to 0");
+                    }
+                    _ => {}
+                }
+            });
+            return;
+        }
     };
     log_panics::init();
     user_inferface.run();

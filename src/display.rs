@@ -49,6 +49,10 @@ pub struct UserInterface {
 
 impl UserInterface {
     pub fn run(&mut self) {
+        self.run_with_key_handler(|_| {});
+    }
+
+    pub fn run_with_key_handler(&mut self, mut on_key: impl FnMut(KeyCode)) {
         info!("Running UserInterface");
         terminal::enable_raw_mode().unwrap();
         let mut stdout = std::io::stdout();
@@ -87,6 +91,8 @@ impl UserInterface {
                             State::Display => self.state = State::Logger,
                             _ => self.state = State::Display,
                         }
+                    } else {
+                        on_key(key.code);
                     }
                 }
             }

@@ -1,4 +1,6 @@
-use crate::signal_processing::{PhaseVocoderPitchShifter, YinPitchDetector};
+use crate::signal_processing::{PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 /// Scale notes: only fifths (C, G)
 const SCALE_OFFSETS: [f32; 2] = [0.0, 7.0];
@@ -28,32 +30,68 @@ fn nearest_scale_note(freq: f32) -> f32 {
     16.3516 * (2.0f32).powf(target_semitones / 12.0)
 }
 
-fn pitch_correction_ratio(frame: &[f32]) -> f32 {
-    let mut detector = YinPitchDetector::new();
-    match detector.detect(frame) {
-        Some(freq) => {
-            let target = nearest_scale_note(freq);
-            let ratio = target / freq;
-            log::info!(
-                "Pitch: {:.1}Hz -> {:.1}Hz (ratio: {:.3})",
-                freq,
-                target,
-                ratio
-            );
-            ratio
+type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
+
+pub struct PitchCorrector {
+    shift_semitones: Arc<AtomicU32>,
+    processor: PhaseVocoderPitchShifter<RatioFn>,
+}
+
+impl PitchCorrector {
+    pub fn new() -> Self {
+        let shift = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let shift_clone = shift.clone();
+        let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
+            let mut detector = YinPitchDetector::new();
+            let correction = match detector.detect(frame) {
+                Some(freq) => {
+                    let target = nearest_scale_note(freq);
+                    let ratio = target / freq;
+                    log::info!(
+                        "Pitch: {:.1}Hz -> {:.1}Hz (ratio: {:.3})",
+                        freq,
+                        target,
+                        ratio
+                    );
+                    ratio
+                }
+                None => 1.0,
+            };
+            let semitones = f32::from_bits(shift_clone.load(Ordering::Relaxed));
+            correction * (2.0f32).powf(semitones / 12.0)
+        });
+        let processor = PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn);
+        PitchCorrector {
+            shift_semitones: shift,
+            processor,
         }
-        None => 1.0,
+    }
+
+    /// Set additional pitch shift in semitones (e.g. 12.0 = up one octave)
+    #[allow(dead_code)]
+    pub fn set_semitones(&self, semitones: f32) {
+        self.shift_semitones
+            .store(semitones.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn shift_control(&self) -> Arc<AtomicU32> {
+        self.shift_semitones.clone()
     }
 }
 
-pub fn new_pitch_corrector() -> PhaseVocoderPitchShifter<impl Fn(&[f32]) -> f32 + Send + Sync> {
-    PhaseVocoderPitchShifter::with_ratio_fn(pitch_correction_ratio)
+impl StreamProcessor for PitchCorrector {
+    fn push_sample(&self, sample: f32) {
+        self.processor.push_sample(sample);
+    }
+
+    fn pop_sample(&self) -> Option<f32> {
+        self.processor.pop_sample()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::signal_processing::StreamProcessor;
     use std::f32::consts::TAU;
 
     const BUFFER_SIZE: usize = 1024;
@@ -76,16 +114,16 @@ mod tests {
 
     #[test]
     fn pitch_corrector_produces_output() {
-        let processor = new_pitch_corrector();
+        let corrector = PitchCorrector::new();
 
         let num_samples = BUFFER_SIZE * 10;
         for i in 0..num_samples {
             let sample = (TAU * 445.0 * i as f32 / SAMPLE_RATE as f32).sin();
-            processor.push_sample(sample);
+            corrector.push_sample(sample);
         }
 
         let mut output = Vec::new();
-        while let Some(s) = processor.pop_sample() {
+        while let Some(s) = corrector.pop_sample() {
             output.push(s);
         }
 
