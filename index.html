@@ -95,12 +95,14 @@
             <div class="btn-group" id="view-group">
                 <button data-view="spectrogram" class="active">Spectrogram</button>
                 <button data-view="pitch">Pitch Contour</button>
+                <button data-view="input">Input Contour</button>
             </div>
         </div>
     </div>
 
     <canvas id="spectrogram" width="1200" height="500"></canvas>
     <canvas id="pitch-contour" width="1200" height="500" style="display:none"></canvas>
+    <canvas id="input-contour" width="1200" height="500" style="display:none"></canvas>
 
     <script type="module">
         import init, { WebPitchCorrector } from './pkg/pitch_corrector.js';
@@ -178,13 +180,20 @@
 
                 const canvas = document.getElementById('spectrogram');
                 const pitchCanvas = document.getElementById('pitch-contour');
+                const inputCanvas = document.getElementById('input-contour');
                 const ctx = canvas.getContext('2d');
 
                 let pitchX = 0;
+                let inputX = 0;
                 setInterval(() => {
                     if (!corrector) return;
                     corrector.draw_pitch_contour(pitchCanvas, pitchX);
                     pitchX = (pitchX + 1) % pitchCanvas.width;
+                }, 2);
+                setInterval(() => {
+                    if (!corrector) return;
+                    corrector.draw_input_contour(inputCanvas, inputX);
+                    inputX = (inputX + 1) % inputCanvas.width;
                 }, 2);
 
                 function draw() {
@@ -219,10 +228,10 @@
             if (!e.target.dataset.view) return;
             document.querySelectorAll('#view-group button').forEach(b => b.classList.remove('active'));
             e.target.classList.add('active');
-            document.getElementById('spectrogram').style.display =
-                e.target.dataset.view === 'spectrogram' ? 'block' : 'none';
-            document.getElementById('pitch-contour').style.display =
-                e.target.dataset.view === 'pitch' ? 'block' : 'none';
+            const v = e.target.dataset.view;
+            document.getElementById('spectrogram').style.display = v === 'spectrogram' ? 'block' : 'none';
+            document.getElementById('pitch-contour').style.display = v === 'pitch' ? 'block' : 'none';
+            document.getElementById('input-contour').style.display = v === 'input' ? 'block' : 'none';
         });
 
         document.getElementById('start-btn').addEventListener('click', start);

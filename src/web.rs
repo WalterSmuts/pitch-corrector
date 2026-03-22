@@ -18,6 +18,8 @@ pub struct WebPitchCorrector {
     spectrogram_index: Arc<AtomicUsize>,
     contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     contour_index: Arc<AtomicUsize>,
+    input_contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
+    input_contour_index: Arc<AtomicUsize>,
     shift_control: Arc<AtomicU32>,
     notes_control: Arc<AtomicU16>,
 }
@@ -36,14 +38,18 @@ impl WebPitchCorrector {
         let contour_buffer = contour_display.clone_display_buffer();
         let contour_index = contour_display.clone_write_index();
 
+        let input_contour_display: DisplayProcessor<CONTOUR_SIZE> = DisplayProcessor::new();
+        let input_contour_buffer = input_contour_display.clone_display_buffer();
+        let input_contour_index = input_contour_display.clone_write_index();
+
         let corrector = PitchCorrector::new();
         let shift_control = corrector.shift_control();
         let notes_control = corrector.notes_control();
 
-        // Pipeline: contour_display -> corrector -> spectrogram_display
+        // Pipeline: input_contour -> corrector -> contour -> spectrogram
         let processor = Arc::new(compose(
-            corrector,
-            compose(contour_display, spectrogram_display),
+            input_contour_display,
+            compose(corrector, compose(contour_display, spectrogram_display)),
         ));
         let input_processor = processor.clone();
         let output_processor = processor.clone();
@@ -104,6 +110,8 @@ impl WebPitchCorrector {
             spectrogram_index,
             contour_buffer,
             contour_index,
+            input_contour_buffer,
+            input_contour_index,
             shift_control,
             notes_control,
         })
@@ -205,6 +213,16 @@ impl WebPitchCorrector {
             &self.contour_buffer,
             &self.contour_index,
             "rgb(50,255,120)",
+        );
+    }
+
+    pub fn draw_input_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
+        draw_contour(
+            canvas,
+            column_x,
+            &self.input_contour_buffer,
+            &self.input_contour_index,
+            "rgb(255,150,50)",
         );
     }
 }
