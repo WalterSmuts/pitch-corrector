@@ -91,6 +91,7 @@ impl WebPitchCorrector {
                         for _ in data {
                             let freq = 100.0 + (counter / 480000.0) * 900.0;
                             phase += freq / 48000.0;
+                            phase -= phase.floor();
                             let sample = (phase * std::f32::consts::TAU).sin() * 0.5;
                             input_processor.push_sample(sample);
                             counter += 1.0;
