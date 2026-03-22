@@ -1,5 +1,5 @@
 use crate::pitch_correction::{Notes, PitchCorrector};
-use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor};
+use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -7,14 +7,17 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-const DISPLAY_SIZE: usize = 8192;
+const SPECTROGRAM_SIZE: usize = 8192;
+const CONTOUR_SIZE: usize = 2048;
 
 #[wasm_bindgen]
 pub struct WebPitchCorrector {
     _input_stream: cpal::Stream,
     _output_stream: cpal::Stream,
-    display_buffer: Arc<Mutex<[f32; DISPLAY_SIZE]>>,
-    write_index: Arc<AtomicUsize>,
+    spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
+    spectrogram_index: Arc<AtomicUsize>,
+    contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
+    contour_index: Arc<AtomicUsize>,
     shift_control: Arc<AtomicU32>,
     notes_control: Arc<AtomicU16>,
 }
@@ -25,15 +28,23 @@ impl WebPitchCorrector {
     pub fn new() -> Result<WebPitchCorrector, JsValue> {
         console_log::init_with_level(log::Level::Info).ok();
 
-        let display: DisplayProcessor<DISPLAY_SIZE> = DisplayProcessor::new();
-        let display_buffer = display.clone_display_buffer();
-        let write_index = display.clone_write_index();
+        let spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
+        let spectrogram_buffer = spectrogram_display.clone_display_buffer();
+        let spectrogram_index = spectrogram_display.clone_write_index();
+
+        let contour_display: DisplayProcessor<CONTOUR_SIZE> = DisplayProcessor::new();
+        let contour_buffer = contour_display.clone_display_buffer();
+        let contour_index = contour_display.clone_write_index();
 
         let corrector = PitchCorrector::new();
         let shift_control = corrector.shift_control();
         let notes_control = corrector.notes_control();
 
-        let processor = Arc::new(compose(corrector, display));
+        // Pipeline: contour_display -> corrector -> spectrogram_display
+        let processor = Arc::new(compose(
+            corrector,
+            compose(contour_display, spectrogram_display),
+        ));
         let input_processor = processor.clone();
         let output_processor = processor.clone();
 
@@ -89,8 +100,10 @@ impl WebPitchCorrector {
         Ok(WebPitchCorrector {
             _input_stream: input_stream,
             _output_stream: output_stream,
-            display_buffer,
-            write_index,
+            spectrogram_buffer,
+            spectrogram_index,
+            contour_buffer,
+            contour_index,
             shift_control,
             notes_control,
         })
@@ -113,7 +126,6 @@ impl WebPitchCorrector {
         self.notes_control.load(Ordering::Relaxed)
     }
 
-    /// Returns the bitflags for a preset scale. root is 0=C, 1=C#, ..., 11=B
     pub fn scale_bits(preset: &str, root: u8) -> u16 {
         let root_note = Notes::BY_INDEX[root as usize % 12];
         match preset {
@@ -137,12 +149,12 @@ impl WebPitchCorrector {
             .unwrap();
 
         let height = canvas.height() as usize;
-        let raw_buffer = self.display_buffer.lock().unwrap();
-        let idx = self.write_index.load(Ordering::Relaxed) % DISPLAY_SIZE;
+        let raw_buffer = self.spectrogram_buffer.lock().unwrap();
+        let idx = self.spectrogram_index.load(Ordering::Relaxed) % SPECTROGRAM_SIZE;
 
-        let mut buffer = vec![0.0f32; DISPLAY_SIZE];
-        buffer[..DISPLAY_SIZE - idx].copy_from_slice(&raw_buffer[idx..]);
-        buffer[DISPLAY_SIZE - idx..].copy_from_slice(&raw_buffer[..idx]);
+        let mut buffer = vec![0.0f32; SPECTROGRAM_SIZE];
+        buffer[..SPECTROGRAM_SIZE - idx].copy_from_slice(&raw_buffer[idx..]);
+        buffer[SPECTROGRAM_SIZE - idx..].copy_from_slice(&raw_buffer[..idx]);
         drop(raw_buffer);
 
         let len = buffer.len() as f32;
@@ -169,7 +181,7 @@ impl WebPitchCorrector {
 
             let mag_lo = spectrum[bin_lo].norm();
             let mag_hi = spectrum[bin_hi].norm();
-            let mut mag = (mag_lo * (1.0 - frac) + mag_hi * frac) / DISPLAY_SIZE as f32;
+            let mut mag = (mag_lo * (1.0 - frac) + mag_hi * frac) / SPECTROGRAM_SIZE as f32;
             mag *= bin_f.sqrt();
 
             let power = mag * mag;
@@ -183,6 +195,77 @@ impl WebPitchCorrector {
             let (r, g, b) = heatmap(intensity);
             ctx.set_fill_style_str(&format!("rgb({r},{g},{b})"));
             ctx.fill_rect(column_x as f64, y_pixel as f64, 1.0, 1.0);
+        }
+    }
+
+    pub fn draw_pitch_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
+        let ctx: CanvasRenderingContext2d = canvas
+            .get_context("2d")
+            .unwrap()
+            .unwrap()
+            .dyn_into()
+            .unwrap();
+
+        let height = canvas.height() as f32;
+        let raw_buffer = self.contour_buffer.lock().unwrap();
+        let idx = self.contour_index.load(Ordering::Relaxed) % CONTOUR_SIZE;
+        let mut buffer = vec![0.0f32; CONTOUR_SIZE];
+        buffer[..CONTOUR_SIZE - idx].copy_from_slice(&raw_buffer[idx..]);
+        buffer[CONTOUR_SIZE - idx..].copy_from_slice(&raw_buffer[..idx]);
+        drop(raw_buffer);
+
+        let energy: f32 = buffer.iter().map(|s| s * s).sum::<f32>() / buffer.len() as f32;
+
+        let mut detector = YinPitchDetector::new();
+        let pitch = if energy > 0.0001 {
+            detector.detect(&buffer)
+        } else {
+            None
+        };
+
+        // Background
+        ctx.set_fill_style_str("rgb(10,10,20)");
+        ctx.fill_rect(column_x as f64, 0.0, 2.0, height as f64);
+
+        // Semitone grid lines with note names
+        let note_names = [
+            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+        ];
+        for semitone in 0..12 {
+            let y = height * (1.0 - semitone as f32 / 12.0);
+            let alpha = if semitone == 0 || semitone == 4 || semitone == 7 {
+                0.3
+            } else {
+                0.1
+            };
+            ctx.set_stroke_style_str(&format!("rgba(255,255,255,{alpha})"));
+            ctx.begin_path();
+            ctx.move_to(column_x as f64, y as f64);
+            ctx.line_to((column_x + 2.0) as f64, y as f64);
+            ctx.stroke();
+
+            if column_x < 2.0 {
+                ctx.set_fill_style_str("rgba(255,255,255,0.5)");
+                ctx.set_font("10px monospace");
+                let _ = ctx.fill_text(note_names[semitone], 4.0, (y - 3.0) as f64);
+            }
+        }
+
+        // Detected pitch wrapped to one octave
+        if let Some(freq) = pitch {
+            let semitones_from_c = 12.0 * (freq / 16.3516).log2();
+            let semitone_in_octave = semitones_from_c.rem_euclid(12.0);
+            let y = height * (1.0 - semitone_in_octave / 12.0);
+            ctx.set_fill_style_str("rgb(50,255,120)");
+            ctx.begin_path();
+            let _ = ctx.arc(
+                (column_x + 1.0) as f64,
+                y as f64,
+                4.0,
+                0.0,
+                std::f64::consts::TAU,
+            );
+            ctx.fill();
         }
     }
 }

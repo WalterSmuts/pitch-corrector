@@ -26,6 +26,10 @@
         }
         button:hover { background: #0f3460; }
         button.active { background: #e94560; border-color: #e94560; }
+        .btn-group { display: flex; gap: 0; }
+        .btn-group button { border-radius: 0; border-right: none; opacity: 0.5; }
+        .btn-group button:last-child { border-right: 1px solid #555; }
+        .btn-group button.active { opacity: 1; background: #e94560; border-color: #e94560; }
         #status { color: #888; margin: 10px 0; }
         .section { margin: 10px 0; text-align: center; }
         .note-grid { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
@@ -85,7 +89,18 @@
         </div>
     </div>
 
+    <div class="section">
+        <div class="controls">
+            View:
+            <div class="btn-group" id="view-group">
+                <button data-view="spectrogram" class="active">Spectrogram</button>
+                <button data-view="pitch">Pitch Contour</button>
+            </div>
+        </div>
+    </div>
+
     <canvas id="spectrogram" width="1200" height="500"></canvas>
+    <canvas id="pitch-contour" width="1200" height="500" style="display:none"></canvas>
 
     <script type="module">
         import init, { WebPitchCorrector } from './pkg/pitch_corrector.js';
@@ -162,7 +177,16 @@
                 document.getElementById('stop-btn').disabled = false;
 
                 const canvas = document.getElementById('spectrogram');
+                const pitchCanvas = document.getElementById('pitch-contour');
                 const ctx = canvas.getContext('2d');
+
+                let pitchX = 0;
+                setInterval(() => {
+                    if (!corrector) return;
+                    corrector.draw_pitch_contour(pitchCanvas, pitchX);
+                    pitchX = (pitchX + 1) % pitchCanvas.width;
+                }, 2);
+
                 function draw() {
                     if (!corrector) return;
                     corrector.draw_spectrogram(canvas, columnX);
@@ -189,6 +213,17 @@
             document.getElementById('start-btn').disabled = false;
             document.getElementById('stop-btn').disabled = true;
         }
+
+        // View toggle
+        document.getElementById('view-group').addEventListener('click', (e) => {
+            if (!e.target.dataset.view) return;
+            document.querySelectorAll('#view-group button').forEach(b => b.classList.remove('active'));
+            e.target.classList.add('active');
+            document.getElementById('spectrogram').style.display =
+                e.target.dataset.view === 'spectrogram' ? 'block' : 'none';
+            document.getElementById('pitch-contour').style.display =
+                e.target.dataset.view === 'pitch' ? 'block' : 'none';
+        });
 
         document.getElementById('start-btn').addEventListener('click', start);
         document.getElementById('stop-btn').addEventListener('click', stop);
