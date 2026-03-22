@@ -13,27 +13,25 @@
             align-items: center;
             padding: 20px;
         }
-        canvas {
-            border: 1px solid #444;
-            margin: 10px 0;
-        }
-        .controls {
-            display: flex;
-            gap: 20px;
-            align-items: center;
-            margin: 10px 0;
-        }
+        canvas { border: 1px solid #444; margin: 10px 0; }
+        .controls { display: flex; gap: 10px; align-items: center; margin: 10px 0; flex-wrap: wrap; justify-content: center; }
         button {
             background: #16213e;
             color: #eee;
             border: 1px solid #555;
-            padding: 10px 20px;
+            padding: 8px 16px;
             cursor: pointer;
             font-family: monospace;
-            font-size: 16px;
+            font-size: 14px;
         }
         button:hover { background: #0f3460; }
+        button.active { background: #e94560; border-color: #e94560; }
         #status { color: #888; margin: 10px 0; }
+        .section { margin: 10px 0; text-align: center; }
+        .note-grid { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
+        .note-grid button { min-width: 36px; padding: 6px 8px; font-size: 12px; }
+        input[type=range] { width: 300px; accent-color: #e94560; }
+        .shift-display { font-size: 18px; min-width: 80px; text-align: center; }
     </style>
 </head>
 <body>
@@ -43,38 +41,137 @@
         <button id="start-btn">▶ Start</button>
         <button id="stop-btn" disabled>⏹ Stop</button>
     </div>
-    <h3>Spectrogram</h3>
+
+    <div class="section">
+        <div class="controls" id="scale-buttons">
+            <button data-scale="off">Off</button>
+            <button data-scale="chromatic">Chromatic</button>
+            <button data-scale="major">Major</button>
+            <button data-scale="minor">Minor</button>
+            <button data-scale="pentatonic" class="active">Pentatonic</button>
+            <button data-scale="custom">Custom</button>
+        </div>
+    </div>
+
+    <div class="section">
+        <div class="controls">
+            Root:
+            <select id="root-select">
+                <option value="0" selected>C</option>
+                <option value="1">C#</option>
+                <option value="2">D</option>
+                <option value="3">D#</option>
+                <option value="4">E</option>
+                <option value="5">F</option>
+                <option value="6">F#</option>
+                <option value="7">G</option>
+                <option value="8">G#</option>
+                <option value="9">A</option>
+                <option value="10">A#</option>
+                <option value="11">B</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="section" id="custom-notes" style="display:none">
+        <div class="note-grid" id="note-grid"></div>
+    </div>
+
+    <div class="section">
+        <div class="controls">
+            <span>Shift:</span>
+            <input type="range" id="shift-slider" min="-12" max="12" value="0" step="1">
+            <span class="shift-display" id="shift-display">0 st</span>
+        </div>
+    </div>
+
     <canvas id="spectrogram" width="1200" height="500"></canvas>
 
     <script type="module">
         import init, { WebPitchCorrector } from './pkg/pitch_corrector.js';
 
+        const noteNames = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
         let corrector = null;
         let animFrame = null;
         let columnX = 0;
+        let currentScale = 'pentatonic';
+        let customBits = 0xFFF; // all notes
+
+        // Build custom note grid
+        const noteGrid = document.getElementById('note-grid');
+        noteNames.forEach((name, i) => {
+            const btn = document.createElement('button');
+            btn.textContent = name;
+            btn.dataset.note = i;
+            btn.classList.add('active');
+            btn.addEventListener('click', () => {
+                btn.classList.toggle('active');
+                customBits = 0;
+                noteGrid.querySelectorAll('button.active').forEach(b => {
+                    customBits |= (1 << parseInt(b.dataset.note));
+                });
+                if (corrector && currentScale === 'custom') {
+                    corrector.set_notes(customBits);
+                }
+            });
+            noteGrid.appendChild(btn);
+        });
+
+        function applyScale() {
+            if (!corrector) return;
+            const root = parseInt(document.getElementById('root-select').value);
+            if (currentScale === 'custom') {
+                corrector.set_notes(customBits);
+            } else {
+                corrector.set_notes(WebPitchCorrector.scale_bits(currentScale, root));
+            }
+        }
+
+        // Scale buttons
+        document.querySelectorAll('#scale-buttons button').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.querySelectorAll('#scale-buttons button').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                currentScale = btn.dataset.scale;
+                document.getElementById('custom-notes').style.display =
+                    currentScale === 'custom' ? 'block' : 'none';
+                applyScale();
+            });
+        });
+
+        // Root selector
+        document.getElementById('root-select').addEventListener('change', applyScale);
+
+        // Shift slider
+        const slider = document.getElementById('shift-slider');
+        const shiftDisplay = document.getElementById('shift-display');
+        slider.addEventListener('input', () => {
+            const v = parseFloat(slider.value);
+            shiftDisplay.textContent = (v >= 0 ? '+' : '') + v + ' st';
+            if (corrector) corrector.set_shift(v);
+        });
 
         async function start() {
             await init();
             try {
                 corrector = new WebPitchCorrector();
-                document.getElementById('status').textContent = '🔴 Passthrough active';
+                applyScale();
+                corrector.set_shift(parseFloat(slider.value));
+                document.getElementById('status').textContent = '🔴 Pitch correction active';
                 document.getElementById('start-btn').disabled = true;
                 document.getElementById('stop-btn').disabled = false;
 
                 const canvas = document.getElementById('spectrogram');
                 const ctx = canvas.getContext('2d');
-
                 function draw() {
                     if (!corrector) return;
                     corrector.draw_spectrogram(canvas, columnX);
                     columnX = (columnX + 1) % canvas.width;
-
                     ctx.strokeStyle = '#ff0';
                     ctx.beginPath();
                     ctx.moveTo((columnX + 1) % canvas.width, 0);
                     ctx.lineTo((columnX + 1) % canvas.width, canvas.height);
                     ctx.stroke();
-
                     animFrame = requestAnimationFrame(draw);
                 }
                 draw();

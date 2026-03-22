@@ -1,6 +1,7 @@
-use crate::signal_processing::{DisplayProcessor, StreamProcessor};
+use crate::pitch_correction::{Notes, PitchCorrector};
+use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -14,6 +15,8 @@ pub struct WebPitchCorrector {
     _output_stream: cpal::Stream,
     display_buffer: Arc<Mutex<[f32; DISPLAY_SIZE]>>,
     write_index: Arc<AtomicUsize>,
+    shift_control: Arc<AtomicU32>,
+    notes_control: Arc<AtomicU16>,
 }
 
 #[wasm_bindgen]
@@ -25,8 +28,14 @@ impl WebPitchCorrector {
         let display: DisplayProcessor<DISPLAY_SIZE> = DisplayProcessor::new();
         let display_buffer = display.clone_display_buffer();
         let write_index = display.clone_write_index();
-        let input_processor = Arc::new(display);
-        let output_processor = input_processor.clone();
+
+        let corrector = PitchCorrector::new();
+        let shift_control = corrector.shift_control();
+        let notes_control = corrector.notes_control();
+
+        let processor = Arc::new(compose(corrector, display));
+        let input_processor = processor.clone();
+        let output_processor = processor.clone();
 
         let host = cpal::default_host();
 
@@ -44,25 +53,10 @@ impl WebPitchCorrector {
             .default_output_config()
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
 
-        // Separate buffer to capture raw input for spectrogram
-        let input_display_buffer = Arc::new(Mutex::new([0.0f32; DISPLAY_SIZE]));
-        let input_write_index = Arc::new(AtomicUsize::new(0));
-        let input_buf_clone = input_display_buffer.clone();
-        let input_idx_clone = input_write_index.clone();
-
         let input_stream = input_device
             .build_input_stream(
                 input_config.into(),
                 move |data: &[f32], _| {
-                    // Write directly to spectrogram buffer
-                    {
-                        let mut buf = input_buf_clone.lock().unwrap();
-                        for &sample in data {
-                            let idx =
-                                input_idx_clone.fetch_add(1, Ordering::Relaxed) % DISPLAY_SIZE;
-                            buf[idx] = sample;
-                        }
-                    }
                     for &sample in data {
                         input_processor.push_sample(sample);
                     }
@@ -95,9 +89,41 @@ impl WebPitchCorrector {
         Ok(WebPitchCorrector {
             _input_stream: input_stream,
             _output_stream: output_stream,
-            display_buffer: input_display_buffer,
-            write_index: input_write_index,
+            display_buffer,
+            write_index,
+            shift_control,
+            notes_control,
         })
+    }
+
+    pub fn set_shift(&self, semitones: f32) {
+        self.shift_control
+            .store(semitones.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn get_shift(&self) -> f32 {
+        f32::from_bits(self.shift_control.load(Ordering::Relaxed))
+    }
+
+    pub fn set_notes(&self, bits: u16) {
+        self.notes_control.store(bits, Ordering::Relaxed);
+    }
+
+    pub fn get_notes(&self) -> u16 {
+        self.notes_control.load(Ordering::Relaxed)
+    }
+
+    /// Returns the bitflags for a preset scale. root is 0=C, 1=C#, ..., 11=B
+    pub fn scale_bits(preset: &str, root: u8) -> u16 {
+        let root_note = Notes::BY_INDEX[root as usize % 12];
+        match preset {
+            "off" => Notes::empty().bits(),
+            "chromatic" => Notes::chromatic().bits(),
+            "major" => Notes::major(root_note).bits(),
+            "minor" => Notes::minor(root_note).bits(),
+            "pentatonic" => Notes::pentatonic(root_note).bits(),
+            _ => Notes::chromatic().bits(),
+        }
     }
 
     pub fn draw_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {

@@ -21,7 +21,7 @@ bitflags::bitflags! {
 }
 
 impl Notes {
-    const BY_INDEX: [Notes; 12] = [
+    pub const BY_INDEX: [Notes; 12] = [
         Notes::C,
         Notes::CS,
         Notes::D,
