@@ -91,18 +91,27 @@
 
     <div class="section">
         <div class="controls">
-            View:
-            <div class="btn-group" id="view-group">
+            <h3>Input</h3>
+            <div class="btn-group" id="input-view-group">
                 <button data-view="spectrogram" class="active">Spectrogram</button>
                 <button data-view="pitch">Pitch Contour</button>
-                <button data-view="input">Input Contour</button>
             </div>
         </div>
     </div>
+    <canvas id="input-spectrogram" width="1200" height="300"></canvas>
+    <canvas id="input-contour" width="1200" height="300" style="display:none"></canvas>
 
-    <canvas id="spectrogram" width="1200" height="500"></canvas>
-    <canvas id="pitch-contour" width="1200" height="500" style="display:none"></canvas>
-    <canvas id="input-contour" width="1200" height="500" style="display:none"></canvas>
+    <div class="section">
+        <div class="controls">
+            <h3>Output</h3>
+            <div class="btn-group" id="output-view-group">
+                <button data-view="spectrogram" class="active">Spectrogram</button>
+                <button data-view="pitch">Pitch Contour</button>
+            </div>
+        </div>
+    </div>
+    <canvas id="output-spectrogram" width="1200" height="300"></canvas>
+    <canvas id="output-contour" width="1200" height="300" style="display:none"></canvas>
 
     <script type="module">
         import init, { WebPitchCorrector } from './pkg/pitch_corrector.js';
@@ -178,33 +187,26 @@
                 document.getElementById('start-btn').disabled = true;
                 document.getElementById('stop-btn').disabled = false;
 
-                const canvas = document.getElementById('spectrogram');
-                const pitchCanvas = document.getElementById('pitch-contour');
-                const inputCanvas = document.getElementById('input-contour');
-                const ctx = canvas.getContext('2d');
+                const inputSpec = document.getElementById('input-spectrogram');
+                const inputContour = document.getElementById('input-contour');
+                const outputSpec = document.getElementById('output-spectrogram');
+                const outputContour = document.getElementById('output-contour');
 
-                let pitchX = 0;
-                let inputX = 0;
+                let inputContourX = 0;
+                let outputContourX = 0;
                 setInterval(() => {
                     if (!corrector) return;
-                    corrector.draw_pitch_contour(pitchCanvas, pitchX);
-                    pitchX = (pitchX + 1) % pitchCanvas.width;
-                }, 2);
-                setInterval(() => {
-                    if (!corrector) return;
-                    corrector.draw_input_contour(inputCanvas, inputX);
-                    inputX = (inputX + 1) % inputCanvas.width;
+                    corrector.draw_pitch_contour(outputContour, outputContourX);
+                    outputContourX = (outputContourX + 1) % outputContour.width;
+                    corrector.draw_input_contour(inputContour, inputContourX);
+                    inputContourX = (inputContourX + 1) % inputContour.width;
                 }, 2);
 
                 function draw() {
                     if (!corrector) return;
-                    corrector.draw_spectrogram(canvas, columnX);
-                    columnX = (columnX + 1) % canvas.width;
-                    ctx.strokeStyle = '#ff0';
-                    ctx.beginPath();
-                    ctx.moveTo((columnX + 1) % canvas.width, 0);
-                    ctx.lineTo((columnX + 1) % canvas.width, canvas.height);
-                    ctx.stroke();
+                    corrector.draw_spectrogram(outputSpec, columnX);
+                    corrector.draw_input_spectrogram(inputSpec, columnX);
+                    columnX = (columnX + 1) % outputSpec.width;
                     animFrame = requestAnimationFrame(draw);
                 }
                 draw();
@@ -224,15 +226,17 @@
         }
 
         // View toggle
-        document.getElementById('view-group').addEventListener('click', (e) => {
-            if (!e.target.dataset.view) return;
-            document.querySelectorAll('#view-group button').forEach(b => b.classList.remove('active'));
-            e.target.classList.add('active');
-            const v = e.target.dataset.view;
-            document.getElementById('spectrogram').style.display = v === 'spectrogram' ? 'block' : 'none';
-            document.getElementById('pitch-contour').style.display = v === 'pitch' ? 'block' : 'none';
-            document.getElementById('input-contour').style.display = v === 'input' ? 'block' : 'none';
-        });
+        function setupViewToggle(groupId, canvasA, canvasB) {
+            document.getElementById(groupId).addEventListener('click', (e) => {
+                if (!e.target.dataset.view) return;
+                e.target.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+                e.target.classList.add('active');
+                document.getElementById(canvasA).style.display = e.target.dataset.view === 'spectrogram' ? 'block' : 'none';
+                document.getElementById(canvasB).style.display = e.target.dataset.view === 'pitch' ? 'block' : 'none';
+            });
+        }
+        setupViewToggle('input-view-group', 'input-spectrogram', 'input-contour');
+        setupViewToggle('output-view-group', 'output-spectrogram', 'output-contour');
 
         document.getElementById('start-btn').addEventListener('click', start);
         document.getElementById('stop-btn').addEventListener('click', stop);
