@@ -45,6 +45,7 @@ pub struct UserInterface {
     state: State,
     display_buffers: Vec<Arc<Mutex<[f32; BUFFER_SIZE]>>>,
     frame_rate: Duration,
+    status: Arc<Mutex<String>>,
 }
 
 impl UserInterface {
@@ -107,6 +108,22 @@ impl UserInterface {
     }
 
     fn draw_frame(&self, frame: &mut Frame) {
+        let status_text = self.status.lock().unwrap().clone();
+
+        // Split: status bar at top, rest for waveforms
+        let main_layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Min(0)])
+            .split(frame.area());
+
+        // Status bar
+        let status = ratatui::widgets::Paragraph::new(status_text).style(
+            ratatui::style::Style::default()
+                .fg(ratatui::style::Color::Yellow)
+                .add_modifier(ratatui::style::Modifier::BOLD),
+        );
+        frame.render_widget(status, main_layout[0]);
+
         let mut constraints = Vec::new();
         for _ in 0..self.display_buffers.len() {
             constraints.push(Constraint::Ratio(1, self.display_buffers.len() as u32));
@@ -114,7 +131,7 @@ impl UserInterface {
         let outer_layout = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
-            .split(frame.area());
+            .split(main_layout[1]);
 
         for (index, buffer) in self.display_buffers.iter().enumerate() {
             let layout = Layout::default()
@@ -206,7 +223,12 @@ impl UserInterface {
             state: State::Display,
             frame_rate: Duration::from_millis(10),
             display_buffers: Vec::new(),
+            status: Arc::new(Mutex::new(String::new())),
         }
+    }
+
+    pub fn status_handle(&self) -> Arc<Mutex<String>> {
+        self.status.clone()
     }
 }
 

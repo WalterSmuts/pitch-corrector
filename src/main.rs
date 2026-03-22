@@ -131,32 +131,69 @@ fn main() {
         }
         SubCommand::PhaseVocoder { ratio } => phase_vocoder(&mut user_inferface, ratio),
         SubCommand::PitchCorrector => {
+            use pitch_correction::Notes;
+
             let corrector = pitch_correction::PitchCorrector::new();
             let shift = corrector.shift_control();
+            let notes = corrector.notes_control();
+            let status = user_inferface.status_handle();
             let _streams = hardware::setup_passthrough_processor(pipeline!(
                 user_inferface.create_display_processor(),
                 corrector,
                 user_inferface.create_display_processor(),
             ));
+
+            let scale_presets: Vec<(&str, Notes)> = vec![
+                ("Off", Notes::empty()),
+                ("Chromatic", Notes::chromatic()),
+                ("C Major", Notes::major(Notes::C)),
+                ("C Minor", Notes::minor(Notes::C)),
+                ("C Pentatonic", Notes::pentatonic(Notes::C)),
+                ("G Major", Notes::major(Notes::G)),
+                ("A Minor", Notes::minor(Notes::A)),
+            ];
+            let mut scale_idx: usize = 4; // Start on C Pentatonic
+
+            let update_status = {
+                let status = status.clone();
+                move |scale_name: &str, semitones: f32| {
+                    *status.lock().unwrap() = format!(
+                        " Scale: {} | Shift: {:.0} semitones | [S]cale [Up/Down]shift [0]reset [L]ogger",
+                        scale_name, semitones
+                    );
+                }
+            };
+            update_status(scale_presets[scale_idx].0, 0.0);
+
             log_panics::init();
             user_inferface.run_with_key_handler(move |key| {
                 use crossterm::event::KeyCode;
-                let get = || f32::from_bits(shift.load(std::sync::atomic::Ordering::Relaxed));
-                let set = |v: f32| shift.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+                let get_shift = || f32::from_bits(shift.load(std::sync::atomic::Ordering::Relaxed));
+                let set_shift =
+                    |v: f32| shift.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
+
                 match key {
                     KeyCode::Up => {
-                        let s = get() + 1.0;
-                        set(s);
-                        log::info!("Pitch shift: {:.0} semitones", s);
+                        let s = get_shift() + 1.0;
+                        set_shift(s);
+                        update_status(scale_presets[scale_idx].0, s);
                     }
                     KeyCode::Down => {
-                        let s = get() - 1.0;
-                        set(s);
-                        log::info!("Pitch shift: {:.0} semitones", s);
+                        let s = get_shift() - 1.0;
+                        set_shift(s);
+                        update_status(scale_presets[scale_idx].0, s);
+                    }
+                    KeyCode::Char('s') => {
+                        scale_idx = (scale_idx + 1) % scale_presets.len();
+                        notes.store(
+                            scale_presets[scale_idx].1.bits(),
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                        update_status(scale_presets[scale_idx].0, get_shift());
                     }
                     KeyCode::Char('0') => {
-                        set(0.0);
-                        log::info!("Pitch shift: reset to 0");
+                        set_shift(0.0);
+                        update_status(scale_presets[scale_idx].0, 0.0);
                     }
                     _ => {}
                 }
