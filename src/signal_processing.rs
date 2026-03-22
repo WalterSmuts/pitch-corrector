@@ -538,7 +538,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
         // IFFT into pre-allocated buffer
         {
             let synth = state.synthesis_spectrum.as_mut().unwrap();
-            *synth.get_offset_mut() = 0.0;
+            *synth.get_offset_mut() = *state.analysis_spectrum.as_ref().unwrap().get_offset();
             let n = synth.get_frequency_bins().len();
             synth
                 .get_frequency_bins_mut()
