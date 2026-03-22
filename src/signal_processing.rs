@@ -1049,6 +1049,47 @@ mod tests {
     }
 
     #[test]
+    fn phase_vocoder_unity_ratio_is_transparent() {
+        let input_freq = 440.0;
+        let processor = PhaseVocoderPitchShifter::new(1.0);
+
+        let num_samples = BUFFER_SIZE * 20;
+        let input: Vec<f32> = (0..num_samples)
+            .map(|i| (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin())
+            .collect();
+
+        for &s in &input {
+            processor.push_sample(s);
+        }
+
+        let mut output = Vec::new();
+        while let Some(s) = processor.pop_sample() {
+            output.push(s);
+        }
+
+        // Skip transients (first few buffers)
+        let skip = BUFFER_SIZE * 2;
+        let len = output.len().min(input.len()) - skip;
+        let compare_len = len.min(BUFFER_SIZE * 5);
+        let input_slice = &input[skip..skip + compare_len];
+        let output_slice = &output[..compare_len];
+
+        // Cross-correlation at zero lag should be close to autocorrelation
+        let cross: f32 = input_slice
+            .iter()
+            .zip(output_slice.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+        let auto: f32 = input_slice.iter().map(|a| a * a).sum();
+
+        let similarity = cross / auto;
+        assert!(
+            similarity > 0.95,
+            "Phase vocoder at ratio 1.0 should be transparent, but similarity was {similarity:.3}"
+        );
+    }
+
+    #[test]
     fn phase_vocoder_pitch_shifter_produces_output() {
         let input_freq = 440.0;
         let processor = PhaseVocoderPitchShifter::new(0.5);
