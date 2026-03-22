@@ -82,7 +82,10 @@ impl WebPitchCorrector {
 
         let sweep_active = Arc::new(AtomicBool::new(false));
         let sweep_flag = sweep_active.clone();
+        // Pack two f32s: [sample_counter, accumulated_phase]
+        let sweep_counter = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let sweep_phase = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let sweep_counter_clone = sweep_counter.clone();
         let sweep_phase_clone = sweep_phase.clone();
 
         let input_stream = input_device
@@ -90,18 +93,20 @@ impl WebPitchCorrector {
                 input_config.into(),
                 move |data: &[f32], _| {
                     if sweep_flag.load(Ordering::Relaxed) {
-                        // Generate rising sine sweep: 100Hz to 1000Hz over ~10 seconds
+                        let mut counter =
+                            f32::from_bits(sweep_counter_clone.load(Ordering::Relaxed));
                         let mut phase = f32::from_bits(sweep_phase_clone.load(Ordering::Relaxed));
                         for _ in data {
-                            let freq = 100.0 + (phase / 480000.0) * 900.0; // 10s at 48kHz
-                            let sample =
-                                (phase * freq * std::f32::consts::TAU / 48000.0).sin() * 0.5;
+                            let freq = 100.0 + (counter / 480000.0) * 900.0;
+                            phase += freq / 48000.0;
+                            let sample = (phase * std::f32::consts::TAU).sin() * 0.5;
                             input_processor.push_sample(sample);
-                            phase += 1.0;
-                            if phase >= 480000.0 {
-                                phase = 0.0;
+                            counter += 1.0;
+                            if counter >= 480000.0 {
+                                counter = 0.0;
                             }
                         }
+                        sweep_counter_clone.store(counter.to_bits(), Ordering::Relaxed);
                         sweep_phase_clone.store(phase.to_bits(), Ordering::Relaxed);
                     } else {
                         for &sample in data {
