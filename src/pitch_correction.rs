@@ -114,6 +114,13 @@ impl PitchCorrector {
         let detector = Mutex::new(YinPitchDetector::new());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
             let current_notes = Notes::from_bits_truncate(notes_clone.load(Ordering::Relaxed));
+            let semitones = f32::from_bits(shift_clone.load(Ordering::Relaxed));
+            let shift_ratio = (2.0f32).powf(semitones / 12.0);
+
+            if current_notes.is_empty() {
+                return shift_ratio;
+            }
+
             let correction = match detector.lock().unwrap().detect(frame) {
                 Some(freq) => {
                     let target = nearest_note(freq, current_notes);
@@ -138,8 +145,7 @@ impl PitchCorrector {
                 }
                 None => 1.0,
             };
-            let semitones = f32::from_bits(shift_clone.load(Ordering::Relaxed));
-            correction * (2.0f32).powf(semitones / 12.0)
+            correction * shift_ratio
         });
         let processor = PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn);
         PitchCorrector {
@@ -315,21 +321,30 @@ mod tests {
             output.len()
         );
         let delay = input.len() - output.len();
-        let input_slice = &input[skip + delay..skip + delay + compare_len];
-        let output_slice = &output[skip..skip + compare_len];
+        // Find best alignment by searching for peak cross-correlation
+        let compare_len = BUFFER_SIZE * 5;
+        let mid = output.len() / 2;
+        let mut best_sim = f32::MIN;
+        let mut best_off = 0usize;
+        for off in delay.saturating_sub(BUFFER_SIZE)..delay + BUFFER_SIZE {
+            if mid + compare_len > output.len() || mid + off + compare_len > input.len() {
+                continue;
+            }
+            let out_slice = &output[mid..mid + compare_len];
+            let in_slice = &input[mid + off..mid + off + compare_len];
+            let cross: f32 = in_slice.iter().zip(out_slice).map(|(a, b)| a * b).sum();
+            let auto: f32 = in_slice.iter().map(|a| a * a).sum();
+            let sim = cross / auto;
+            if sim > best_sim {
+                best_sim = sim;
+                best_off = off;
+            }
+        }
 
-        let cross: f32 = input_slice
-            .iter()
-            .zip(output_slice)
-            .map(|(a, b)| a * b)
-            .sum();
-        let auto: f32 = input_slice.iter().map(|a| a * a).sum();
-        let similarity = cross / auto;
-
-        // BUG: Corrector with empty notes should be transparent but isn't
         assert!(
-            (similarity - 1.0).abs() > 0.05,
-            "Expected non-transparent output (bug), but similarity was {similarity:.3}"
+            (best_sim - 1.0).abs() < 0.05,
+            "Corrector with empty notes should be transparent for sweep \
+             (best similarity {best_sim:.3} at offset {best_off})"
         );
     }
 }
