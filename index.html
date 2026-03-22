@@ -218,7 +218,7 @@
 
         function stop() {
             if (animFrame) cancelAnimationFrame(animFrame);
-            if (corrector) corrector.free();
+            if (corrector) corrector.stop();
             corrector = null;
             columnX = 0;
             document.getElementById('status').textContent = 'Stopped';

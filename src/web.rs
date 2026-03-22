@@ -162,6 +162,10 @@ impl WebPitchCorrector {
         self.notes_control.load(Ordering::Relaxed)
     }
 
+    pub fn stop(&self) {
+        cpal::platform::close_audio_context();
+    }
+
     pub fn set_sweep(&self, active: bool) {
         self.sweep_active.store(active, Ordering::Relaxed);
     }
