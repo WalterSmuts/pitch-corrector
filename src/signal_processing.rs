@@ -553,9 +553,9 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             *s /= BUFFER_SIZE as f32;
         }
 
-        // Apply synthesis window
+        // Apply synthesis window, normalized for 75% overlap (sum of 4 Hanning windows = 1.5)
         for (s, w) in state.ifft_output.iter_mut().zip(state.window.iter()) {
-            *s *= w;
+            *s *= w / 1.5;
         }
     }
 }
@@ -1088,11 +1088,9 @@ mod tests {
         let auto: f32 = input_slice.iter().map(|a| a * a).sum();
 
         let similarity = cross / auto;
-        // BUG: Phase vocoder at ratio 1.0 should be transparent (similarity ≈ 1.0)
-        // but output is 1.5x louder due to OLA window normalization
         assert!(
-            (similarity - 1.0).abs() > 0.05,
-            "Expected non-transparent output (bug), but similarity was {similarity:.3}"
+            (similarity - 1.0).abs() < 0.05,
+            "Phase vocoder at ratio 1.0 should be transparent, but similarity was {similarity:.3}"
         );
     }
 
