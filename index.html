@@ -2,8 +2,10 @@
 <html>
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Pitch Corrector</title>
     <style>
+        * { box-sizing: border-box; }
         body {
             background: #1a1a2e;
             color: #eee;
@@ -11,31 +13,36 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            padding: 20px;
+            padding: 10px;
+            margin: 0;
         }
-        canvas { border: 1px solid #444; margin: 10px 0; }
-        .controls { display: flex; gap: 10px; align-items: center; margin: 10px 0; flex-wrap: wrap; justify-content: center; }
+        h1 { font-size: 1.4em; margin: 5px 0; }
+        h3 { font-size: 1em; margin: 5px 0; }
+        canvas { border: 1px solid #444; margin: 5px 0; width: 100%; max-width: 1200px; }
+        .controls { display: flex; gap: 8px; align-items: center; margin: 5px 0; flex-wrap: wrap; justify-content: center; }
         button {
             background: #16213e;
             color: #eee;
             border: 1px solid #555;
-            padding: 8px 16px;
+            padding: 8px 12px;
             cursor: pointer;
             font-family: monospace;
             font-size: 14px;
+            touch-action: manipulation;
         }
         button:hover { background: #0f3460; }
         button.active { background: #e94560; border-color: #e94560; }
-        .btn-group { display: flex; gap: 0; }
+        .btn-group { display: flex; gap: 0; flex-wrap: wrap; }
         .btn-group button { border-radius: 0; border-right: none; opacity: 0.5; }
         .btn-group button:last-child { border-right: 1px solid #555; }
         .btn-group button.active { opacity: 1; background: #e94560; border-color: #e94560; }
-        #status { color: #888; margin: 10px 0; }
-        .section { margin: 10px 0; text-align: center; }
+        #status { color: #888; margin: 5px 0; font-size: 0.9em; }
+        .section { margin: 5px 0; text-align: center; width: 100%; max-width: 1200px; }
         .note-grid { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; }
         .note-grid button { min-width: 36px; padding: 6px 8px; font-size: 12px; }
-        input[type=range] { width: 300px; accent-color: #e94560; }
-        .shift-display { font-size: 18px; min-width: 80px; text-align: center; }
+        input[type=range] { width: 100%; max-width: 300px; accent-color: #e94560; }
+        .shift-display { font-size: 18px; min-width: 60px; text-align: center; }
+        select { background: #16213e; color: #eee; border: 1px solid #555; padding: 6px; font-family: monospace; }
     </style>
 </head>
 <body>
@@ -99,8 +106,8 @@
             </div>
         </div>
     </div>
-    <canvas id="input-spectrogram" width="1200" height="300"></canvas>
-    <canvas id="input-contour" width="1200" height="300" style="display:none"></canvas>
+    <canvas id="input-spectrogram" width="1200" height="200"></canvas>
+    <canvas id="input-contour" width="1200" height="200" style="display:none"></canvas>
 
     <div class="section">
         <div class="controls">
@@ -111,8 +118,8 @@
             </div>
         </div>
     </div>
-    <canvas id="output-spectrogram" width="1200" height="300"></canvas>
-    <canvas id="output-contour" width="1200" height="300" style="display:none"></canvas>
+    <canvas id="output-spectrogram" width="1200" height="200"></canvas>
+    <canvas id="output-contour" width="1200" height="200" style="display:none"></canvas>
 
     <script type="module">
         import init, { WebPitchCorrector } from './pkg/pitch_corrector.js';
