@@ -309,14 +309,8 @@ fn draw_contour(
     buf[CONTOUR_SIZE - idx..].copy_from_slice(&raw_buffer[..idx]);
     drop(raw_buffer);
 
-    let energy: f32 = buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32;
-
     let mut detector = YinPitchDetector::new();
-    let pitch = if energy > 0.0001 {
-        detector.detect(&buf)
-    } else {
-        None
-    };
+    let pitch = detector.detect(&buf);
 
     // Background
     ctx.set_fill_style_str("rgb(10,10,20)");
