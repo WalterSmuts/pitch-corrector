@@ -196,10 +196,27 @@
                 document.getElementById('stop-btn').disabled = false;
                 document.getElementById('sweep-btn').disabled = false;
 
+                const canvases = ['input-spectrogram','input-contour','output-spectrogram','output-contour'];
+                canvases.forEach(id => {
+                    const c = document.getElementById(id);
+                    c.getContext('2d').clearRect(0, 0, c.width, c.height);
+                });
+                columnX = 0;
+
                 const inputSpec = document.getElementById('input-spectrogram');
                 const inputContour = document.getElementById('input-contour');
                 const outputSpec = document.getElementById('output-spectrogram');
                 const outputContour = document.getElementById('output-contour');
+
+                function drawPlayhead(canvas) {
+                    const ctx = canvas.getContext('2d');
+                    const x = (columnX + 1) % canvas.width;
+                    ctx.strokeStyle = '#ff0';
+                    ctx.beginPath();
+                    ctx.moveTo(x, 0);
+                    ctx.lineTo(x, canvas.height);
+                    ctx.stroke();
+                }
 
                 function draw() {
                     if (!corrector) return;
@@ -208,6 +225,7 @@
                     corrector.draw_pitch_contour(outputContour, columnX);
                     corrector.draw_input_contour(inputContour, columnX);
                     columnX = (columnX + 1) % outputSpec.width;
+                    [inputSpec, inputContour, outputSpec, outputContour].forEach(drawPlayhead);
                     animFrame = requestAnimationFrame(draw);
                 }
                 draw();
