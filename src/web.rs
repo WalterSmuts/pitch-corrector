@@ -1,7 +1,7 @@
 use crate::pitch_correction::{Notes, PitchCorrector};
 use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -15,13 +15,9 @@ pub struct WebPitchCorrector {
     _input_stream: cpal::Stream,
     _output_stream: cpal::Stream,
     spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    spectrogram_index: Arc<AtomicUsize>,
     contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
-    contour_index: Arc<AtomicUsize>,
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    input_spectrogram_index: Arc<AtomicUsize>,
     input_contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
-    input_contour_index: Arc<AtomicUsize>,
     shift_control: Arc<AtomicU32>,
     notes_control: Arc<AtomicU16>,
     sweep_active: Arc<AtomicBool>,
@@ -35,19 +31,15 @@ impl WebPitchCorrector {
 
         let spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
         let spectrogram_buffer = spectrogram_display.clone_display_buffer();
-        let spectrogram_index = spectrogram_display.clone_write_index();
 
         let contour_display: DisplayProcessor<CONTOUR_SIZE> = DisplayProcessor::new();
         let contour_buffer = contour_display.clone_display_buffer();
-        let contour_index = contour_display.clone_write_index();
 
         let input_contour_display: DisplayProcessor<CONTOUR_SIZE> = DisplayProcessor::new();
         let input_contour_buffer = input_contour_display.clone_display_buffer();
-        let input_contour_index = input_contour_display.clone_write_index();
 
         let input_spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
         let input_spectrogram_buffer = input_spectrogram_display.clone_display_buffer();
-        let input_spectrogram_index = input_spectrogram_display.clone_write_index();
 
         let corrector = PitchCorrector::new();
         let shift_control = corrector.shift_control();
@@ -143,13 +135,9 @@ impl WebPitchCorrector {
             _input_stream: input_stream,
             _output_stream: output_stream,
             spectrogram_buffer,
-            spectrogram_index,
             contour_buffer,
-            contour_index,
             input_spectrogram_buffer,
-            input_spectrogram_index,
             input_contour_buffer,
-            input_contour_index,
             shift_control,
             notes_control,
             sweep_active,
@@ -190,30 +178,14 @@ impl WebPitchCorrector {
     }
 
     pub fn draw_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_spectrogram_from(
-            canvas,
-            column_x,
-            &self.spectrogram_buffer,
-            &self.spectrogram_index,
-        );
+        draw_spectrogram_from(canvas, column_x, &self.spectrogram_buffer);
     }
 
     pub fn draw_input_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_spectrogram_from(
-            canvas,
-            column_x,
-            &self.input_spectrogram_buffer,
-            &self.input_spectrogram_index,
-        );
+        draw_spectrogram_from(canvas, column_x, &self.input_spectrogram_buffer);
     }
     pub fn draw_pitch_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_contour(
-            canvas,
-            column_x,
-            &self.contour_buffer,
-            &self.contour_index,
-            "rgb(50,255,120)",
-        );
+        draw_contour(canvas, column_x, &self.contour_buffer, "rgb(50,255,120)");
     }
 
     pub fn draw_input_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
@@ -221,7 +193,6 @@ impl WebPitchCorrector {
             canvas,
             column_x,
             &self.input_contour_buffer,
-            &self.input_contour_index,
             "rgb(255,150,50)",
         );
     }
@@ -231,7 +202,6 @@ fn draw_spectrogram_from(
     canvas: &HtmlCanvasElement,
     column_x: f32,
     buffer: &Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    index: &Arc<AtomicUsize>,
 ) {
     use easyfft::dyn_size::DynFft;
 
@@ -243,15 +213,10 @@ fn draw_spectrogram_from(
         .unwrap();
 
     let height = canvas.height() as usize;
-    let raw_buffer = buffer.lock().unwrap();
-    let idx = index.load(Ordering::Relaxed) % SPECTROGRAM_SIZE;
-
-    let mut buf = vec![0.0f32; SPECTROGRAM_SIZE];
-    buf[..SPECTROGRAM_SIZE - idx].copy_from_slice(&raw_buffer[idx..]);
-    buf[SPECTROGRAM_SIZE - idx..].copy_from_slice(&raw_buffer[..idx]);
-    drop(raw_buffer);
+    let buf = buffer.lock().unwrap().to_vec();
 
     let len = buf.len() as f32;
+    let mut buf = buf;
     for (i, sample) in buf.iter_mut().enumerate() {
         let w = 0.5 * (1.0 - (std::f32::consts::TAU * i as f32 / len).cos());
         *sample *= w;
@@ -296,7 +261,6 @@ fn draw_contour(
     canvas: &HtmlCanvasElement,
     column_x: f32,
     buffer: &Arc<Mutex<[f32; CONTOUR_SIZE]>>,
-    index: &Arc<AtomicUsize>,
     color: &str,
 ) {
     let ctx: CanvasRenderingContext2d = canvas
@@ -307,12 +271,7 @@ fn draw_contour(
         .unwrap();
 
     let height = canvas.height() as f32;
-    let raw_buffer = buffer.lock().unwrap();
-    let idx = index.load(Ordering::Relaxed) % CONTOUR_SIZE;
-    let mut buf = vec![0.0f32; CONTOUR_SIZE];
-    buf[..CONTOUR_SIZE - idx].copy_from_slice(&raw_buffer[idx..]);
-    buf[CONTOUR_SIZE - idx..].copy_from_slice(&raw_buffer[..idx]);
-    drop(raw_buffer);
+    let buf: Vec<f32> = buffer.lock().unwrap().to_vec();
 
     let mut detector = YinPitchDetector::new();
     let pitch = detector.detect(&buf);

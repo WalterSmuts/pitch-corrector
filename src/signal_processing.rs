@@ -72,8 +72,9 @@ struct PhaseVocoderState {
 
 pub struct DisplayProcessor<const I: usize = BUFFER_SIZE> {
     buffer: ArrayQueue<f32>,
-    display_buffer: Arc<Mutex<[f32; I]>>,
-    buffer_index: Arc<AtomicUsize>,
+    back_buffer: Mutex<Box<[f32; I]>>,
+    front_buffer: Arc<Mutex<[f32; I]>>,
+    write_index: AtomicUsize,
 }
 
 pub struct OverlapAndAddProcessor<T>
@@ -234,17 +235,14 @@ impl<const I: usize> DisplayProcessor<I> {
         info!("Creating new DisplayProcessor of size {}", I);
         Self {
             buffer: ArrayQueue::new(I * 4),
-            display_buffer: Arc::new(Mutex::new([0.0; I])),
-            buffer_index: Arc::new(AtomicUsize::new(0)),
+            back_buffer: Mutex::new(Box::new([0.0; I])),
+            front_buffer: Arc::new(Mutex::new([0.0; I])),
+            write_index: AtomicUsize::new(0),
         }
     }
 
     pub fn clone_display_buffer(&self) -> Arc<Mutex<[f32; I]>> {
-        self.display_buffer.clone()
-    }
-
-    pub fn clone_write_index(&self) -> Arc<AtomicUsize> {
-        self.buffer_index.clone()
+        self.front_buffer.clone()
     }
 }
 
@@ -255,11 +253,17 @@ impl<const I: usize> StreamProcessor for DisplayProcessor<I> {
 
     fn pop_sample(&self) -> Option<f32> {
         let sample = self.buffer.pop()?;
-        let mut buffer = self.display_buffer.lock().unwrap();
-        buffer[self.buffer_index.load(Ordering::Relaxed)] = sample;
-        self.buffer_index.fetch_add(1, Ordering::Relaxed);
-        if self.buffer_index.load(Ordering::Relaxed) >= I {
-            self.buffer_index.swap(0, Ordering::Relaxed);
+        let mut back = self.back_buffer.lock().unwrap();
+        let idx = self.write_index.load(Ordering::Relaxed);
+        back[idx] = sample;
+        let next = idx + 1;
+        if next >= I {
+            // Back buffer full — swap to front
+            let mut front = self.front_buffer.lock().unwrap();
+            front.copy_from_slice(back.as_ref());
+            self.write_index.store(0, Ordering::Relaxed);
+        } else {
+            self.write_index.store(next, Ordering::Relaxed);
         }
         Some(sample)
     }
