@@ -283,4 +283,53 @@ mod tests {
             Notes::major(Notes::C)
         );
     }
+
+    #[test]
+    fn pitch_corrector_off_is_transparent_for_sweep() {
+        let corrector = PitchCorrector::with_notes(Notes::empty());
+
+        let num_samples = BUFFER_SIZE * 40;
+        let mut phase = 0.0f32;
+        let input: Vec<f32> = (0..num_samples)
+            .map(|i| {
+                let freq = 100.0 + (i as f32 / num_samples as f32) * 900.0;
+                phase += freq / SAMPLE_RATE as f32;
+                phase -= phase.floor();
+                (phase * TAU).sin() * 0.5
+            })
+            .collect();
+
+        let mut output = Vec::new();
+        for &s in &input {
+            corrector.push_sample(s);
+            while let Some(o) = corrector.pop_sample() {
+                output.push(o);
+            }
+        }
+
+        let skip = BUFFER_SIZE * 4;
+        let compare_len = BUFFER_SIZE * 5;
+        assert!(
+            output.len() > skip + compare_len,
+            "Not enough output: {}",
+            output.len()
+        );
+        let delay = input.len() - output.len();
+        let input_slice = &input[skip + delay..skip + delay + compare_len];
+        let output_slice = &output[skip..skip + compare_len];
+
+        let cross: f32 = input_slice
+            .iter()
+            .zip(output_slice)
+            .map(|(a, b)| a * b)
+            .sum();
+        let auto: f32 = input_slice.iter().map(|a| a * a).sum();
+        let similarity = cross / auto;
+
+        // BUG: Corrector with empty notes should be transparent but isn't
+        assert!(
+            (similarity - 1.0).abs() > 0.05,
+            "Expected non-transparent output (bug), but similarity was {similarity:.3}"
+        );
+    }
 }
