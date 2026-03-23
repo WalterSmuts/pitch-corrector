@@ -252,6 +252,7 @@
 
             if (corrector && corrector.recording_len() > 0) {
                 corrector.stop();
+                saveCanvasSnapshots();
                 document.getElementById('status').textContent = 'Recording saved. Click Play or click on the spectrogram to seek.';
                 document.getElementById('play-btn').style.display = '';
             } else {
@@ -262,28 +263,49 @@
 
         // --- Playback ---
         let playbackAnimFrame = null;
+        // Saved canvas snapshots after recording (to restore under playhead)
+        const canvasSnapshots = {};
+
+        function saveCanvasSnapshots() {
+            allCanvasIds.forEach(id => {
+                const c = document.getElementById(id);
+                canvasSnapshots[id] = c.getContext('2d').getImageData(0, 0, c.width, c.height);
+            });
+        }
+
+        function playbackX() {
+            const progress = corrector.playback_progress();
+            const canvasWidth = document.getElementById('output-spectrogram').width;
+            const totalCols = Math.min(recordedColumns, canvasWidth);
+            const startCol = columnX;
+            return (startCol - totalCols + Math.floor(progress * totalCols) + canvasWidth) % canvasWidth;
+        }
 
         function drawPlaybackHead() {
             if (!corrector) return;
-            const progress = corrector.playback_progress();
-            // Map progress (0..1 of recording) to canvas column
-            const canvasWidth = document.getElementById('output-spectrogram').width;
-            const totalCols = Math.min(recordedColumns, canvasWidth);
-            // The recording wraps around the canvas, so the start column is where recording ended
-            const startCol = columnX; // columnX is where recording stopped (one past last drawn)
-            const x = (startCol - totalCols + Math.floor(progress * totalCols) + canvasWidth) % canvasWidth;
+            const x = playbackX();
 
             allCanvasIds.forEach(id => {
                 const c = document.getElementById(id);
                 if (c.style.display === 'none') return;
-                // Redraw the column we're about to overwrite with playhead
-                // We just draw the playhead on top — it'll be overwritten next frame
+                const ctx = c.getContext('2d');
+                // Restore snapshot then draw playhead
+                if (canvasSnapshots[id]) {
+                    ctx.putImageData(canvasSnapshots[id], 0, 0);
+                }
                 drawPlayhead(c, x);
             });
 
             if (corrector.is_playing()) {
                 playbackAnimFrame = requestAnimationFrame(drawPlaybackHead);
             } else {
+                // Restore clean canvases
+                allCanvasIds.forEach(id => {
+                    if (canvasSnapshots[id]) {
+                        const c = document.getElementById(id);
+                        c.getContext('2d').putImageData(canvasSnapshots[id], 0, 0);
+                    }
+                });
                 document.getElementById('play-btn').textContent = '▶ Play';
                 document.getElementById('status').textContent = 'Playback finished. Click Play or click spectrogram to seek.';
                 document.getElementById('record-btn').disabled = false;
@@ -305,6 +327,13 @@
             corrector.stop_playback();
             if (playbackAnimFrame) cancelAnimationFrame(playbackAnimFrame);
             playbackAnimFrame = null;
+            // Restore clean canvases
+            allCanvasIds.forEach(id => {
+                if (canvasSnapshots[id]) {
+                    const c = document.getElementById(id);
+                    c.getContext('2d').putImageData(canvasSnapshots[id], 0, 0);
+                }
+            });
             document.getElementById('play-btn').textContent = '▶ Play';
             document.getElementById('status').textContent = 'Paused. Click Play to resume or click spectrogram to seek.';
             document.getElementById('record-btn').disabled = false;
