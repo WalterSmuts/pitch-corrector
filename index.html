@@ -252,7 +252,6 @@
 
             if (corrector && corrector.recording_len() > 0) {
                 corrector.stop();
-                saveCanvasSnapshots();
                 document.getElementById('status').textContent = 'Recording saved. Click Play or click on the spectrogram to seek.';
                 document.getElementById('play-btn').style.display = '';
             } else {
@@ -263,49 +262,47 @@
 
         // --- Playback ---
         let playbackAnimFrame = null;
-        // Saved canvas snapshots after recording (to restore under playhead)
-        const canvasSnapshots = {};
-
-        function saveCanvasSnapshots() {
-            allCanvasIds.forEach(id => {
-                const c = document.getElementById(id);
-                canvasSnapshots[id] = c.getContext('2d').getImageData(0, 0, c.width, c.height);
-            });
-        }
-
-        function playbackX() {
-            const progress = corrector.playback_progress();
-            const canvasWidth = document.getElementById('output-spectrogram').width;
-            const totalCols = Math.min(recordedColumns, canvasWidth);
-            const startCol = columnX;
-            return (startCol - totalCols + Math.floor(progress * totalCols) + canvasWidth) % canvasWidth;
-        }
+        // Per-canvas: saved 1px column under the playhead
+        const savedColumns = {};
+        let lastPlayheadX = -1;
 
         function drawPlaybackHead() {
             if (!corrector) return;
             const x = playbackX();
 
+            // Restore previous playhead column
+            if (lastPlayheadX >= 0) {
+                allCanvasIds.forEach(id => {
+                    const c = document.getElementById(id);
+                    if (savedColumns[id]) {
+                        c.getContext('2d').putImageData(savedColumns[id], lastPlayheadX, 0);
+                    }
+                });
+            }
+
+            // Save column at new position, then draw playhead
             allCanvasIds.forEach(id => {
                 const c = document.getElementById(id);
                 if (c.style.display === 'none') return;
                 const ctx = c.getContext('2d');
-                // Restore snapshot then draw playhead
-                if (canvasSnapshots[id]) {
-                    ctx.putImageData(canvasSnapshots[id], 0, 0);
-                }
+                savedColumns[id] = ctx.getImageData(x, 0, 1, c.height);
                 drawPlayhead(c, x);
             });
+            lastPlayheadX = x;
 
             if (corrector.is_playing()) {
                 playbackAnimFrame = requestAnimationFrame(drawPlaybackHead);
             } else {
-                // Restore clean canvases
-                allCanvasIds.forEach(id => {
-                    if (canvasSnapshots[id]) {
+                // Restore last column
+                if (lastPlayheadX >= 0) {
+                    allCanvasIds.forEach(id => {
                         const c = document.getElementById(id);
-                        c.getContext('2d').putImageData(canvasSnapshots[id], 0, 0);
-                    }
-                });
+                        if (savedColumns[id]) {
+                            c.getContext('2d').putImageData(savedColumns[id], lastPlayheadX, 0);
+                        }
+                    });
+                    lastPlayheadX = -1;
+                }
                 document.getElementById('play-btn').textContent = '▶ Play';
                 document.getElementById('status').textContent = 'Playback finished. Click Play or click spectrogram to seek.';
                 document.getElementById('record-btn').disabled = false;
@@ -327,13 +324,16 @@
             corrector.stop_playback();
             if (playbackAnimFrame) cancelAnimationFrame(playbackAnimFrame);
             playbackAnimFrame = null;
-            // Restore clean canvases
-            allCanvasIds.forEach(id => {
-                if (canvasSnapshots[id]) {
+            // Restore column under playhead
+            if (lastPlayheadX >= 0) {
+                allCanvasIds.forEach(id => {
                     const c = document.getElementById(id);
-                    c.getContext('2d').putImageData(canvasSnapshots[id], 0, 0);
-                }
-            });
+                    if (savedColumns[id]) {
+                        c.getContext('2d').putImageData(savedColumns[id], lastPlayheadX, 0);
+                    }
+                });
+                lastPlayheadX = -1;
+            }
             document.getElementById('play-btn').textContent = '▶ Play';
             document.getElementById('status').textContent = 'Paused. Click Play to resume or click spectrogram to seek.';
             document.getElementById('record-btn').disabled = false;
