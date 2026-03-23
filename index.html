@@ -18,7 +18,7 @@
         }
         h1 { font-size: 1.4em; margin: 5px 0; }
         h3 { font-size: 1em; margin: 5px 0; }
-        canvas { border: 1px solid #444; margin: 5px 0; width: 100%; max-width: 1200px; }
+        canvas { border: 1px solid #444; margin: 5px 0; width: 100%; max-width: 1200px; cursor: pointer; }
         .controls { display: flex; gap: 8px; align-items: center; margin: 5px 0; flex-wrap: wrap; justify-content: center; }
         button {
             background: #16213e;
@@ -47,10 +47,11 @@
 </head>
 <body>
     <h1>🎤 Pitch Corrector</h1>
-    <div id="status">Click Start to begin</div>
+    <div id="status">Click Record to begin</div>
     <div class="controls">
-        <button id="start-btn">▶ Start</button>
+        <button id="record-btn">⏺ Record</button>
         <button id="stop-btn" disabled>⏹ Stop</button>
+        <button id="play-btn" style="display:none">▶ Play</button>
         <button id="sweep-btn" disabled>🎵 Sine Sweep</button>
     </div>
 
@@ -128,8 +129,10 @@
         let corrector = null;
         let animFrame = null;
         let columnX = 0;
+        let recordedColumns = 0; // how many columns were drawn during recording
         let currentScale = 'pentatonic';
-        let customBits = 0xFFF; // all notes
+        let customBits = 0xFFF;
+        let isRecording = false;
 
         // Build custom note grid
         const noteGrid = document.getElementById('note-grid');
@@ -173,10 +176,8 @@
             });
         });
 
-        // Root selector
         document.getElementById('root-select').addEventListener('change', applyScale);
 
-        // Shift slider
         const slider = document.getElementById('shift-slider');
         const shiftDisplay = document.getElementById('shift-display');
         slider.addEventListener('input', () => {
@@ -185,47 +186,53 @@
             if (corrector) corrector.set_shift(v);
         });
 
-        async function start() {
+        const allCanvasIds = ['input-spectrogram','input-contour','output-spectrogram','output-contour'];
+
+        function drawPlayhead(canvas, x) {
+            const ctx = canvas.getContext('2d');
+            ctx.strokeStyle = '#ff0';
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, canvas.height);
+            ctx.stroke();
+        }
+
+        // --- Recording ---
+        async function startRecording() {
             await init();
             try {
                 corrector = new WebPitchCorrector();
                 applyScale();
                 corrector.set_shift(parseFloat(slider.value));
-                document.getElementById('status').textContent = '🔴 Pitch correction active';
-                document.getElementById('start-btn').disabled = true;
+                isRecording = true;
+
+                document.getElementById('status').textContent = '🔴 Recording...';
+                document.getElementById('record-btn').disabled = true;
                 document.getElementById('stop-btn').disabled = false;
+                document.getElementById('play-btn').style.display = 'none';
                 document.getElementById('sweep-btn').disabled = false;
 
-                const canvases = ['input-spectrogram','input-contour','output-spectrogram','output-contour'];
-                canvases.forEach(id => {
+                allCanvasIds.forEach(id => {
                     const c = document.getElementById(id);
                     c.getContext('2d').clearRect(0, 0, c.width, c.height);
                 });
                 columnX = 0;
+                recordedColumns = 0;
 
                 const inputSpec = document.getElementById('input-spectrogram');
                 const inputContour = document.getElementById('input-contour');
                 const outputSpec = document.getElementById('output-spectrogram');
                 const outputContour = document.getElementById('output-contour');
 
-                function drawPlayhead(canvas) {
-                    const ctx = canvas.getContext('2d');
-                    const x = (columnX + 1) % canvas.width;
-                    ctx.strokeStyle = '#ff0';
-                    ctx.beginPath();
-                    ctx.moveTo(x, 0);
-                    ctx.lineTo(x, canvas.height);
-                    ctx.stroke();
-                }
-
                 function draw() {
-                    if (!corrector) return;
+                    if (!corrector || !isRecording) return;
                     corrector.draw_spectrogram(outputSpec, columnX);
                     corrector.draw_input_spectrogram(inputSpec, columnX);
                     corrector.draw_pitch_contour(outputContour, columnX);
                     corrector.draw_input_contour(inputContour, columnX);
                     columnX = (columnX + 1) % outputSpec.width;
-                    [inputSpec, inputContour, outputSpec, outputContour].forEach(drawPlayhead);
+                    recordedColumns++;
+                    [inputSpec, inputContour, outputSpec, outputContour].forEach(c => drawPlayhead(c, (columnX + 1) % c.width));
                     animFrame = requestAnimationFrame(draw);
                 }
                 draw();
@@ -234,16 +241,129 @@
             }
         }
 
-        function stop() {
+        function stopRecording() {
+            isRecording = false;
             if (animFrame) cancelAnimationFrame(animFrame);
-            if (corrector) corrector.stop();
-            corrector = null;
-            columnX = 0;
-            document.getElementById('status').textContent = 'Stopped';
-            document.getElementById('start-btn').disabled = false;
+            animFrame = null;
+
             document.getElementById('stop-btn').disabled = true;
             document.getElementById('sweep-btn').disabled = true;
+            document.getElementById('record-btn').disabled = false;
+
+            if (corrector && corrector.recording_len() > 0) {
+                corrector.stop();
+                document.getElementById('status').textContent = 'Recording saved. Click Play or click on the spectrogram to seek.';
+                document.getElementById('play-btn').style.display = '';
+            } else {
+                if (corrector) corrector.stop();
+                document.getElementById('status').textContent = 'Stopped (no recording)';
+            }
         }
+
+        // --- Playback ---
+        let playbackAnimFrame = null;
+
+        function drawPlaybackHead() {
+            if (!corrector) return;
+            const progress = corrector.playback_progress();
+            // Map progress (0..1 of recording) to canvas column
+            const canvasWidth = document.getElementById('output-spectrogram').width;
+            const totalCols = Math.min(recordedColumns, canvasWidth);
+            // The recording wraps around the canvas, so the start column is where recording ended
+            const startCol = columnX; // columnX is where recording stopped (one past last drawn)
+            const x = (startCol - totalCols + Math.floor(progress * totalCols) + canvasWidth) % canvasWidth;
+
+            allCanvasIds.forEach(id => {
+                const c = document.getElementById(id);
+                if (c.style.display === 'none') return;
+                // Redraw the column we're about to overwrite with playhead
+                // We just draw the playhead on top — it'll be overwritten next frame
+                drawPlayhead(c, x);
+            });
+
+            if (corrector.is_playing()) {
+                playbackAnimFrame = requestAnimationFrame(drawPlaybackHead);
+            } else {
+                document.getElementById('play-btn').textContent = '▶ Play';
+                document.getElementById('status').textContent = 'Playback finished. Click Play or click spectrogram to seek.';
+                document.getElementById('record-btn').disabled = false;
+            }
+        }
+
+        function startPlayback() {
+            if (!corrector || corrector.recording_len() === 0) return;
+            corrector.play_recording();
+            document.getElementById('play-btn').textContent = '⏸ Pause';
+            document.getElementById('status').textContent = '▶ Playing...';
+            document.getElementById('record-btn').disabled = true;
+            if (playbackAnimFrame) cancelAnimationFrame(playbackAnimFrame);
+            drawPlaybackHead();
+        }
+
+        function stopPlayback() {
+            if (!corrector) return;
+            corrector.stop_playback();
+            if (playbackAnimFrame) cancelAnimationFrame(playbackAnimFrame);
+            playbackAnimFrame = null;
+            document.getElementById('play-btn').textContent = '▶ Play';
+            document.getElementById('status').textContent = 'Paused. Click Play to resume or click spectrogram to seek.';
+            document.getElementById('record-btn').disabled = false;
+        }
+
+        document.getElementById('play-btn').addEventListener('click', () => {
+            if (corrector && corrector.is_playing()) {
+                stopPlayback();
+            } else {
+                startPlayback();
+            }
+        });
+
+        // --- Seek on canvas click ---
+        function handleCanvasClick(e) {
+            if (!corrector || corrector.recording_len() === 0 || isRecording) return;
+            const canvas = e.target;
+            const rect = canvas.getBoundingClientRect();
+            const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
+            const canvasWidth = canvas.width;
+            const totalCols = Math.min(recordedColumns, canvasWidth);
+            const startCol = columnX; // one past last drawn column
+
+            // Convert pixel to fraction of recording
+            // startCol - totalCols is the first column of the recording on canvas
+            let offset = (clickX - (startCol - totalCols) + canvasWidth) % canvasWidth;
+            if (offset > totalCols) offset = totalCols;
+            const fraction = offset / totalCols;
+
+            corrector.seek(fraction);
+
+            // If not playing, start playback from seek point
+            if (!corrector.is_playing()) {
+                startPlayback();
+            }
+        }
+
+        allCanvasIds.forEach(id => {
+            document.getElementById(id).addEventListener('click', handleCanvasClick);
+        });
+
+        // --- Stop button ---
+        document.getElementById('stop-btn').addEventListener('click', () => {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                stopPlayback();
+            }
+        });
+
+        document.getElementById('record-btn').addEventListener('click', startRecording);
+
+        document.getElementById('sweep-btn').addEventListener('click', () => {
+            const btn = document.getElementById('sweep-btn');
+            const active = !btn.classList.contains('active');
+            btn.classList.toggle('active');
+            btn.textContent = active ? '🎵 Sweep On' : '🎵 Sine Sweep';
+            if (corrector) corrector.set_sweep(active);
+        });
 
         // View toggle
         function setupViewToggle(groupId, canvasA, canvasB) {
@@ -257,16 +377,6 @@
         }
         setupViewToggle('input-view-group', 'input-spectrogram', 'input-contour');
         setupViewToggle('output-view-group', 'output-spectrogram', 'output-contour');
-
-        document.getElementById('start-btn').addEventListener('click', start);
-        document.getElementById('stop-btn').addEventListener('click', stop);
-        document.getElementById('sweep-btn').addEventListener('click', () => {
-            const btn = document.getElementById('sweep-btn');
-            const active = !btn.classList.contains('active');
-            btn.classList.toggle('active');
-            btn.textContent = active ? '🎵 Sweep On' : '🎵 Sine Sweep';
-            if (corrector) corrector.set_sweep(active);
-        });
     </script>
 </body>
 </html>
