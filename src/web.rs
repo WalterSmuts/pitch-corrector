@@ -22,6 +22,9 @@ pub struct WebPitchCorrector {
     notes_control: Arc<AtomicU16>,
     sweep_active: Arc<AtomicBool>,
     recording: Arc<Mutex<Vec<f32>>>,
+    playback_pos: Arc<AtomicU32>,
+    playing: Arc<AtomicBool>,
+    playback_stream: Mutex<Option<cpal::Stream>>,
 }
 
 #[wasm_bindgen]
@@ -150,6 +153,9 @@ impl WebPitchCorrector {
             notes_control,
             sweep_active,
             recording,
+            playback_pos: Arc::new(AtomicU32::new(0)),
+            playing: Arc::new(AtomicBool::new(false)),
+            playback_stream: Mutex::new(None),
         })
     }
 
@@ -176,6 +182,81 @@ impl WebPitchCorrector {
 
     pub fn recording_len(&self) -> usize {
         self.recording.lock().unwrap().len()
+    }
+
+    pub fn play_recording(&self) -> Result<(), JsValue> {
+        let rec = self.recording.lock().unwrap().clone();
+        if rec.is_empty() {
+            return Ok(());
+        }
+        self.stop_playback();
+
+        let rec = Arc::new(rec);
+        let pos = self.playback_pos.clone();
+        let playing = self.playing.clone();
+        playing.store(true, Ordering::Relaxed);
+
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or_else(|| JsValue::from_str("No output device"))?;
+        let config = device
+            .default_output_config()
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+
+        let stream = device
+            .build_output_stream(
+                config.into(),
+                move |data: &mut [f32], _| {
+                    if !playing.load(Ordering::Relaxed) {
+                        data.fill(0.0);
+                        return;
+                    }
+                    let mut p = pos.load(Ordering::Relaxed) as usize;
+                    for sample in data.iter_mut() {
+                        if p < rec.len() {
+                            *sample = rec[p];
+                            p += 1;
+                        } else {
+                            *sample = 0.0;
+                            playing.store(false, Ordering::Relaxed);
+                        }
+                    }
+                    pos.store(p as u32, Ordering::Relaxed);
+                },
+                |err| log::error!("Playback error: {}", err),
+                None,
+            )
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+
+        stream
+            .play()
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        *self.playback_stream.lock().unwrap() = Some(stream);
+        Ok(())
+    }
+
+    pub fn stop_playback(&self) {
+        self.playing.store(false, Ordering::Relaxed);
+        *self.playback_stream.lock().unwrap() = None;
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.playing.load(Ordering::Relaxed)
+    }
+
+    pub fn playback_progress(&self) -> f32 {
+        let len = self.recording_len();
+        if len == 0 {
+            return 0.0;
+        }
+        self.playback_pos.load(Ordering::Relaxed) as f32 / len as f32
+    }
+
+    pub fn seek(&self, fraction: f32) {
+        let len = self.recording_len() as f32;
+        let pos = (fraction.clamp(0.0, 1.0) * len) as u32;
+        self.playback_pos.store(pos, Ordering::Relaxed);
     }
 
     pub fn set_sweep(&self, active: bool) {
