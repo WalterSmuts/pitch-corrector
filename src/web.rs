@@ -21,6 +21,7 @@ pub struct WebPitchCorrector {
     shift_control: Arc<AtomicU32>,
     notes_control: Arc<AtomicU16>,
     sweep_active: Arc<AtomicBool>,
+    recording: Arc<Mutex<Vec<f32>>>,
 }
 
 #[wasm_bindgen]
@@ -112,12 +113,18 @@ impl WebPitchCorrector {
             )
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
 
+        let recording: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let recording_clone = recording.clone();
+
         let output_stream = output_device
             .build_output_stream(
                 output_config.into(),
                 move |data: &mut [f32], _| {
                     for sample in data.iter_mut() {
                         *sample = output_processor.pop_sample().unwrap_or(0.0);
+                    }
+                    if let Ok(mut rec) = recording_clone.try_lock() {
+                        rec.extend_from_slice(data);
                     }
                 },
                 |err| log::error!("Output error: {}", err),
@@ -142,6 +149,7 @@ impl WebPitchCorrector {
             shift_control,
             notes_control,
             sweep_active,
+            recording,
         })
     }
 
@@ -164,6 +172,10 @@ impl WebPitchCorrector {
 
     pub fn stop(&self) {
         cpal::platform::close_audio_context();
+    }
+
+    pub fn recording_len(&self) -> usize {
+        self.recording.lock().unwrap().len()
     }
 
     pub fn set_sweep(&self, active: bool) {
