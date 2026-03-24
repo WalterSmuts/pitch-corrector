@@ -155,6 +155,7 @@
             // Exit actions
             if (prev === 'recording') {
                 cancelAnim();
+                if (newState !== 'recording' && corrector) corrector.stop();
             }
             if (prev === 'playing') {
                 cancelAnim();
