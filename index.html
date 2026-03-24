@@ -125,16 +125,209 @@
     <script type="module">
         import init, { WebPitchCorrector } from './pkg/pitch_corrector.js';
 
-        const noteNames = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+        // --- State machine ---
+        // States: idle, recording, stopped, playing, paused
+        let state = 'idle';
         let corrector = null;
         let animFrame = null;
         let columnX = 0;
-        let recordedColumns = 0; // how many columns were drawn during recording
+        let recordedColumns = 0;
+
+        const els = {
+            status: document.getElementById('status'),
+            recordBtn: document.getElementById('record-btn'),
+            stopBtn: document.getElementById('stop-btn'),
+            playBtn: document.getElementById('play-btn'),
+            sweepBtn: document.getElementById('sweep-btn'),
+        };
+
+        const allCanvasIds = ['input-spectrogram','input-contour','output-spectrogram','output-contour'];
+        const canvases = Object.fromEntries(allCanvasIds.map(id => [id, document.getElementById(id)]));
+
+        function setState(newState) {
+            const prev = state;
+            state = newState;
+
+            // Exit actions
+            if (prev === 'recording') {
+                cancelAnim();
+                if (corrector) corrector.stop();
+            }
+            if (prev === 'playing') {
+                cancelAnim();
+                restorePlayhead();
+            }
+
+            // UI for each state
+            switch (state) {
+                case 'idle':
+                    els.status.textContent = 'Click Record to begin';
+                    els.recordBtn.disabled = false;
+                    els.stopBtn.disabled = true;
+                    els.playBtn.style.display = 'none';
+                    els.sweepBtn.disabled = true;
+                    break;
+                case 'recording':
+                    els.status.textContent = '🔴 Recording...';
+                    els.recordBtn.disabled = true;
+                    els.stopBtn.disabled = false;
+                    els.playBtn.style.display = 'none';
+                    els.sweepBtn.disabled = false;
+                    break;
+                case 'stopped':
+                    els.status.textContent = 'Recording saved. Click Play or click spectrogram to seek.';
+                    els.recordBtn.disabled = false;
+                    els.stopBtn.disabled = true;
+                    els.playBtn.style.display = '';
+                    els.playBtn.textContent = '▶ Play';
+                    els.sweepBtn.disabled = true;
+                    break;
+                case 'playing':
+                    els.status.textContent = '▶ Playing...';
+                    els.recordBtn.disabled = true;
+                    els.stopBtn.disabled = true;
+                    els.playBtn.style.display = '';
+                    els.playBtn.textContent = '⏸ Pause';
+                    els.sweepBtn.disabled = true;
+                    break;
+                case 'paused':
+                    els.status.textContent = 'Paused. Click Play to resume or click spectrogram to seek.';
+                    els.recordBtn.disabled = false;
+                    els.stopBtn.disabled = true;
+                    els.playBtn.style.display = '';
+                    els.playBtn.textContent = '▶ Play';
+                    els.sweepBtn.disabled = true;
+                    break;
+            }
+        }
+
+        // --- Animation helpers ---
+        function cancelAnim() {
+            if (animFrame) cancelAnimationFrame(animFrame);
+            animFrame = null;
+        }
+
+        function drawPlayhead(canvas, x) {
+            const ctx = canvas.getContext('2d');
+            ctx.strokeStyle = '#ff0';
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, canvas.height);
+            ctx.stroke();
+        }
+
+        // --- Playhead save/restore ---
+        const savedColumns = {};
+        let lastPlayheadX = -1;
+
+        function restorePlayhead() {
+            if (lastPlayheadX < 0) return;
+            allCanvasIds.forEach(id => {
+                if (savedColumns[id]) {
+                    canvases[id].getContext('2d').putImageData(savedColumns[id], lastPlayheadX, 0);
+                }
+            });
+            lastPlayheadX = -1;
+        }
+
+        function playbackX() {
+            if (!corrector) return 0;
+            const progress = corrector.playback_progress();
+            const totalCols = Math.min(recordedColumns, canvases['output-spectrogram'].width);
+            const col = Math.floor(progress * totalCols);
+            const startCol = columnX;
+            return (startCol - totalCols + col + canvases['output-spectrogram'].width) % canvases['output-spectrogram'].width;
+        }
+
+        // --- Recording ---
+        async function startRecording() {
+            await init();
+            try {
+                corrector = new WebPitchCorrector();
+                applyScale();
+                corrector.set_shift(parseFloat(slider.value));
+
+                allCanvasIds.forEach(id => {
+                    const ctx = canvases[id].getContext('2d');
+                    ctx.clearRect(0, 0, canvases[id].width, canvases[id].height);
+                });
+                columnX = 0;
+                recordedColumns = 0;
+
+                setState('recording');
+
+                function draw() {
+                    if (state !== 'recording') return;
+                    corrector.draw_spectrogram(canvases['output-spectrogram'], columnX);
+                    corrector.draw_input_spectrogram(canvases['input-spectrogram'], columnX);
+                    corrector.draw_pitch_contour(canvases['output-contour'], columnX);
+                    corrector.draw_input_contour(canvases['input-contour'], columnX);
+                    columnX = (columnX + 1) % canvases['output-spectrogram'].width;
+                    recordedColumns++;
+                    allCanvasIds.forEach(id => drawPlayhead(canvases[id], (columnX + 1) % canvases[id].width));
+                    animFrame = requestAnimationFrame(draw);
+                }
+                draw();
+            } catch (e) {
+                els.status.textContent = 'Error: ' + e;
+                setState('idle');
+            }
+        }
+
+        // --- Playback ---
+        function startPlayback() {
+            if (!corrector || corrector.recording_len() === 0) return;
+            corrector.play_recording();
+            setState('playing');
+
+            function drawPlaybackHead() {
+                if (state !== 'playing') return;
+                const x = playbackX();
+
+                restorePlayhead();
+
+                allCanvasIds.forEach(id => {
+                    const c = canvases[id];
+                    if (c.style.display === 'none') return;
+                    const ctx = c.getContext('2d');
+                    savedColumns[id] = ctx.getImageData(x, 0, 1, c.height);
+                    drawPlayhead(c, x);
+                });
+                lastPlayheadX = x;
+
+                if (corrector.is_playing()) {
+                    animFrame = requestAnimationFrame(drawPlaybackHead);
+                } else {
+                    restorePlayhead();
+                    setState('stopped');
+                }
+            }
+            drawPlaybackHead();
+        }
+
+        // --- Seek ---
+        function handleCanvasClick(e) {
+            if (!corrector || corrector.recording_len() === 0) return;
+            if (state !== 'stopped' && state !== 'playing' && state !== 'paused') return;
+
+            const canvas = e.target;
+            const rect = canvas.getBoundingClientRect();
+            const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
+            const canvasWidth = canvas.width;
+            const totalCols = Math.min(recordedColumns, canvasWidth);
+
+            let offset = (clickX - (columnX - totalCols) + canvasWidth) % canvasWidth;
+            if (offset > totalCols) offset = totalCols;
+            corrector.seek(offset / totalCols);
+
+            if (state !== 'playing') startPlayback();
+        }
+
+        // --- Scale / shift controls ---
+        const noteNames = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
         let currentScale = 'pentatonic';
         let customBits = 0xFFF;
-        let isRecording = false;
 
-        // Build custom note grid
         const noteGrid = document.getElementById('note-grid');
         noteNames.forEach((name, i) => {
             const btn = document.createElement('button');
@@ -147,9 +340,7 @@
                 noteGrid.querySelectorAll('button.active').forEach(b => {
                     customBits |= (1 << parseInt(b.dataset.note));
                 });
-                if (corrector && currentScale === 'custom') {
-                    corrector.set_notes(customBits);
-                }
+                if (corrector && currentScale === 'custom') corrector.set_notes(customBits);
             });
             noteGrid.appendChild(btn);
         });
@@ -164,7 +355,6 @@
             }
         }
 
-        // Scale buttons
         document.querySelectorAll('#scale-buttons button').forEach(btn => {
             btn.addEventListener('click', () => {
                 document.querySelectorAll('#scale-buttons button').forEach(b => b.classList.remove('active'));
@@ -186,215 +376,39 @@
             if (corrector) corrector.set_shift(v);
         });
 
-        const allCanvasIds = ['input-spectrogram','input-contour','output-spectrogram','output-contour'];
+        // --- Button wiring ---
+        els.recordBtn.addEventListener('click', startRecording);
 
-        function drawPlayhead(canvas, x) {
-            const ctx = canvas.getContext('2d');
-            ctx.strokeStyle = '#ff0';
-            ctx.beginPath();
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, canvas.height);
-            ctx.stroke();
-        }
-
-        // --- Recording ---
-        async function startRecording() {
-            await init();
-            try {
-                corrector = new WebPitchCorrector();
-                applyScale();
-                corrector.set_shift(parseFloat(slider.value));
-                isRecording = true;
-
-                document.getElementById('status').textContent = '🔴 Recording...';
-                document.getElementById('record-btn').disabled = true;
-                document.getElementById('stop-btn').disabled = false;
-                document.getElementById('play-btn').style.display = 'none';
-                document.getElementById('sweep-btn').disabled = false;
-
-                allCanvasIds.forEach(id => {
-                    const c = document.getElementById(id);
-                    c.getContext('2d').clearRect(0, 0, c.width, c.height);
-                });
-                columnX = 0;
-                recordedColumns = 0;
-
-                const inputSpec = document.getElementById('input-spectrogram');
-                const inputContour = document.getElementById('input-contour');
-                const outputSpec = document.getElementById('output-spectrogram');
-                const outputContour = document.getElementById('output-contour');
-
-                function draw() {
-                    if (!corrector || !isRecording) return;
-                    corrector.draw_spectrogram(outputSpec, columnX);
-                    corrector.draw_input_spectrogram(inputSpec, columnX);
-                    corrector.draw_pitch_contour(outputContour, columnX);
-                    corrector.draw_input_contour(inputContour, columnX);
-                    columnX = (columnX + 1) % outputSpec.width;
-                    recordedColumns++;
-                    [inputSpec, inputContour, outputSpec, outputContour].forEach(c => drawPlayhead(c, (columnX + 1) % c.width));
-                    animFrame = requestAnimationFrame(draw);
+        els.stopBtn.addEventListener('click', () => {
+            if (state === 'recording') {
+                if (corrector && corrector.recording_len() > 0) {
+                    setState('stopped');
+                } else {
+                    setState('idle');
                 }
-                draw();
-            } catch (e) {
-                document.getElementById('status').textContent = 'Error: ' + e;
             }
-        }
+        });
 
-        function stopRecording() {
-            isRecording = false;
-            if (animFrame) cancelAnimationFrame(animFrame);
-            animFrame = null;
-
-            document.getElementById('stop-btn').disabled = true;
-            document.getElementById('sweep-btn').disabled = true;
-            document.getElementById('record-btn').disabled = false;
-
-            if (corrector && corrector.recording_len() > 0) {
-                corrector.stop();
-                document.getElementById('status').textContent = 'Recording saved. Click Play or click on the spectrogram to seek.';
-                document.getElementById('play-btn').style.display = '';
-            } else {
-                if (corrector) corrector.stop();
-                document.getElementById('status').textContent = 'Stopped (no recording)';
-            }
-        }
-
-        // --- Playback ---
-        let playbackAnimFrame = null;
-        // Per-canvas: saved 1px column under the playhead
-        const savedColumns = {};
-        let lastPlayheadX = -1;
-
-        function drawPlaybackHead() {
-            if (!corrector) return;
-            const x = playbackX();
-
-            // Restore previous playhead column
-            if (lastPlayheadX >= 0) {
-                allCanvasIds.forEach(id => {
-                    const c = document.getElementById(id);
-                    if (savedColumns[id]) {
-                        c.getContext('2d').putImageData(savedColumns[id], lastPlayheadX, 0);
-                    }
-                });
-            }
-
-            // Save column at new position, then draw playhead
-            allCanvasIds.forEach(id => {
-                const c = document.getElementById(id);
-                if (c.style.display === 'none') return;
-                const ctx = c.getContext('2d');
-                savedColumns[id] = ctx.getImageData(x, 0, 1, c.height);
-                drawPlayhead(c, x);
-            });
-            lastPlayheadX = x;
-
-            if (corrector.is_playing()) {
-                playbackAnimFrame = requestAnimationFrame(drawPlaybackHead);
-            } else {
-                // Restore last column
-                if (lastPlayheadX >= 0) {
-                    allCanvasIds.forEach(id => {
-                        const c = document.getElementById(id);
-                        if (savedColumns[id]) {
-                            c.getContext('2d').putImageData(savedColumns[id], lastPlayheadX, 0);
-                        }
-                    });
-                    lastPlayheadX = -1;
-                }
-                document.getElementById('play-btn').textContent = '▶ Play';
-                document.getElementById('status').textContent = 'Playback finished. Click Play or click spectrogram to seek.';
-                document.getElementById('record-btn').disabled = false;
-            }
-        }
-
-        function startPlayback() {
-            if (!corrector || corrector.recording_len() === 0) return;
-            corrector.play_recording();
-            document.getElementById('play-btn').textContent = '⏸ Pause';
-            document.getElementById('status').textContent = '▶ Playing...';
-            document.getElementById('record-btn').disabled = true;
-            if (playbackAnimFrame) cancelAnimationFrame(playbackAnimFrame);
-            drawPlaybackHead();
-        }
-
-        function stopPlayback() {
-            if (!corrector) return;
-            corrector.stop_playback();
-            if (playbackAnimFrame) cancelAnimationFrame(playbackAnimFrame);
-            playbackAnimFrame = null;
-            // Restore column under playhead
-            if (lastPlayheadX >= 0) {
-                allCanvasIds.forEach(id => {
-                    const c = document.getElementById(id);
-                    if (savedColumns[id]) {
-                        c.getContext('2d').putImageData(savedColumns[id], lastPlayheadX, 0);
-                    }
-                });
-                lastPlayheadX = -1;
-            }
-            document.getElementById('play-btn').textContent = '▶ Play';
-            document.getElementById('status').textContent = 'Paused. Click Play to resume or click spectrogram to seek.';
-            document.getElementById('record-btn').disabled = false;
-        }
-
-        document.getElementById('play-btn').addEventListener('click', () => {
-            if (corrector && corrector.is_playing()) {
-                stopPlayback();
-            } else {
+        els.playBtn.addEventListener('click', () => {
+            if (state === 'playing') {
+                if (corrector) corrector.stop_playback();
+                restorePlayhead();
+                setState('paused');
+            } else if (state === 'stopped' || state === 'paused') {
                 startPlayback();
             }
         });
 
-        // --- Seek on canvas click ---
-        function handleCanvasClick(e) {
-            if (!corrector || corrector.recording_len() === 0 || isRecording) return;
-            const canvas = e.target;
-            const rect = canvas.getBoundingClientRect();
-            const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
-            const canvasWidth = canvas.width;
-            const totalCols = Math.min(recordedColumns, canvasWidth);
-            const startCol = columnX; // one past last drawn column
-
-            // Convert pixel to fraction of recording
-            // startCol - totalCols is the first column of the recording on canvas
-            let offset = (clickX - (startCol - totalCols) + canvasWidth) % canvasWidth;
-            if (offset > totalCols) offset = totalCols;
-            const fraction = offset / totalCols;
-
-            corrector.seek(fraction);
-
-            // If not playing, start playback from seek point
-            if (!corrector.is_playing()) {
-                startPlayback();
-            }
-        }
-
-        allCanvasIds.forEach(id => {
-            document.getElementById(id).addEventListener('click', handleCanvasClick);
-        });
-
-        // --- Stop button ---
-        document.getElementById('stop-btn').addEventListener('click', () => {
-            if (isRecording) {
-                stopRecording();
-            } else {
-                stopPlayback();
-            }
-        });
-
-        document.getElementById('record-btn').addEventListener('click', startRecording);
-
-        document.getElementById('sweep-btn').addEventListener('click', () => {
-            const btn = document.getElementById('sweep-btn');
-            const active = !btn.classList.contains('active');
-            btn.classList.toggle('active');
-            btn.textContent = active ? '🎵 Sweep On' : '🎵 Sine Sweep';
+        els.sweepBtn.addEventListener('click', () => {
+            const active = !els.sweepBtn.classList.contains('active');
+            els.sweepBtn.classList.toggle('active');
+            els.sweepBtn.textContent = active ? '🎵 Sweep On' : '🎵 Sine Sweep';
             if (corrector) corrector.set_sweep(active);
         });
 
-        // View toggle
+        allCanvasIds.forEach(id => canvases[id].addEventListener('click', handleCanvasClick));
+
+        // --- View toggle ---
         function setupViewToggle(groupId, canvasA, canvasB) {
             document.getElementById(groupId).addEventListener('click', (e) => {
                 if (!e.target.dataset.view) return;
