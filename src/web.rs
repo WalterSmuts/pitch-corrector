@@ -89,7 +89,7 @@ impl WebPitchCorrector {
                             f32::from_bits(sweep_counter_clone.load(Ordering::Relaxed));
                         let mut phase = f32::from_bits(sweep_phase_clone.load(Ordering::Relaxed));
                         for _ in data {
-                            let freq = 100.0 + (counter / 480000.0) * 900.0;
+                            let freq = 200.0 - (counter / 480000.0) * 150.0;
                             phase += freq / 48000.0;
                             phase -= phase.floor();
                             let sample = (phase * std::f32::consts::TAU).sin() * 0.5;

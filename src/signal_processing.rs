@@ -60,8 +60,10 @@ struct PhaseVocoderState {
     output_accum: Vec<f32>,
     magnitudes: Vec<f32>,
     true_freq: Vec<f32>,
+    freq_deriv: Vec<f32>,
     new_magnitudes: Vec<f32>,
     new_freq: Vec<f32>,
+    new_freq_deriv: Vec<f32>,
     new_bins: Vec<Complex<f32>>,
     windowed: Vec<f32>,
     window: Vec<f32>,
@@ -439,8 +441,10 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
                 output_accum: vec![0.0; BUFFER_SIZE],
                 magnitudes: vec![],
                 true_freq: vec![],
+                freq_deriv: vec![],
                 new_magnitudes: vec![],
                 new_freq: vec![],
+                new_freq_deriv: vec![],
                 new_bins: vec![],
                 windowed: vec![0.0; BUFFER_SIZE],
                 window,
@@ -460,11 +464,13 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
     }
 
     fn process_frame(state: &mut PhaseVocoderState, scaling_ratio: f32, hop_size: usize) {
+        use std::collections::BinaryHeap;
+
         let expected_phase_advance = |bin: usize| -> f32 {
             std::f32::consts::TAU * bin as f32 * hop_size as f32 / BUFFER_SIZE as f32
         };
 
-        // Apply analysis window into pre-allocated buffer
+        // Apply analysis window
         for (i, (s, w)) in state
             .input_frame
             .iter()
@@ -474,7 +480,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             state.windowed[i] = s * w;
         }
 
-        // FFT into pre-allocated spectrum
+        // FFT
         state
             .windowed
             .real_fft_using(state.analysis_spectrum.as_mut().unwrap());
@@ -488,32 +494,49 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             state.prev_output_phase.resize(num_bins, 0.0);
             state.magnitudes.resize(num_bins, 0.0);
             state.true_freq.resize(num_bins, 0.0);
+            state.freq_deriv.resize(num_bins, 0.0);
             state.new_magnitudes.resize(num_bins, 0.0);
             state.new_freq.resize(num_bins, 0.0);
+            state.new_freq_deriv.resize(num_bins, 0.0);
             state.new_bins.resize(BUFFER_SIZE / 2, Complex::default());
         }
 
-        // Analysis: compute magnitude and true frequency per bin
-        for (k, _) in bins.iter().enumerate().take(num_bins) {
+        // Analysis: compute magnitude, time derivative, and frequency derivative
+        for k in 0..num_bins {
             state.magnitudes[k] = bins[k].norm();
             let phase = bins[k].arg();
+
+            // Time derivative (backward difference)
             let mut phase_diff = phase - state.prev_input_phase[k];
             state.prev_input_phase[k] = phase;
-
             phase_diff -= expected_phase_advance(k + 1);
             phase_diff = phase_diff.rem_euclid(std::f32::consts::TAU);
             if phase_diff > std::f32::consts::PI {
                 phase_diff -= std::f32::consts::TAU;
             }
-
             state.true_freq[k] = expected_phase_advance(k + 1) + phase_diff;
+
+            // Frequency derivative (centered difference)
+            if k > 0 && k < num_bins - 1 {
+                let mut fd = bins[k + 1].arg() - bins[k - 1].arg();
+                fd = fd.rem_euclid(std::f32::consts::TAU);
+                if fd > std::f32::consts::PI {
+                    fd -= std::f32::consts::TAU;
+                }
+                state.freq_deriv[k] = fd / 2.0;
+            } else {
+                state.freq_deriv[k] = 0.0;
+            }
         }
 
-        // Synthesis: shift bins and resynthesize phases
+        // Synthesis: shift bins
         for v in state.new_magnitudes.iter_mut() {
             *v = 0.0;
         }
         for v in state.new_freq.iter_mut() {
+            *v = 0.0;
+        }
+        for v in state.new_freq_deriv.iter_mut() {
             *v = 0.0;
         }
         for b in state.new_bins.iter_mut() {
@@ -525,17 +548,58 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             if target < num_bins {
                 state.new_magnitudes[k] += state.magnitudes[target];
                 state.new_freq[k] = state.true_freq[target] * scaling_ratio;
+                state.new_freq_deriv[k] = state.freq_deriv[target];
             }
         }
 
-        // Accumulate output phase
+        // Phase Gradient Heap Integration (PGHI)
+        // Propagate phase from loudest bin outward in both time and frequency
+        let mut computed = vec![false; num_bins];
+        let mut new_phase = vec![0.0f32; num_bins];
+
+        // Max-heap: (magnitude_bits, bin_index, from_prev_frame)
+        let mut heap: BinaryHeap<(u32, usize, bool)> = BinaryHeap::new();
+
+        // Seed with previous frame bins (candidates for time propagation)
         for k in 0..num_bins {
-            state.prev_output_phase[k] += state.new_freq[k];
-            state.new_bins[k] =
-                Complex::from_polar(state.new_magnitudes[k], state.prev_output_phase[k]);
+            if state.new_magnitudes[k] > 1e-10 {
+                heap.push((state.new_magnitudes[k].to_bits(), k, true));
+            }
         }
 
-        // IFFT into pre-allocated buffer
+        while let Some((_, k, from_prev)) = heap.pop() {
+            if computed[k] {
+                continue;
+            }
+            if from_prev {
+                // Time direction: classical phase accumulation
+                new_phase[k] = state.prev_output_phase[k] + state.new_freq[k];
+            }
+            computed[k] = true;
+
+            // Propagate in frequency direction to neighbors
+            if k + 1 < num_bins && !computed[k + 1] {
+                let phase_up =
+                    new_phase[k] + (state.new_freq_deriv[k] + state.new_freq_deriv[k + 1]) / 2.0;
+                new_phase[k + 1] = phase_up;
+                heap.push((state.new_magnitudes[k + 1].to_bits(), k + 1, false));
+            }
+            if k > 0 && !computed[k - 1] {
+                let phase_down =
+                    new_phase[k] - (state.new_freq_deriv[k] + state.new_freq_deriv[k - 1]) / 2.0;
+                new_phase[k - 1] = phase_down;
+                heap.push((state.new_magnitudes[k - 1].to_bits(), k - 1, false));
+            }
+        }
+
+        state.prev_output_phase.copy_from_slice(&new_phase);
+
+        // Build synthesis bins
+        for k in 0..num_bins {
+            state.new_bins[k] = Complex::from_polar(state.new_magnitudes[k], new_phase[k]);
+        }
+
+        // IFFT
         {
             let synth = state.synthesis_spectrum.as_mut().unwrap();
             *synth.get_offset_mut() = *state.analysis_spectrum.as_ref().unwrap().get_offset();
@@ -553,7 +617,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             *s /= BUFFER_SIZE as f32;
         }
 
-        // Apply synthesis window, normalized for 75% overlap (sum of 4 Hanning windows = 1.5)
+        // Apply synthesis window, normalized for 75% overlap
         for (s, w) in state.ifft_output.iter_mut().zip(state.window.iter()) {
             *s *= w / 1.5;
         }
