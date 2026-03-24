@@ -273,6 +273,7 @@
         // --- Playback ---
         function startPlayback() {
             if (!corrector || corrector.recording_len() === 0) return;
+            if (corrector.playback_progress() >= 1.0) corrector.seek(0);
             corrector.play_recording();
             setState('playing');
 
