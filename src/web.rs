@@ -326,6 +326,14 @@ impl WebPitchCorrector {
         let ds = &mut *self.draw_state.lock().unwrap();
         draw_contour(canvas, column_x, &self.input_contour_buffer, "rgb(255,150,50)", &mut ds.input_detector, &mut ds.contour_scratch);
     }
+
+    pub fn draw_waveform(&self, canvas: &HtmlCanvasElement, column_x: f32) {
+        draw_waveform_from(canvas, column_x, &self.spectrogram_buffer, "rgb(50,255,120)");
+    }
+
+    pub fn draw_input_waveform(&self, canvas: &HtmlCanvasElement, column_x: f32) {
+        draw_waveform_from(canvas, column_x, &self.input_spectrogram_buffer, "rgb(255,150,50)");
+    }
 }
 
 fn draw_spectrogram_from(
@@ -343,6 +351,7 @@ fn draw_spectrogram_from(
 
     let height = canvas.height() as usize;
 
+    // Item 2: copy into pre-allocated scratch instead of .to_vec()
     {
         let buf = buffer.lock().unwrap();
         ds.spec_scratch.copy_from_slice(&*buf);
@@ -354,6 +363,7 @@ fn draw_spectrogram_from(
         *sample *= w;
     }
 
+    // Item 3: in-place FFT using pre-allocated spectrum
     ds.spec_scratch.real_fft_using(&mut ds.spec_spectrum);
     let bins = ds.spec_spectrum.get_frequency_bins();
     let num_bins = bins.len();
@@ -384,6 +394,7 @@ fn draw_spectrogram_from(
         };
         let intensity = ((db + 100.0) * (255.0 / 80.0)).clamp(0.0, 255.0) as u8;
 
+        // Item 1: pre-computed RGB string lookup instead of format!()
         ctx.set_fill_style_str(&HEATMAP_LUT[intensity as usize]);
         ctx.fill_rect(column_x as f64, y_pixel as f64, 1.0, 1.0);
     }
@@ -411,12 +422,14 @@ fn draw_contour(
 
     let height = canvas.height() as f32;
 
+    // Item 2: copy into pre-allocated scratch instead of .to_vec()
     {
         let buf = buffer.lock().unwrap();
         scratch.resize(buf.len(), 0.0);
         scratch.copy_from_slice(&*buf);
     }
 
+    // Item 4: reuse detector instead of YinPitchDetector::new()
     let pitch = detector.detect(scratch);
 
     // Background
@@ -429,6 +442,7 @@ fn draw_contour(
     ];
     for semitone in 0..12 {
         let y = height * (1.0 - semitone as f32 / 12.0);
+        // Item 5: pre-computed alpha strings
         let alpha_str = if semitone == 0 || semitone == 4 || semitone == 7 {
             GRID_ALPHA_STRONG
         } else {
@@ -470,6 +484,50 @@ fn draw_contour(
     ctx.fill_rect(bar_x, 0.0, 4.0, height as f64);
 }
 
+fn draw_waveform_from(
+    canvas: &HtmlCanvasElement,
+    column_x: f32,
+    buffer: &Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
+    color: &str,
+) {
+    let ctx: CanvasRenderingContext2d = canvas
+        .get_context("2d")
+        .unwrap()
+        .unwrap()
+        .dyn_into()
+        .unwrap();
+
+    let height = canvas.height() as f32;
+    let mid = height / 2.0;
+    let buf = buffer.lock().unwrap();
+
+    // Find peak amplitude for this frame
+    let peak = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max).max(0.001);
+
+    // RMS for filled bar, peak for outline
+    let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
+    let rms_h = (rms / peak) * mid;
+    let peak_h = mid;
+
+    // Background
+    ctx.set_fill_style_str("rgb(10,10,20)");
+    ctx.fill_rect(column_x as f64, 0.0, 1.0, height as f64);
+
+    // Peak bar (dim)
+    ctx.set_global_alpha(0.3);
+    ctx.set_fill_style_str(color);
+    ctx.fill_rect(column_x as f64, (mid - peak_h) as f64, 1.0, (peak_h * 2.0) as f64);
+
+    // RMS bar (bright)
+    ctx.set_global_alpha(1.0);
+    ctx.fill_rect(column_x as f64, (mid - rms_h) as f64, 1.0, (rms_h * 2.0) as f64);
+
+    // Write-head bar
+    let bar_x = ((column_x as u32 + 1) % canvas.width()) as f64;
+    ctx.set_fill_style_str("rgba(255,255,255,0.8)");
+    ctx.fill_rect(bar_x, 0.0, 4.0, height as f64);
+}
+
 fn heatmap(v: u8) -> (u8, u8, u8) {
     match v {
         0..=63 => (0, v * 4, 128 + v * 2),
@@ -478,3 +536,4 @@ fn heatmap(v: u8) -> (u8, u8, u8) {
         _ => (255, 255 - (v - 192) * 4, 0),
     }
 }
+

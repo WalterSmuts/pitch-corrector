@@ -104,11 +104,13 @@
             <div class="btn-group" id="input-view-group">
                 <button data-view="spectrogram" class="active">Spectrogram</button>
                 <button data-view="pitch">Pitch Contour</button>
+                <button data-view="waveform">Waveform</button>
             </div>
         </div>
     </div>
     <canvas id="input-spectrogram" width="1200" height="200"></canvas>
     <canvas id="input-contour" width="1200" height="200" style="display:none"></canvas>
+    <canvas id="input-waveform" width="1200" height="200" style="display:none"></canvas>
 
     <div class="section">
         <div class="controls">
@@ -116,11 +118,13 @@
             <div class="btn-group" id="output-view-group">
                 <button data-view="spectrogram" class="active">Spectrogram</button>
                 <button data-view="pitch">Pitch Contour</button>
+                <button data-view="waveform">Waveform</button>
             </div>
         </div>
     </div>
     <canvas id="output-spectrogram" width="1200" height="200"></canvas>
     <canvas id="output-contour" width="1200" height="200" style="display:none"></canvas>
+    <canvas id="output-waveform" width="1200" height="200" style="display:none"></canvas>
 
     <script type="module">
         import init, { WebPitchCorrector } from './pkg/pitch_corrector.js';
@@ -141,7 +145,7 @@
             sweepBtn: document.getElementById('sweep-btn'),
         };
 
-        const allCanvasIds = ['input-spectrogram','input-contour','output-spectrogram','output-contour'];
+        const allCanvasIds = ['input-spectrogram','input-contour','input-waveform','output-spectrogram','output-contour','output-waveform'];
         const canvases = Object.fromEntries(allCanvasIds.map(id => [id, document.getElementById(id)]));
 
         function setState(newState) {
@@ -151,7 +155,6 @@
             // Exit actions
             if (prev === 'recording') {
                 cancelAnim();
-                if (corrector) corrector.stop();
             }
             if (prev === 'playing') {
                 cancelAnim();
@@ -240,6 +243,7 @@
         async function startRecording() {
             await init();
             try {
+                if (corrector) corrector.stop();
                 corrector = new WebPitchCorrector();
                 applyScale();
                 corrector.set_shift(parseFloat(slider.value));
@@ -259,6 +263,8 @@
                     corrector.draw_input_spectrogram(canvases['input-spectrogram'], columnX);
                     corrector.draw_pitch_contour(canvases['output-contour'], columnX);
                     corrector.draw_input_contour(canvases['input-contour'], columnX);
+                    corrector.draw_waveform(canvases['output-waveform'], columnX);
+                    corrector.draw_input_waveform(canvases['input-waveform'], columnX);
                     columnX = (columnX + 1) % canvases['output-spectrogram'].width;
                     recordedColumns++;
                     animFrame = requestAnimationFrame(draw);
@@ -404,17 +410,19 @@
         allCanvasIds.forEach(id => canvases[id].addEventListener('click', handleCanvasClick));
 
         // --- View toggle ---
-        function setupViewToggle(groupId, canvasA, canvasB) {
+        function setupViewToggle(groupId, canvasIds) {
             document.getElementById(groupId).addEventListener('click', (e) => {
                 if (!e.target.dataset.view) return;
                 e.target.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
                 e.target.classList.add('active');
-                document.getElementById(canvasA).style.display = e.target.dataset.view === 'spectrogram' ? 'block' : 'none';
-                document.getElementById(canvasB).style.display = e.target.dataset.view === 'pitch' ? 'block' : 'none';
+                const view = e.target.dataset.view;
+                for (const [viewName, id] of Object.entries(canvasIds)) {
+                    document.getElementById(id).style.display = view === viewName ? 'block' : 'none';
+                }
             });
         }
-        setupViewToggle('input-view-group', 'input-spectrogram', 'input-contour');
-        setupViewToggle('output-view-group', 'output-spectrogram', 'output-contour');
+        setupViewToggle('input-view-group', {spectrogram: 'input-spectrogram', pitch: 'input-contour', waveform: 'input-waveform'});
+        setupViewToggle('output-view-group', {spectrogram: 'output-spectrogram', pitch: 'output-contour', waveform: 'output-waveform'});
     </script>
 </body>
 </html>
