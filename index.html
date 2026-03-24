@@ -209,11 +209,8 @@
 
         function drawPlayhead(canvas, x) {
             const ctx = canvas.getContext('2d');
-            ctx.strokeStyle = '#ff0';
-            ctx.beginPath();
-            ctx.moveTo(x, 0);
-            ctx.lineTo(x, canvas.height);
-            ctx.stroke();
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            ctx.fillRect(x, 0, 4, canvas.height);
         }
 
         // --- Playhead save/restore ---
@@ -264,7 +261,6 @@
                     corrector.draw_input_contour(canvases['input-contour'], columnX);
                     columnX = (columnX + 1) % canvases['output-spectrogram'].width;
                     recordedColumns++;
-                    allCanvasIds.forEach(id => drawPlayhead(canvases[id], (columnX + 1) % canvases[id].width));
                     animFrame = requestAnimationFrame(draw);
                 }
                 draw();
@@ -290,7 +286,7 @@
                     const c = canvases[id];
                     if (c.style.display === 'none') return;
                     const ctx = c.getContext('2d');
-                    savedColumns[id] = ctx.getImageData(x, 0, 1, c.height);
+                    savedColumns[id] = ctx.getImageData(x, 0, 4, c.height);
                     drawPlayhead(c, x);
                 });
                 lastPlayheadX = x;
