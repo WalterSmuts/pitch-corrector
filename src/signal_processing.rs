@@ -1293,4 +1293,49 @@ mod tests {
             converter.process(&mut buf2);
         });
     }
+
+    #[test]
+    fn spectrogram_and_yin_no_alloc_after_warmup() {
+        use easyfft::dyn_size::realfft::DynRealFft;
+
+        const SPEC_SIZE: usize = 8192;
+        const CONTOUR_SIZE: usize = 2048;
+
+        let mut spec_scratch = vec![0.0f32; SPEC_SIZE];
+        let mut spec_spectrum = spec_scratch.real_fft();
+        let contour_scratch: Vec<f32> =
+            (0..CONTOUR_SIZE).map(|i| (i as f32 * 0.1).sin()).collect();
+        let mut detector = YinPitchDetector::new();
+
+        // Warmup
+        for (i, s) in spec_scratch.iter_mut().enumerate() {
+            *s = (i as f32 * 0.1).sin();
+        }
+        spec_scratch.real_fft_using(&mut spec_spectrum);
+        detector.detect(&contour_scratch);
+
+        // Refill spectrogram scratch
+        for (i, s) in spec_scratch.iter_mut().enumerate() {
+            *s = (i as f32 * 0.1).sin();
+        }
+
+        assert_no_alloc::assert_no_alloc(|| {
+            // Spectrogram: in-place FFT + bin read
+            spec_scratch.real_fft_using(&mut spec_spectrum);
+            let bins = spec_spectrum.get_frequency_bins();
+            let _mag = bins[1].norm();
+
+            // Contour: reused YIN detector
+            let _pitch = detector.detect(&contour_scratch);
+
+            // Waveform: RMS/peak
+            let _peak = contour_scratch
+                .iter()
+                .map(|s| s.abs())
+                .fold(0.0f32, f32::max);
+            let _rms = (contour_scratch.iter().map(|s| s * s).sum::<f32>()
+                / contour_scratch.len() as f32)
+                .sqrt();
+        });
+    }
 }

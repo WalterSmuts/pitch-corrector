@@ -1,6 +1,7 @@
 use crate::pitch_correction::{Notes, PitchCorrector};
 use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
@@ -9,6 +10,26 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 const SPECTROGRAM_SIZE: usize = 8192;
 const CONTOUR_SIZE: usize = 2048;
+
+// Pre-computed RGB strings for heatmap: avoids format!() per pixel
+static HEATMAP_LUT: std::sync::LazyLock<[String; 256]> = std::sync::LazyLock::new(|| {
+    std::array::from_fn(|i| {
+        let (r, g, b) = heatmap(i as u8);
+        format!("rgb({r},{g},{b})")
+    })
+});
+
+static GRID_ALPHA_STRONG: &str = "rgba(255,255,255,0.3)";
+static GRID_ALPHA_WEAK: &str = "rgba(255,255,255,0.1)";
+
+/// Pre-allocated scratch buffers for zero-alloc drawing
+struct DrawState {
+    spec_scratch: Vec<f32>,
+    spec_spectrum: DynRealDft<f32>,
+    contour_scratch: Vec<f32>,
+    output_detector: YinPitchDetector,
+    input_detector: YinPitchDetector,
+}
 
 #[wasm_bindgen]
 pub struct WebPitchCorrector {
@@ -25,6 +46,7 @@ pub struct WebPitchCorrector {
     playback_pos: Arc<AtomicU32>,
     playing: Arc<AtomicBool>,
     playback_stream: Mutex<Option<cpal::Stream>>,
+    draw_state: Mutex<DrawState>,
 }
 
 #[wasm_bindgen]
@@ -156,6 +178,17 @@ impl WebPitchCorrector {
             playback_pos: Arc::new(AtomicU32::new(0)),
             playing: Arc::new(AtomicBool::new(false)),
             playback_stream: Mutex::new(None),
+            draw_state: Mutex::new({
+                let spec_scratch = vec![0.0f32; SPECTROGRAM_SIZE];
+                let spec_spectrum = spec_scratch.real_fft();
+                DrawState {
+                    spec_scratch,
+                    spec_spectrum,
+                    contour_scratch: vec![0.0f32; CONTOUR_SIZE],
+                    output_detector: YinPitchDetector::new(),
+                    input_detector: YinPitchDetector::new(),
+                }
+            }),
         })
     }
 
@@ -276,23 +309,22 @@ impl WebPitchCorrector {
     }
 
     pub fn draw_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_spectrogram_from(canvas, column_x, &self.spectrogram_buffer);
+        let mut ds = self.draw_state.lock().unwrap();
+        draw_spectrogram_from(canvas, column_x, &self.spectrogram_buffer, &mut ds);
     }
 
     pub fn draw_input_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_spectrogram_from(canvas, column_x, &self.input_spectrogram_buffer);
+        let mut ds = self.draw_state.lock().unwrap();
+        draw_spectrogram_from(canvas, column_x, &self.input_spectrogram_buffer, &mut ds);
     }
     pub fn draw_pitch_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_contour(canvas, column_x, &self.contour_buffer, "rgb(50,255,120)");
+        let ds = &mut *self.draw_state.lock().unwrap();
+        draw_contour(canvas, column_x, &self.contour_buffer, "rgb(50,255,120)", &mut ds.output_detector, &mut ds.contour_scratch);
     }
 
     pub fn draw_input_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_contour(
-            canvas,
-            column_x,
-            &self.input_contour_buffer,
-            "rgb(255,150,50)",
-        );
+        let ds = &mut *self.draw_state.lock().unwrap();
+        draw_contour(canvas, column_x, &self.input_contour_buffer, "rgb(255,150,50)", &mut ds.input_detector, &mut ds.contour_scratch);
     }
 }
 
@@ -300,9 +332,8 @@ fn draw_spectrogram_from(
     canvas: &HtmlCanvasElement,
     column_x: f32,
     buffer: &Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
+    ds: &mut DrawState,
 ) {
-    use easyfft::dyn_size::DynFft;
-
     let ctx: CanvasRenderingContext2d = canvas
         .get_context("2d")
         .unwrap()
@@ -311,17 +342,21 @@ fn draw_spectrogram_from(
         .unwrap();
 
     let height = canvas.height() as usize;
-    let buf = buffer.lock().unwrap().to_vec();
 
-    let len = buf.len() as f32;
-    let mut buf = buf;
-    for (i, sample) in buf.iter_mut().enumerate() {
+    {
+        let buf = buffer.lock().unwrap();
+        ds.spec_scratch.copy_from_slice(&*buf);
+    }
+
+    let len = ds.spec_scratch.len() as f32;
+    for (i, sample) in ds.spec_scratch.iter_mut().enumerate() {
         let w = 0.5 * (1.0 - (std::f32::consts::TAU * i as f32 / len).cos());
         *sample *= w;
     }
 
-    let spectrum = buf.fft();
-    let num_bins = spectrum.len() / 2;
+    ds.spec_scratch.real_fft_using(&mut ds.spec_spectrum);
+    let bins = ds.spec_spectrum.get_frequency_bins();
+    let num_bins = bins.len();
 
     let min_bin = 1.0f32;
     let max_bin = num_bins as f32;
@@ -336,8 +371,8 @@ fn draw_spectrogram_from(
         let bin_hi = bin_lo + 1;
         let frac = bin_f - bin_lo as f32;
 
-        let mag_lo = spectrum[bin_lo].norm();
-        let mag_hi = spectrum[bin_hi].norm();
+        let mag_lo = bins[bin_lo].norm();
+        let mag_hi = bins[bin_hi].norm();
         let mut mag = (mag_lo * (1.0 - frac) + mag_hi * frac) / SPECTROGRAM_SIZE as f32;
         mag *= bin_f.sqrt();
 
@@ -349,8 +384,7 @@ fn draw_spectrogram_from(
         };
         let intensity = ((db + 100.0) * (255.0 / 80.0)).clamp(0.0, 255.0) as u8;
 
-        let (r, g, b) = heatmap(intensity);
-        ctx.set_fill_style_str(&format!("rgb({r},{g},{b})"));
+        ctx.set_fill_style_str(&HEATMAP_LUT[intensity as usize]);
         ctx.fill_rect(column_x as f64, y_pixel as f64, 1.0, 1.0);
     }
 
@@ -365,6 +399,8 @@ fn draw_contour(
     column_x: f32,
     buffer: &Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     color: &str,
+    detector: &mut YinPitchDetector,
+    scratch: &mut Vec<f32>,
 ) {
     let ctx: CanvasRenderingContext2d = canvas
         .get_context("2d")
@@ -374,10 +410,14 @@ fn draw_contour(
         .unwrap();
 
     let height = canvas.height() as f32;
-    let buf: Vec<f32> = buffer.lock().unwrap().to_vec();
 
-    let mut detector = YinPitchDetector::new();
-    let pitch = detector.detect(&buf);
+    {
+        let buf = buffer.lock().unwrap();
+        scratch.resize(buf.len(), 0.0);
+        scratch.copy_from_slice(&*buf);
+    }
+
+    let pitch = detector.detect(scratch);
 
     // Background
     ctx.set_fill_style_str("rgb(10,10,20)");
@@ -389,12 +429,12 @@ fn draw_contour(
     ];
     for semitone in 0..12 {
         let y = height * (1.0 - semitone as f32 / 12.0);
-        let alpha = if semitone == 0 || semitone == 4 || semitone == 7 {
-            0.3
+        let alpha_str = if semitone == 0 || semitone == 4 || semitone == 7 {
+            GRID_ALPHA_STRONG
         } else {
-            0.1
+            GRID_ALPHA_WEAK
         };
-        ctx.set_stroke_style_str(&format!("rgba(255,255,255,{alpha})"));
+        ctx.set_stroke_style_str(alpha_str);
         ctx.begin_path();
         ctx.move_to(column_x as f64, y as f64);
         ctx.line_to((column_x + 2.0) as f64, y as f64);
