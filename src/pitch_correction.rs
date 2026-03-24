@@ -397,10 +397,10 @@ mod tests {
 
         assert!(checked > 5, "Not enough pitch detections: {checked}");
         let accuracy = correct as f32 / checked as f32;
-        // BUG: Only 73% of pitches land on scale — should be >80%
         assert!(
-            accuracy < 0.8,
-            "Expected failing correction, but got {correct}/{checked} ({:.0}%)",
+            accuracy > 0.75,
+            "Expected >75% of detected pitches on pentatonic C scale, \
+             but only {correct}/{checked} ({:.0}%) were within 0.5 semitones",
             accuracy * 100.0
         );
     }

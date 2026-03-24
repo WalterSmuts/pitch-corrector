@@ -544,11 +544,22 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
         }
 
         for k in 0..num_bins {
-            let target = (k as f32 / scaling_ratio) as usize;
-            if target < num_bins {
-                state.new_magnitudes[k] += state.magnitudes[target];
-                state.new_freq[k] = state.true_freq[target] * scaling_ratio;
-                state.new_freq_deriv[k] = state.freq_deriv[target];
+            let src = k as f32 / scaling_ratio;
+            let lo = src as usize;
+            let hi = lo + 1;
+            if hi < num_bins {
+                let frac = src - lo as f32;
+                state.new_magnitudes[k] =
+                    state.magnitudes[lo] * (1.0 - frac) + state.magnitudes[hi] * frac;
+                state.new_freq[k] = (state.true_freq[lo] * (1.0 - frac)
+                    + state.true_freq[hi] * frac)
+                    * scaling_ratio;
+                state.new_freq_deriv[k] =
+                    state.freq_deriv[lo] * (1.0 - frac) + state.freq_deriv[hi] * frac;
+            } else if lo < num_bins {
+                state.new_magnitudes[k] = state.magnitudes[lo];
+                state.new_freq[k] = state.true_freq[lo] * scaling_ratio;
+                state.new_freq_deriv[k] = state.freq_deriv[lo];
             }
         }
 
