@@ -211,6 +211,14 @@
             animFrame = null;
         }
 
+        const outputCanvasIds = ['output-spectrogram', 'output-contour', 'output-waveform'];
+        function clearOutputCanvases() {
+            outputCanvasIds.forEach(id => {
+                const c = canvases[id];
+                c.getContext('2d').clearRect(0, 0, c.width, c.height);
+            });
+        }
+
         function drawPlayhead(canvas, x) {
             const ctx = canvas.getContext('2d');
             ctx.fillStyle = 'rgba(255,255,255,0.8)';
@@ -281,32 +289,27 @@
         function startPlayback() {
             if (!corrector || corrector.recording_len() === 0) return;
             if (corrector.playback_progress() >= 1.0) corrector.seek(0);
+            clearOutputCanvases();
             corrector.play_recording();
             setState('playing');
 
-            function drawPlaybackHead() {
+            let playColumnX = 0;
+            function drawPlaybackFrame() {
                 if (state !== 'playing') return;
-                const x = playbackX();
 
-                restorePlayhead();
-
-                allCanvasIds.forEach(id => {
-                    const c = canvases[id];
-                    if (c.style.display === 'none') return;
-                    const ctx = c.getContext('2d');
-                    savedColumns[id] = ctx.getImageData(x, 0, 4, c.height);
-                    drawPlayhead(c, x);
-                });
-                lastPlayheadX = x;
+                // Draw output views at current playback column
+                corrector.draw_spectrogram(canvases['output-spectrogram'], playColumnX);
+                corrector.draw_pitch_contour(canvases['output-contour'], playColumnX);
+                corrector.draw_waveform(canvases['output-waveform'], playColumnX);
+                playColumnX = (playColumnX + 1) % canvases['output-spectrogram'].width;
 
                 if (corrector.is_playing()) {
-                    animFrame = requestAnimationFrame(drawPlaybackHead);
+                    animFrame = requestAnimationFrame(drawPlaybackFrame);
                 } else {
-                    restorePlayhead();
                     setState('stopped');
                 }
             }
-            drawPlaybackHead();
+            drawPlaybackFrame();
         }
 
         // --- Seek ---
@@ -342,7 +345,10 @@
                 noteGrid.querySelectorAll('button.active').forEach(b => {
                     customBits |= (1 << parseInt(b.dataset.note));
                 });
-                if (corrector && currentScale === 'custom') corrector.set_notes(customBits);
+                if (corrector && currentScale === 'custom') {
+                    corrector.set_notes(customBits);
+                    if (state !== 'recording') clearOutputCanvases();
+                }
             });
             noteGrid.appendChild(btn);
         });
@@ -355,6 +361,7 @@
             } else {
                 corrector.set_notes(WebPitchCorrector.scale_bits(currentScale, root));
             }
+            if (state !== 'recording') clearOutputCanvases();
         }
 
         document.querySelectorAll('#scale-buttons button').forEach(btn => {
@@ -376,6 +383,7 @@
             const v = parseFloat(slider.value);
             shiftDisplay.textContent = (v >= 0 ? '+' : '') + v + ' st';
             if (corrector) corrector.set_shift(v);
+            if (state !== 'recording') clearOutputCanvases();
         });
 
         // --- Button wiring ---
