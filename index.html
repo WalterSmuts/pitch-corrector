@@ -315,8 +315,6 @@
             let offset = (clickX - (columnX - totalCols) + canvasWidth) % canvasWidth;
             if (offset > totalCols) offset = totalCols;
             corrector.seek(offset / totalCols);
-
-            if (state !== 'playing') startPlayback();
         }
 
         // --- Scale / shift controls ---
