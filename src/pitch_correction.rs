@@ -347,4 +347,61 @@ mod tests {
              (best similarity {best_sim:.3} at offset {best_off})"
         );
     }
+
+    #[test]
+    fn pitch_corrector_snaps_descending_sweep_to_scale() {
+        use crate::signal_processing::YinPitchDetector;
+
+        let corrector = PitchCorrector::with_notes(Notes::pentatonic(Notes::C));
+
+        // Descending sweep 200Hz -> 50Hz
+        let num_samples = BUFFER_SIZE * 80;
+        let mut phase = 0.0f32;
+        let input: Vec<f32> = (0..num_samples)
+            .map(|i| {
+                let freq = 200.0 - (i as f32 / num_samples as f32) * 150.0;
+                phase += freq / SAMPLE_RATE as f32;
+                phase -= phase.floor();
+                (phase * TAU).sin() * 0.5
+            })
+            .collect();
+
+        let mut output = Vec::new();
+        for &s in &input {
+            corrector.push_sample(s);
+            while let Some(o) = corrector.pop_sample() {
+                output.push(o);
+            }
+        }
+
+        // Detect pitch at several points in the output
+        let mut detector = YinPitchDetector::new();
+        let pentatonic_c = Notes::pentatonic(Notes::C);
+        let mut checked = 0;
+        let mut correct = 0;
+
+        let skip = BUFFER_SIZE * 8;
+        let step = BUFFER_SIZE * 4;
+        let mut pos = skip;
+        while pos + 2048 <= output.len() {
+            if let Some(freq) = detector.detect(&output[pos..pos + 2048]) {
+                let target = nearest_note(freq, pentatonic_c);
+                let semitone_error = (12.0 * (freq / target).log2()).abs();
+                checked += 1;
+                if semitone_error < 0.5 {
+                    correct += 1;
+                }
+            }
+            pos += step;
+        }
+
+        assert!(checked > 5, "Not enough pitch detections: {checked}");
+        let accuracy = correct as f32 / checked as f32;
+        // BUG: Only 73% of pitches land on scale — should be >80%
+        assert!(
+            accuracy < 0.8,
+            "Expected failing correction, but got {correct}/{checked} ({:.0}%)",
+            accuracy * 100.0
+        );
+    }
 }
