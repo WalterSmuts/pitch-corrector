@@ -1253,6 +1253,138 @@ mod tests {
         let _ = detector.detect(&buffer);
     }
 
+    /// Measure what fraction of output energy falls within ±tolerance_bins
+    /// of the expected frequency after pitch-shifting a 440Hz sine.
+    ///
+    /// Uses a 4096-point FFT on the output for ~10.8Hz bin resolution.
+    /// Expectation: a clean phase vocoder should concentrate ≥95% of energy
+    /// within ±3 bins (~32Hz) of the target frequency. With known bugs
+    /// (e.g. off-by-one in expected_phase_advance) this will drop
+    /// significantly.
+    fn measure_spectral_purity(scaling_ratio: f32) -> (f32, usize, usize) {
+        const ANALYSIS_SIZE: usize = 4096;
+        let input_freq = 440.0;
+        let expected_freq = input_freq * scaling_ratio;
+        let processor = PhaseVocoderPitchShifter::new(scaling_ratio);
+
+        // Feed plenty of signal for steady-state
+        let num_samples = BUFFER_SIZE * 80;
+        let mut output = Vec::new();
+        for i in 0..num_samples {
+            let sample =
+                (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
+            processor.push_sample(sample);
+            while let Some(o) = processor.pop_sample() {
+                output.push(o);
+            }
+        }
+
+        // Skip transients, take a steady-state block
+        let skip = output.len() / 2;
+        assert!(
+            output.len() >= skip + ANALYSIS_SIZE,
+            "Not enough output: {}",
+            output.len()
+        );
+        let block = &output[skip..skip + ANALYSIS_SIZE];
+
+        // Window before analysis to reduce leakage
+        let window: Vec<f32> = apodize::hanning_iter(ANALYSIS_SIZE)
+            .map(|w| w as f32)
+            .collect();
+        let windowed: Vec<f32> = block.iter().zip(&window).map(|(s, w)| s * w).collect();
+
+        let spectrum = windowed.real_fft();
+        let bins = spectrum.get_frequency_bins();
+
+        let bin_hz = SAMPLE_RATE as f32 / ANALYSIS_SIZE as f32;
+
+        // Print top 10 bins for diagnostics
+        let mut indexed: Vec<(usize, f32)> = bins.iter().enumerate()
+            .map(|(i, b)| (i, b.norm_sqr())).collect();
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let total_energy: f32 = indexed.iter().map(|(_, e)| e).sum();
+        eprintln!("  Top 5 bins (ratio={scaling_ratio:.3}):");
+        for (rank, (bin, energy)) in indexed.iter().take(5).enumerate() {
+            eprintln!(
+                "    #{}: bin {} ({:.1}Hz) = {:.2}%",
+                rank + 1, bin, *bin as f32 * bin_hz, energy / total_energy * 100.0
+            );
+        }
+
+        // Find expected bin and measure energy concentration
+        let expected_bin = (expected_freq / bin_hz).round() as usize;
+        let tolerance_bins = 3;
+
+        let lo = expected_bin.saturating_sub(tolerance_bins);
+        let hi = (expected_bin + tolerance_bins).min(bins.len() - 1);
+
+        let band_energy: f32 = bins[lo..=hi].iter().map(|b| b.norm_sqr()).sum();
+
+        let peak_bin = bins
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.norm().partial_cmp(&b.1.norm()).unwrap())
+            .unwrap()
+            .0;
+
+        let concentration = band_energy / total_energy;
+        (concentration, expected_bin, peak_bin)
+    }
+
+    #[test]
+    fn phase_vocoder_shift_up_fifth_spectral_purity() {
+        let ratio = 3.0 / 2.0; // up a fifth: 440 -> 660Hz
+        let (concentration, expected_bin, peak_bin) = measure_spectral_purity(ratio);
+        let bin_hz = SAMPLE_RATE as f32 / 4096.0;
+
+        eprintln!(
+            "UP FIFTH: {:.1}% energy in band, expected bin {} ({:.1}Hz), peak bin {} ({:.1}Hz)",
+            concentration * 100.0,
+            expected_bin,
+            expected_bin as f32 * bin_hz,
+            peak_bin,
+            peak_bin as f32 * bin_hz,
+        );
+
+        assert!(
+            concentration > 0.95,
+            "Shift up a fifth: only {:.1}% energy near 660Hz (expected ≥95%). \
+             Peak at bin {peak_bin} ({:.1}Hz), expected bin {expected_bin} ({:.1}Hz). \
+             Likely phase vocoder distortion.",
+            concentration * 100.0,
+            peak_bin as f32 * bin_hz,
+            expected_bin as f32 * bin_hz,
+        );
+    }
+
+    #[test]
+    fn phase_vocoder_shift_down_fifth_spectral_purity() {
+        let ratio = 2.0 / 3.0; // down a fifth: 440 -> ~293Hz
+        let (concentration, expected_bin, peak_bin) = measure_spectral_purity(ratio);
+        let bin_hz = SAMPLE_RATE as f32 / 4096.0;
+
+        eprintln!(
+            "DOWN FIFTH: {:.1}% energy in band, expected bin {} ({:.1}Hz), peak bin {} ({:.1}Hz)",
+            concentration * 100.0,
+            expected_bin,
+            expected_bin as f32 * bin_hz,
+            peak_bin,
+            peak_bin as f32 * bin_hz,
+        );
+
+        assert!(
+            concentration > 0.95,
+            "Shift down a fifth: only {:.1}% energy near 293Hz (expected ≥95%). \
+             Peak at bin {peak_bin} ({:.1}Hz), expected bin {expected_bin} ({:.1}Hz). \
+             Likely phase vocoder distortion.",
+            concentration * 100.0,
+            peak_bin as f32 * bin_hz,
+            expected_bin as f32 * bin_hz,
+        );
+    }
+
+
     #[test]
     fn phase_vocoder_no_alloc_after_warmup() {
         let processor = PhaseVocoderPitchShifter::new(0.5);
