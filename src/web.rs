@@ -179,7 +179,13 @@ impl WebPitchCorrector {
                         }
                     }
                     for sample in data.iter_mut() {
-                        *sample = output_processor.pop_sample().unwrap_or(0.0);
+                        match output_processor.pop_sample() {
+                            Some(s) => *sample = s,
+                            None => {
+                                log::warn!("Output callback: underrun — inserting silence");
+                                *sample = 0.0;
+                            }
+                        }
                     }
                 },
                 |err| log::error!("Output error: {}", err),

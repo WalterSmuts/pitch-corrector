@@ -216,7 +216,9 @@ where
     }
 
     fn push_sample(&self, sample: f32) {
-        let _ = self.input_buffer.push(sample);
+        if self.input_buffer.push(sample).is_err() {
+            log::warn!("Segmenter: input buffer overflow — dropping sample");
+        }
         if self.input_buffer.len() > BUFFER_SIZE {
             let mut buffer = [0.0; BUFFER_SIZE];
             for sample in &mut buffer {
@@ -225,7 +227,7 @@ where
             self.block_processor.process(&mut buffer);
             for sample in buffer {
                 if self.output_buffer.push(sample).is_err() {
-                    log::warn!("Output buffer overflow");
+                    log::warn!("Segmenter: output buffer overflow — dropping sample");
                 }
             }
         }
@@ -250,7 +252,9 @@ impl<const I: usize> DisplayProcessor<I> {
 
 impl<const I: usize> StreamProcessor for DisplayProcessor<I> {
     fn push_sample(&self, sample: f32) {
-        let _ = self.buffer.push(sample);
+        if self.buffer.push(sample).is_err() {
+            log::warn!("DisplayProcessor: buffer overflow — dropping sample");
+        }
     }
 
     fn pop_sample(&self) -> Option<f32> {
@@ -637,7 +641,9 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
 
 impl<F: Fn(&[f32]) -> f32 + Send + Sync> StreamProcessor for PhaseVocoderPitchShifter<F> {
     fn push_sample(&self, sample: f32) {
-        let _ = self.input_buffer.push(sample);
+        if self.input_buffer.push(sample).is_err() {
+            log::warn!("PhaseVocoder: input buffer overflow — dropping sample");
+        }
 
         if self.input_buffer.len() >= self.hop_size {
             let mut state = self.state.lock().unwrap();
@@ -664,7 +670,9 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> StreamProcessor for PhaseVocoderPitchSh
 
             // Output hop_size samples
             for i in 0..self.hop_size {
-                let _ = self.output_buffer.push(state.output_accum[i]);
+                if self.output_buffer.push(state.output_accum[i]).is_err() {
+                    log::warn!("PhaseVocoder: output buffer overflow — dropping sample");
+                }
             }
 
             // Shift accumulator
