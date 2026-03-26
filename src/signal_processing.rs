@@ -1384,6 +1384,127 @@ mod tests {
         );
     }
 
+    #[test]
+    fn phase_vocoder_ratio_transition_distortion() {
+        use std::sync::atomic::AtomicU32;
+
+        const ANALYSIS_SIZE: usize = 4096;
+        let input_freq = 440.0;
+        let ratio_before = 1.0f32;
+        let ratio_after = 2.0f32.powf(1.0 / 12.0); // half-note up
+        let freq_before = input_freq * ratio_before; // 440Hz
+        let freq_after = input_freq * ratio_after; // ~466Hz
+
+        let ratio = Arc::new(AtomicU32::new(ratio_before.to_bits()));
+        let ratio_clone = ratio.clone();
+        let processor = PhaseVocoderPitchShifter::with_ratio_fn(move |_: &[f32]| {
+            f32::from_bits(ratio_clone.load(Ordering::Relaxed))
+        });
+
+        let total_samples = BUFFER_SIZE * 80;
+        let switch_at = total_samples / 2;
+
+        let mut output = Vec::new();
+        for i in 0..total_samples {
+            if i == switch_at {
+                ratio.store(ratio_after.to_bits(), Ordering::Relaxed);
+            }
+            let sample =
+                (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
+            processor.push_sample(sample);
+            while let Some(o) = processor.pop_sample() {
+                output.push(o);
+            }
+        }
+
+        // Analyze in sliding windows. For each window, measure energy at
+        // the two expected frequencies vs total energy.
+        let bin_hz = SAMPLE_RATE as f32 / ANALYSIS_SIZE as f32;
+        let bin_before = (freq_before / bin_hz).round() as usize;
+        let bin_after = (freq_after / bin_hz).round() as usize;
+        let tolerance = 3;
+        let window: Vec<f32> = apodize::hanning_iter(ANALYSIS_SIZE)
+            .map(|w| w as f32)
+            .collect();
+
+        let step = ANALYSIS_SIZE / 4;
+        let delay = total_samples - output.len();
+        // Output sample index where the ratio switch happens
+        let switch_output = switch_at.saturating_sub(delay);
+
+        let mut worst_purity = 1.0f32;
+        let mut worst_pos = 0usize;
+        let mut transition_windows = 0;
+        let mut transition_purity_sum = 0.0f32;
+
+        let mut pos = 0;
+        while pos + ANALYSIS_SIZE <= output.len() {
+            let windowed: Vec<f32> = output[pos..pos + ANALYSIS_SIZE]
+                .iter()
+                .zip(&window)
+                .map(|(s, w)| s * w)
+                .collect();
+            let spectrum = windowed.real_fft();
+            let bins = spectrum.get_frequency_bins();
+            let total: f32 = bins.iter().map(|b| b.norm_sqr()).sum();
+            if total < 1e-20 {
+                pos += step;
+                continue;
+            }
+
+            // Energy in the union of both expected bands
+            let lo = bin_before.saturating_sub(tolerance);
+            let hi = (bin_after + tolerance).min(bins.len() - 1);
+            let band_energy: f32 = bins[lo..=hi].iter().map(|b| b.norm_sqr()).sum();
+            let purity = band_energy / total;
+
+            // Is this window near the transition?
+            let window_center = pos + ANALYSIS_SIZE / 2;
+            let near_transition = (window_center as i64 - switch_output as i64).unsigned_abs()
+                < ANALYSIS_SIZE as u64;
+
+            if near_transition {
+                transition_windows += 1;
+                transition_purity_sum += purity;
+            }
+
+            if purity < worst_purity {
+                worst_purity = purity;
+                worst_pos = pos;
+            }
+
+            pos += step;
+        }
+
+        let transition_avg = if transition_windows > 0 {
+            transition_purity_sum / transition_windows as f32
+        } else {
+            1.0
+        };
+
+        eprintln!(
+            "RATIO TRANSITION: worst purity {:.1}% at sample {worst_pos}, \
+             transition avg {:.1}% over {transition_windows} windows",
+            worst_purity * 100.0,
+            transition_avg * 100.0,
+        );
+
+        // Steady-state should be very clean
+        assert!(
+            worst_purity > 0.85,
+            "Worst purity {:.1}% — excessive distortion during ratio change \
+             (expected >85% even at transition). Worst at sample {worst_pos}.",
+            worst_purity * 100.0,
+        );
+
+        // Transition region average should still be reasonable
+        assert!(
+            transition_avg > 0.90,
+            "Transition region average purity {:.1}% — too much distortion \
+             around ratio change (expected >90%).",
+            transition_avg * 100.0,
+        );
+    }
 
     #[test]
     fn phase_vocoder_no_alloc_after_warmup() {
