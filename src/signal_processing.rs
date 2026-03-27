@@ -250,6 +250,12 @@ where
     }
 }
 
+impl<const I: usize> Default for DisplayProcessor<I> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const I: usize> DisplayProcessor<I> {
     pub fn new() -> Self {
         info!("Creating new DisplayProcessor of size {}", I);
@@ -620,9 +626,8 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
         state.prev_output_phase.copy_from_slice(&new_phase);
 
         // Build synthesis bins
-        for k in 0..num_bins {
-            state.synthesis_bins[k] =
-                Complex::from_polar(state.synthesis.magnitudes[k], new_phase[k]);
+        for (k, phase) in new_phase.iter().enumerate().take(num_bins) {
+            state.synthesis_bins[k] = Complex::from_polar(state.synthesis.magnitudes[k], *phase);
         }
 
         // IFFT
@@ -776,6 +781,12 @@ const DEFAULT_YIN_THRESHOLD: f32 = 0.15;
 pub struct YinPitchDetector {
     threshold: f32,
     cmnd: Vec<f32>,
+}
+
+impl Default for YinPitchDetector {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl YinPitchDetector {

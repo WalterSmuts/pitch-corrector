@@ -255,6 +255,12 @@ pub struct PitchCorrector {
     controls: PitchCorrectorControls,
 }
 
+impl Default for PitchCorrector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PitchCorrector {
     pub fn new() -> Self {
         Self::with_notes(Notes::pentatonic(Notes::C))

@@ -216,6 +216,12 @@ impl UserInterface {
     }
 }
 
+impl Default for UserInterface {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UserInterface {
     pub fn new() -> Self {
         info!("Creating new UserInterface");
