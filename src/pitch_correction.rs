@@ -1,97 +1,8 @@
+use crate::music::{Note, Scale};
 use crate::signal_processing::{PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector};
 use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
-
-bitflags::bitflags! {
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct Notes: u16 {
-        const C  = 1 << 0;
-        const CS = 1 << 1;
-        const D  = 1 << 2;
-        const DS = 1 << 3;
-        const E  = 1 << 4;
-        const F  = 1 << 5;
-        const FS = 1 << 6;
-        const G  = 1 << 7;
-        const GS = 1 << 8;
-        const A  = 1 << 9;
-        const AS = 1 << 10;
-        const B  = 1 << 11;
-    }
-}
-
-impl Notes {
-    pub const BY_INDEX: [Notes; 12] = [
-        Notes::C,
-        Notes::CS,
-        Notes::D,
-        Notes::DS,
-        Notes::E,
-        Notes::F,
-        Notes::FS,
-        Notes::G,
-        Notes::GS,
-        Notes::A,
-        Notes::AS,
-        Notes::B,
-    ];
-
-    /// Build a note set from intervals relative to a root note.
-    pub fn from_intervals(intervals: &[u8], root: Notes) -> Self {
-        let root_idx = root.bits().trailing_zeros() as u8;
-        let mut result = Notes::empty();
-        for &interval in intervals {
-            result |= Notes::BY_INDEX[((root_idx + interval) % 12) as usize];
-        }
-        result
-    }
-
-    pub fn chromatic() -> Self {
-        Notes::all()
-    }
-
-    pub fn major(root: Notes) -> Self {
-        Self::from_intervals(&[0, 2, 4, 5, 7, 9, 11], root)
-    }
-
-    pub fn minor(root: Notes) -> Self {
-        Self::from_intervals(&[0, 2, 3, 5, 7, 8, 10], root)
-    }
-
-    pub fn pentatonic(root: Notes) -> Self {
-        Self::from_intervals(&[0, 2, 4, 7, 9], root)
-    }
-}
-
-/// A musical interval measured in semitones.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(i8)]
-pub enum Interval {
-    Unison = 0,
-    MinorSecond = 1,
-    MajorSecond = 2,
-    MinorThird = 3,
-    MajorThird = 4,
-    PerfectFourth = 5,
-    Tritone = 6,
-    PerfectFifth = 7,
-    MinorSixth = 8,
-    MajorSixth = 9,
-    MinorSeventh = 10,
-    MajorSeventh = 11,
-    Octave = 12,
-}
-
-impl Interval {
-    pub fn semitones(self) -> i8 {
-        self as i8
-    }
-
-    pub fn to_ratio(self) -> f32 {
-        (2.0f32).powf(self.semitones() as f32 / 12.0)
-    }
-}
 
 use std::any::Any;
 
@@ -111,8 +22,8 @@ pub struct NoteSnapper {
 }
 
 impl NoteSnapper {
-    pub fn new(notes: Notes) -> Self {
-        Self::with_notes_control(Arc::new(AtomicU16::new(notes.bits())))
+    pub fn new(scale: Scale) -> Self {
+        Self::with_notes_control(Arc::new(AtomicU16::new(scale.bits())))
     }
 
     pub fn with_notes_control(note_set: Arc<AtomicU16>) -> Self {
@@ -122,8 +33,8 @@ impl NoteSnapper {
         }
     }
 
-    pub fn set_notes(&self, notes: Notes) {
-        self.note_set.store(notes.bits(), Ordering::Relaxed);
+    pub fn set_notes(&self, scale: Scale) {
+        self.note_set.store(scale.bits(), Ordering::Relaxed);
     }
 
     pub fn notes_control(&self) -> Arc<AtomicU16> {
@@ -131,42 +42,14 @@ impl NoteSnapper {
     }
 }
 
-pub fn nearest_note(freq: f32, notes: Notes) -> f32 {
-    if notes.is_empty() {
-        return freq;
-    }
-    let semitones_from_c0 = 12.0 * (freq / 16.3516).log2();
-    let octave = (semitones_from_c0 / 12.0).floor();
-    let semitone_in_octave = semitones_from_c0 - octave * 12.0;
-
-    let mut best_offset = 0.0f32;
-    let mut best_dist = f32::MAX;
-    for i in 0..12u8 {
-        if !notes.contains(Notes::BY_INDEX[i as usize]) {
-            continue;
-        }
-        let note_f = i as f32;
-        for &candidate in &[note_f, note_f + 12.0, note_f - 12.0] {
-            let dist = (semitone_in_octave - candidate).abs();
-            if dist < best_dist {
-                best_dist = dist;
-                best_offset = candidate;
-            }
-        }
-    }
-
-    let target_semitones = octave * 12.0 + best_offset;
-    16.3516 * (2.0f32).powf(target_semitones / 12.0)
-}
-
 impl PitchTarget for NoteSnapper {
     fn target(&self, detected_freq: f32) -> Option<f32> {
-        let current_notes = Notes::from_bits_truncate(self.note_set.load(Ordering::Relaxed));
+        let current_notes = Scale::from_bits(self.note_set.load(Ordering::Relaxed));
         if current_notes.is_empty() {
             return None;
         }
 
-        let target = nearest_note(detected_freq, current_notes);
+        let target = current_notes.nearest_note(detected_freq);
 
         // Schmitt trigger: only switch note if detected pitch has
         // crossed more than half a semitone past the previous target
@@ -250,12 +133,12 @@ impl PitchCorrectorControls {
         f32::from_bits(self.shift_semitones.load(Ordering::Relaxed))
     }
 
-    pub fn set_notes(&self, notes: Notes) {
-        self.notes.store(notes.bits(), Ordering::Relaxed);
+    pub fn set_notes(&self, scale: Scale) {
+        self.notes.store(scale.bits(), Ordering::Relaxed);
     }
 
-    pub fn get_notes(&self) -> Notes {
-        Notes::from_bits_truncate(self.notes.load(Ordering::Relaxed))
+    pub fn get_notes(&self) -> Scale {
+        Scale::from_bits(self.notes.load(Ordering::Relaxed))
     }
 
     pub fn set_contour(&self, contour: Vec<f32>) {
@@ -275,7 +158,7 @@ impl PitchCorrectorControls {
     }
 
     pub fn snap_to_scale(&self, freq: f32) -> f32 {
-        nearest_note(freq, self.get_notes())
+        self.get_notes().nearest_note(freq)
     }
 }
 
@@ -292,11 +175,11 @@ impl Default for PitchCorrector {
 
 impl PitchCorrector {
     pub fn new() -> Self {
-        Self::with_notes(Notes::pentatonic(Notes::C))
+        Self::with_notes(Scale::pentatonic(Note::C))
     }
 
-    pub fn with_notes(notes: Notes) -> Self {
-        let notes_atomic = Arc::new(AtomicU16::new(notes.bits()));
+    pub fn with_notes(scale: Scale) -> Self {
+        let notes_atomic = Arc::new(AtomicU16::new(scale.bits()));
         let snapper = Arc::new(NoteSnapper::with_notes_control(notes_atomic.clone()));
         let mut corrector = Self::with_target(snapper);
         corrector.controls.notes = notes_atomic;
@@ -386,69 +269,11 @@ mod tests {
     const SAMPLE_RATE: usize = 44100;
 
     #[test]
-    fn notes_chromatic_has_all() {
-        assert_eq!(Notes::chromatic().bits().count_ones(), 12);
-    }
-
-    #[test]
-    fn notes_major_c() {
-        let ns = Notes::major(Notes::C);
-        assert!(ns.contains(Notes::C));
-        assert!(!ns.contains(Notes::CS));
-        assert!(ns.contains(Notes::D));
-        assert!(!ns.contains(Notes::DS));
-        assert!(ns.contains(Notes::E));
-        assert!(ns.contains(Notes::F));
-        assert!(!ns.contains(Notes::FS));
-        assert!(ns.contains(Notes::G));
-        assert!(!ns.contains(Notes::GS));
-        assert!(ns.contains(Notes::A));
-        assert!(!ns.contains(Notes::AS));
-        assert!(ns.contains(Notes::B));
-    }
-
-    #[test]
-    fn notes_major_g() {
-        let ns = Notes::major(Notes::G);
-        assert!(ns.contains(Notes::G));
-        assert!(ns.contains(Notes::A));
-        assert!(ns.contains(Notes::B));
-        assert!(ns.contains(Notes::C));
-        assert!(ns.contains(Notes::D));
-        assert!(ns.contains(Notes::E));
-        assert!(ns.contains(Notes::FS));
-        assert!(!ns.contains(Notes::F));
-    }
-
-    #[test]
-    fn notes_off_returns_input() {
-        assert_eq!(nearest_note(445.0, Notes::empty()), 445.0);
-    }
-
-    #[test]
-    fn nearest_note_chromatic_snaps_to_a() {
-        let corrected = nearest_note(445.0, Notes::chromatic());
-        approx::assert_abs_diff_eq!(corrected, 440.0, epsilon = 2.0);
-    }
-
-    #[test]
-    fn nearest_note_pentatonic_c() {
-        let corrected = nearest_note(349.23, Notes::pentatonic(Notes::C));
-        assert!(
-            (corrected - 329.63).abs() < 2.0 || (corrected - 392.0).abs() < 2.0,
-            "Expected E4 or G4, got {corrected}"
-        );
-    }
-
-    #[test]
-    fn custom_note_set() {
-        // Just C and G
-        let ns = Notes::C | Notes::G;
-        let corrected = nearest_note(349.23, ns);
-        assert!(
-            (corrected - 261.63).abs() < 2.0 || (corrected - 392.0).abs() < 2.0,
-            "Expected C4 or G4, got {corrected}"
-        );
+    fn set_notes_at_runtime() {
+        let corrector = PitchCorrector::new();
+        let controls = corrector.controls();
+        controls.set_notes(Scale::major(Note::C));
+        assert_eq!(controls.get_notes(), Scale::major(Note::C));
     }
 
     #[test]
@@ -472,16 +297,8 @@ mod tests {
     }
 
     #[test]
-    fn set_notes_at_runtime() {
-        let corrector = PitchCorrector::new();
-        let controls = corrector.controls();
-        controls.set_notes(Notes::major(Notes::C));
-        assert_eq!(controls.get_notes(), Notes::major(Notes::C));
-    }
-
-    #[test]
     fn pitch_corrector_off_is_transparent_for_sweep() {
-        let corrector = PitchCorrector::with_notes(Notes::empty());
+        let corrector = PitchCorrector::with_notes(Scale::empty());
 
         let num_samples = BUFFER_SIZE * 40;
         let mut phase = 0.0f32;
@@ -541,7 +358,7 @@ mod tests {
     fn pitch_corrector_snaps_descending_sweep_to_scale() {
         use crate::signal_processing::YinPitchDetector;
 
-        let corrector = PitchCorrector::with_notes(Notes::pentatonic(Notes::C));
+        let corrector = PitchCorrector::with_notes(Scale::pentatonic(Note::C));
 
         // Descending sweep 200Hz -> 50Hz
         let num_samples = BUFFER_SIZE * 80;
@@ -565,7 +382,7 @@ mod tests {
 
         // Detect pitch at several points in the output
         let mut detector = YinPitchDetector::new();
-        let pentatonic_c = Notes::pentatonic(Notes::C);
+        let pentatonic_c = Scale::pentatonic(Note::C);
         let mut checked = 0;
         let mut correct = 0;
 
@@ -574,7 +391,7 @@ mod tests {
         let mut pos = skip;
         while pos + 2048 <= output.len() {
             if let Some(freq) = detector.detect(&output[pos..pos + 2048]) {
-                let target = nearest_note(freq, pentatonic_c);
+                let target = pentatonic_c.nearest_note(freq);
                 let semitone_error = (12.0 * (freq / target).log2()).abs();
                 checked += 1;
                 if semitone_error < 0.5 {

@@ -123,7 +123,7 @@ fn main() {
         }
         SubCommand::PhaseVocoder { ratio } => phase_vocoder(&mut user_inferface, ratio),
         SubCommand::PitchCorrector => {
-            use pitch_correction::Notes;
+            use pitch_corrector::music::{Note, Scale};
 
             let corrector = pitch_correction::PitchCorrector::new();
             let controls = corrector.controls();
@@ -134,14 +134,14 @@ fn main() {
                 user_inferface.create_display_processor(),
             ));
 
-            let scale_presets: Vec<(&str, Notes)> = vec![
-                ("Off", Notes::empty()),
-                ("Chromatic", Notes::chromatic()),
-                ("C Major", Notes::major(Notes::C)),
-                ("C Minor", Notes::minor(Notes::C)),
-                ("C Pentatonic", Notes::pentatonic(Notes::C)),
-                ("G Major", Notes::major(Notes::G)),
-                ("A Minor", Notes::minor(Notes::A)),
+            let scale_presets: Vec<(&str, Scale)> = vec![
+                ("Off", Scale::empty()),
+                ("Chromatic", Scale::chromatic()),
+                ("C Major", Scale::major(Note::C)),
+                ("C Minor", Scale::minor(Note::C)),
+                ("C Pentatonic", Scale::pentatonic(Note::C)),
+                ("G Major", Scale::major(Note::G)),
+                ("A Minor", Scale::minor(Note::A)),
             ];
             let mut scale_idx: usize = 4; // Start on C Pentatonic
 

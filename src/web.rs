@@ -1,4 +1,5 @@
-use crate::pitch_correction::{Notes, PitchCorrector, PitchCorrectorControls};
+use crate::music::{Note, Scale};
+use crate::pitch_correction::{PitchCorrector, PitchCorrectorControls};
 use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
@@ -244,7 +245,7 @@ impl WebPitchCorrector {
     }
 
     pub fn set_notes(&self, bits: u16) {
-        self.controls.set_notes(Notes::from_bits_truncate(bits));
+        self.controls.set_notes(Scale::from_bits(bits));
     }
 
     pub fn get_notes(&self) -> u16 {
@@ -299,21 +300,20 @@ impl WebPitchCorrector {
     }
 
     pub fn scale_bits(preset: &str, root: u8) -> u16 {
-        let root_note = Notes::BY_INDEX[root as usize % 12];
+        let root_note = Note::ALL[root as usize % 12];
         match preset {
-            "off" => Notes::empty().bits(),
-            "chromatic" => Notes::chromatic().bits(),
-            "major" => Notes::major(root_note).bits(),
-            "minor" => Notes::minor(root_note).bits(),
-            "pentatonic" => Notes::pentatonic(root_note).bits(),
-            _ => Notes::chromatic().bits(),
+            "off" => Scale::empty().bits(),
+            "chromatic" => Scale::chromatic().bits(),
+            "major" => Scale::major(root_note).bits(),
+            "minor" => Scale::minor(root_note).bits(),
+            "pentatonic" => Scale::pentatonic(root_note).bits(),
+            _ => Scale::chromatic().bits(),
         }
     }
 
     pub fn snap_to_scale(freq: f32, note_bits: u16) -> f32 {
-        use crate::pitch_correction::nearest_note;
-        let notes = Notes::from_bits_truncate(note_bits);
-        nearest_note(freq, notes)
+        let notes = Scale::from_bits(note_bits);
+        notes.nearest_note(freq)
     }
 
     /// Set a pitch contour as the active target for playback.
