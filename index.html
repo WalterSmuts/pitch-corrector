@@ -538,11 +538,14 @@
             }
         }
 
-        // Click on output contour to edit target notes
-        canvases['output-contour'].addEventListener('click', (e) => {
+        // Drag on output contour to edit target notes
+        let dragging = false;
+        const contourCanvas = canvases['output-contour'];
+
+        function applyEditAtPosition(e) {
             if (!postCorrectionActive || !editedContour || !corrector) return;
 
-            const canvas = canvases['output-contour'];
+            const canvas = contourCanvas;
             const rect = canvas.getBoundingClientRect();
             const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
             const clickY = (e.clientY - rect.top) * (canvas.height / rect.height);
@@ -551,34 +554,45 @@
             const startCol = (columnX - totalCols + width) % width;
             const numHops = editedContour.length;
 
-            // Find which column was clicked, then map to hop index
             const col = Math.round(((clickX - startCol + width) % width));
             if (col < 0 || col >= totalCols) return;
-            const hop = Math.floor(col * numHops / totalCols);
 
-            // Convert click Y to a frequency, snap to scale
+            // Find a reference frequency from nearby hops for octave context
+            const centerHop = Math.floor(col * numHops / totalCols);
+            let refFreq = 0;
+            for (let d = 0; d <= 20 && refFreq <= 0; d++) {
+                if (centerHop + d < numHops) refFreq = editedContour[centerHop + d];
+                if (refFreq <= 0 && centerHop - d >= 0) refFreq = editedContour[centerHop - d];
+            }
+            if (refFreq <= 0) return;
+
             const semitoneInOctave = contourYToSemitoneInOctave(clickY, canvas.height);
-            const origFreq = editedContour[hop];
-            if (origFreq <= 0) return;
+            const refSemitones = 12.0 * Math.log2(refFreq / 16.3516);
+            const refOctave = Math.floor(refSemitones / 12.0);
+            const newFreq = 16.3516 * Math.pow(2, (refOctave * 12.0 + semitoneInOctave) / 12.0);
 
-            const origSemitones = 12.0 * Math.log2(origFreq / 16.3516);
-            const origOctave = Math.floor(origSemitones / 12.0);
-            const newSemitones = origOctave * 12.0 + semitoneInOctave;
-            const newFreq = 16.3516 * Math.pow(2, newSemitones / 12.0);
-
-            // Snap to current scale
             const noteBits = corrector.get_notes();
             const snapped = noteBits > 0 ? WebPitchCorrector.snap_to_scale(newFreq, noteBits) : newFreq;
 
-            // Apply to a range of hops around the click for smoother editing
-            const colRadius = 5;
-            const hopLo = Math.floor(Math.max(0, col - colRadius) * numHops / totalCols);
-            const hopHi = Math.floor(Math.min(totalCols - 1, col + colRadius) * numHops / totalCols);
-            for (let h = hopLo; h <= hopHi; h++) {
-                editedContour[h] = snapped;
-            }
+            const hop = Math.floor(col * numHops / totalCols);
+            if (editedContour[hop] === snapped) return false;
+            editedContour[hop] = snapped;
+            return true;
+        }
 
-            drawPostCorrectionOverlay();
+        contourCanvas.addEventListener('mousedown', (e) => {
+            if (!postCorrectionActive || !editedContour) return;
+            dragging = true;
+            if (applyEditAtPosition(e)) drawPostCorrectionOverlay();
+        });
+
+        contourCanvas.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            if (applyEditAtPosition(e)) drawPostCorrectionOverlay();
+        });
+
+        window.addEventListener('mouseup', () => {
+            dragging = false;
         });
     </script>
 </body>
