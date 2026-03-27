@@ -98,7 +98,7 @@ impl NoteSnapper {
     }
 }
 
-fn nearest_note(freq: f32, notes: Notes) -> f32 {
+pub fn nearest_note(freq: f32, notes: Notes) -> f32 {
     if notes.is_empty() {
         return freq;
     }
@@ -163,6 +163,7 @@ type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 
 pub struct PitchCorrector {
     shift_semitones: Arc<AtomicU32>,
+    last_target: Arc<AtomicU32>,
     target: Arc<dyn PitchTarget>,
     processor: PhaseVocoderPitchShifter<RatioFn>,
 }
@@ -178,7 +179,9 @@ impl PitchCorrector {
 
     pub fn with_target(target: Arc<dyn PitchTarget>) -> Self {
         let shift = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let last_target = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let shift_clone = shift.clone();
+        let last_target_clone = last_target.clone();
         let target_clone = target.clone();
         let detector = Mutex::new(YinPitchDetector::new());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
@@ -187,16 +190,26 @@ impl PitchCorrector {
 
             let correction = match detector.lock().unwrap().detect(frame) {
                 Some(freq) => match target_clone.target(freq) {
-                    Some(t) => t / freq,
-                    None => 1.0,
+                    Some(t) => {
+                        last_target_clone.store(t.to_bits(), Ordering::Relaxed);
+                        t / freq
+                    }
+                    None => {
+                        last_target_clone.store(0.0f32.to_bits(), Ordering::Relaxed);
+                        1.0
+                    }
                 },
-                None => 1.0,
+                None => {
+                    last_target_clone.store(0.0f32.to_bits(), Ordering::Relaxed);
+                    1.0
+                }
             };
             correction * shift_ratio
         });
         let processor = PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn);
         PitchCorrector {
             shift_semitones: shift,
+            last_target,
             target,
             processor,
         }
@@ -210,6 +223,10 @@ impl PitchCorrector {
 
     pub fn shift_control(&self) -> Arc<AtomicU32> {
         self.shift_semitones.clone()
+    }
+
+    pub fn last_target_control(&self) -> Arc<AtomicU32> {
+        self.last_target.clone()
     }
 
     /// Downcast to NoteSnapper for note-set control. Returns None if using a different target.

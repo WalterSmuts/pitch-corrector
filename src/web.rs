@@ -40,6 +40,7 @@ pub struct WebPitchCorrector {
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
     input_contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     shift_control: Arc<AtomicU32>,
+    last_target: Arc<AtomicU32>,
     notes_control: Arc<AtomicU16>,
     sweep_active: Arc<AtomicBool>,
     input_active: Arc<AtomicBool>,
@@ -69,6 +70,7 @@ impl WebPitchCorrector {
 
         let corrector = PitchCorrector::new();
         let shift_control = corrector.shift_control();
+        let last_target = corrector.last_target_control();
         let notes_control = corrector.as_note_snapper().unwrap().notes_control();
 
         // Pipeline: input_contour -> input_spectrogram -> corrector -> contour -> spectrogram
@@ -208,6 +210,7 @@ impl WebPitchCorrector {
             input_spectrogram_buffer,
             input_contour_buffer,
             shift_control,
+            last_target,
             notes_control,
             sweep_active,
             input_active,
@@ -235,6 +238,10 @@ impl WebPitchCorrector {
 
     pub fn get_shift(&self) -> f32 {
         f32::from_bits(self.shift_control.load(Ordering::Relaxed))
+    }
+
+    pub fn get_last_target(&self) -> f32 {
+        f32::from_bits(self.last_target.load(Ordering::Relaxed))
     }
 
     pub fn set_notes(&self, bits: u16) {
@@ -298,6 +305,12 @@ impl WebPitchCorrector {
             "pentatonic" => Notes::pentatonic(root_note).bits(),
             _ => Notes::chromatic().bits(),
         }
+    }
+
+    pub fn snap_to_scale(freq: f32, note_bits: u16) -> f32 {
+        use crate::pitch_correction::nearest_note;
+        let notes = Notes::from_bits_truncate(note_bits);
+        nearest_note(freq, notes)
     }
 
     pub fn draw_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
