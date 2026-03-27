@@ -33,8 +33,8 @@ struct DrawState {
 
 #[wasm_bindgen]
 pub struct WebPitchCorrector {
-    _input_stream: cpal::Stream,
-    _output_stream: cpal::Stream,
+    input_stream: cpal::Stream,
+    output_stream: cpal::Stream,
     spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
     contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
@@ -207,8 +207,8 @@ impl WebPitchCorrector {
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
 
         Ok(WebPitchCorrector {
-            _input_stream: input_stream,
-            _output_stream: output_stream,
+            input_stream,
+            output_stream,
             spectrogram_buffer,
             contour_buffer,
             input_spectrogram_buffer,
@@ -266,6 +266,8 @@ impl WebPitchCorrector {
 
     pub fn stop(&self) {
         self.input_active.store(false, Ordering::Relaxed);
+        let _ = self.input_stream.pause();
+        let _ = self.output_stream.pause();
     }
 
     pub fn recording_len(&self) -> usize {
@@ -278,11 +280,13 @@ impl WebPitchCorrector {
         }
         self.input_active.store(false, Ordering::Relaxed);
         self.playing.store(true, Ordering::Relaxed);
+        let _ = self.output_stream.play();
         Ok(())
     }
 
     pub fn stop_playback(&self) {
         self.playing.store(false, Ordering::Relaxed);
+        let _ = self.output_stream.pause();
     }
 
     pub fn is_playing(&self) -> bool {
