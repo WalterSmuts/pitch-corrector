@@ -143,6 +143,7 @@
         // Post-correction state
         let targetContour = [];       // target freq per hop, fetched from Rust after recording
         let editedContour = null;     // user-edited copy (or null if not editing)
+        let contourSnapshot = null;   // ImageData of contour canvas before overlay
         let postCorrectionActive = false;
         let outputPitchView = false;  // whether output pitch contour is visible
 
@@ -277,6 +278,7 @@
                 editedContour = null;
                 postCorrectionActive = false;
                 document.getElementById('post-correction-cb').checked = false;
+                contourSnapshot = null;
                 corrector.clear_target_log();
 
                 setState('recording');
@@ -480,6 +482,14 @@
             postCorrectionActive = postCorrectionCb.checked;
             if (postCorrectionActive && !editedContour) {
                 editedContour = targetContour.slice();
+                // Save canvas state before first overlay
+                const canvas = canvases['output-contour'];
+                contourSnapshot = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+            }
+            if (!postCorrectionActive && contourSnapshot) {
+                // Restore original canvas
+                canvases['output-contour'].getContext('2d').putImageData(contourSnapshot, 0, 0);
+                contourSnapshot = null;
             }
             drawPostCorrectionOverlay();
         });
@@ -505,6 +515,11 @@
             const numHops = editedContour ? editedContour.length : 0;
 
             if (!postCorrectionActive || !editedContour || numHops === 0) return;
+
+            // Restore base canvas to clear old overlay
+            if (contourSnapshot) {
+                ctx.putImageData(contourSnapshot, 0, 0);
+            }
 
             for (let i = 0; i < totalCols; i++) {
                 const x = (startCol + i) % width;
