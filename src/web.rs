@@ -40,7 +40,7 @@ pub struct WebPitchCorrector {
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
     input_contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     shift_control: Arc<AtomicU32>,
-    last_target: Arc<AtomicU32>,
+    target_log: Arc<Mutex<Vec<f32>>>,
     notes_control: Arc<AtomicU16>,
     target_handle: Arc<Mutex<Arc<dyn PitchTarget>>>,
     default_target: Arc<dyn PitchTarget>,
@@ -72,7 +72,7 @@ impl WebPitchCorrector {
 
         let corrector = PitchCorrector::new();
         let shift_control = corrector.shift_control();
-        let last_target = corrector.last_target_control();
+        let target_log = corrector.target_log();
         let notes_control = corrector.as_note_snapper().unwrap().notes_control();
         let target_handle = corrector.target_handle();
         let default_target = target_handle.lock().unwrap().clone();
@@ -214,7 +214,7 @@ impl WebPitchCorrector {
             input_spectrogram_buffer,
             input_contour_buffer,
             shift_control,
-            last_target,
+            target_log,
             notes_control,
             target_handle,
             default_target,
@@ -246,8 +246,14 @@ impl WebPitchCorrector {
         f32::from_bits(self.shift_control.load(Ordering::Relaxed))
     }
 
-    pub fn get_last_target(&self) -> f32 {
-        f32::from_bits(self.last_target.load(Ordering::Relaxed))
+    /// Returns the recorded target contour (one entry per phase vocoder hop)
+    /// and clears the log.
+    pub fn take_target_contour(&self) -> Vec<f32> {
+        std::mem::take(&mut *self.target_log.lock().unwrap())
+    }
+
+    pub fn clear_target_log(&self) {
+        self.target_log.lock().unwrap().clear();
     }
 
     pub fn set_notes(&self, bits: u16) {
@@ -320,10 +326,9 @@ impl WebPitchCorrector {
     }
 
     /// Set a pitch contour as the active target for playback.
-    /// `contour` is a JS Float32Array of target frequencies (one per column).
+    /// `contour` is a JS Float32Array of target frequencies (one per hop).
     pub fn set_contour(&self, contour: &[f32]) {
-        let total_samples = self.recording.lock().unwrap().len();
-        let pc = Arc::new(PitchContour::new(contour.to_vec(), total_samples));
+        let pc = Arc::new(PitchContour::new(contour.to_vec()));
         *self.target_handle.lock().unwrap() = pc;
     }
 

@@ -141,7 +141,7 @@
         let recordedColumns = 0;
 
         // Post-correction state
-        let targetContour = [];       // target freq per column recorded during live
+        let targetContour = [];       // target freq per hop, fetched from Rust after recording
         let editedContour = null;     // user-edited copy (or null if not editing)
         let postCorrectionActive = false;
         let outputPitchView = false;  // whether output pitch contour is visible
@@ -277,6 +277,7 @@
                 editedContour = null;
                 postCorrectionActive = false;
                 document.getElementById('post-correction-cb').checked = false;
+                corrector.clear_target_log();
 
                 setState('recording');
 
@@ -288,7 +289,6 @@
                     corrector.draw_input_contour(canvases['input-contour'], columnX);
                     corrector.draw_waveform(canvases['output-waveform'], columnX);
                     corrector.draw_input_waveform(canvases['input-waveform'], columnX);
-                    targetContour.push(corrector.get_last_target());
                     columnX = (columnX + 1) % canvases['output-spectrogram'].width;
                     recordedColumns++;
                     animFrame = requestAnimationFrame(draw);
@@ -417,6 +417,7 @@
         els.stopBtn.addEventListener('click', () => {
             if (state === 'recording') {
                 if (corrector && corrector.recording_len() > 0) {
+                    targetContour = Array.from(corrector.take_target_contour());
                     setState('stopped');
                 } else {
                     setState('idle');
@@ -501,15 +502,15 @@
             const width = canvas.width;
             const totalCols = Math.min(recordedColumns, width);
             const startCol = (columnX - totalCols + width) % width;
+            const numHops = editedContour ? editedContour.length : 0;
 
-            // Redraw the base contour by clearing and letting the existing image stay
-            // We draw the target overlay on top
-            // First clear just the overlay region by redrawing target dots
-            if (!postCorrectionActive || !editedContour) return;
+            if (!postCorrectionActive || !editedContour || numHops === 0) return;
 
             for (let i = 0; i < totalCols; i++) {
                 const x = (startCol + i) % width;
-                const freq = editedContour[i];
+                // Map column to hop index
+                const hop = Math.floor(i * numHops / totalCols);
+                const freq = editedContour[hop];
                 if (freq <= 0) continue;
                 const y = freqToContourY(freq, height);
                 if (y < 0) continue;
@@ -532,15 +533,16 @@
             const width = canvas.width;
             const totalCols = Math.min(recordedColumns, width);
             const startCol = (columnX - totalCols + width) % width;
+            const numHops = editedContour.length;
 
-            // Find which column was clicked
+            // Find which column was clicked, then map to hop index
             const col = Math.round(((clickX - startCol + width) % width));
             if (col < 0 || col >= totalCols) return;
+            const hop = Math.floor(col * numHops / totalCols);
 
             // Convert click Y to a frequency, snap to scale
             const semitoneInOctave = contourYToSemitoneInOctave(clickY, canvas.height);
-            // Use the original target's octave as reference
-            const origFreq = editedContour[col];
+            const origFreq = editedContour[hop];
             if (origFreq <= 0) return;
 
             const origSemitones = 12.0 * Math.log2(origFreq / 16.3516);
@@ -552,10 +554,12 @@
             const noteBits = corrector.get_notes();
             const snapped = noteBits > 0 ? WebPitchCorrector.snap_to_scale(newFreq, noteBits) : newFreq;
 
-            // Apply to a range of columns around the click for smoother editing
-            const radius = 5;
-            for (let i = Math.max(0, col - radius); i <= Math.min(totalCols - 1, col + radius); i++) {
-                editedContour[i] = snapped;
+            // Apply to a range of hops around the click for smoother editing
+            const colRadius = 5;
+            const hopLo = Math.floor(Math.max(0, col - colRadius) * numHops / totalCols);
+            const hopHi = Math.floor(Math.min(totalCols - 1, col + colRadius) * numHops / totalCols);
+            for (let h = hopLo; h <= hopHi; h++) {
+                editedContour[h] = snapped;
             }
 
             drawPostCorrectionOverlay();
