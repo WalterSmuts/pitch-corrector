@@ -120,6 +120,9 @@
                 <button data-view="pitch">Pitch Contour</button>
                 <button data-view="waveform">Waveform</button>
             </div>
+            <label id="post-correction-label" style="display:none; margin-left: 12px; cursor: pointer;">
+                <input type="checkbox" id="post-correction-cb"> Post-Correction
+            </label>
         </div>
     </div>
     <canvas id="output-spectrogram" width="1200" height="200"></canvas>
@@ -136,6 +139,12 @@
         let animFrame = null;
         let columnX = 0;
         let recordedColumns = 0;
+
+        // Post-correction state
+        let targetContour = [];       // target freq per column recorded during live
+        let editedContour = null;     // user-edited copy (or null if not editing)
+        let postCorrectionActive = false;
+        let outputPitchView = false;  // whether output pitch contour is visible
 
         const els = {
             status: document.getElementById('status'),
@@ -203,6 +212,7 @@
                     els.sweepBtn.disabled = true;
                     break;
             }
+            updatePostCorrectionVisibility();
         }
 
         // --- Animation helpers ---
@@ -263,6 +273,10 @@
                 });
                 columnX = 0;
                 recordedColumns = 0;
+                targetContour = [];
+                editedContour = null;
+                postCorrectionActive = false;
+                document.getElementById('post-correction-cb').checked = false;
 
                 setState('recording');
 
@@ -274,6 +288,7 @@
                     corrector.draw_input_contour(canvases['input-contour'], columnX);
                     corrector.draw_waveform(canvases['output-waveform'], columnX);
                     corrector.draw_input_waveform(canvases['input-waveform'], columnX);
+                    targetContour.push(corrector.get_last_target());
                     columnX = (columnX + 1) % canvases['output-spectrogram'].width;
                     recordedColumns++;
                     animFrame = requestAnimationFrame(draw);
@@ -432,6 +447,106 @@
         }
         setupViewToggle('input-view-group', {spectrogram: 'input-spectrogram', pitch: 'input-contour', waveform: 'input-waveform'});
         setupViewToggle('output-view-group', {spectrogram: 'output-spectrogram', pitch: 'output-contour', waveform: 'output-waveform'});
+
+        // Show post-correction checkbox only when output pitch contour is visible
+        document.getElementById('output-view-group').addEventListener('click', (e) => {
+            if (!e.target.dataset.view) return;
+            outputPitchView = e.target.dataset.view === 'pitch';
+            updatePostCorrectionVisibility();
+        });
+
+        function updatePostCorrectionVisibility() {
+            const show = outputPitchView && (state === 'stopped' || state === 'paused') && targetContour.length > 0;
+            document.getElementById('post-correction-label').style.display = show ? '' : 'none';
+        }
+
+        // --- Post-correction ---
+        const postCorrectionCb = document.getElementById('post-correction-cb');
+        postCorrectionCb.addEventListener('change', () => {
+            postCorrectionActive = postCorrectionCb.checked;
+            if (postCorrectionActive && !editedContour) {
+                editedContour = targetContour.slice();
+            }
+            drawPostCorrectionOverlay();
+        });
+
+        function freqToContourY(freq, height) {
+            if (freq <= 0) return -1;
+            const semitones = 12.0 * Math.log2(freq / 16.3516);
+            const inOctave = ((semitones % 12) + 12) % 12;
+            return height * (1.0 - inOctave / 12.0);
+        }
+
+        function contourYToSemitoneInOctave(y, height) {
+            return (1.0 - y / height) * 12.0;
+        }
+
+        function drawPostCorrectionOverlay() {
+            const canvas = canvases['output-contour'];
+            const ctx = canvas.getContext('2d');
+            const height = canvas.height;
+            const width = canvas.width;
+            const totalCols = Math.min(recordedColumns, width);
+            const startCol = (columnX - totalCols + width) % width;
+
+            // Redraw the base contour by clearing and letting the existing image stay
+            // We draw the target overlay on top
+            // First clear just the overlay region by redrawing target dots
+            if (!postCorrectionActive || !editedContour) return;
+
+            for (let i = 0; i < totalCols; i++) {
+                const x = (startCol + i) % width;
+                const freq = editedContour[i];
+                if (freq <= 0) continue;
+                const y = freqToContourY(freq, height);
+                if (y < 0) continue;
+
+                ctx.fillStyle = 'rgba(255,80,200,0.8)';
+                ctx.beginPath();
+                ctx.arc(x + 1, y, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        // Click on output contour to edit target notes
+        canvases['output-contour'].addEventListener('click', (e) => {
+            if (!postCorrectionActive || !editedContour || !corrector) return;
+
+            const canvas = canvases['output-contour'];
+            const rect = canvas.getBoundingClientRect();
+            const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
+            const clickY = (e.clientY - rect.top) * (canvas.height / rect.height);
+            const width = canvas.width;
+            const totalCols = Math.min(recordedColumns, width);
+            const startCol = (columnX - totalCols + width) % width;
+
+            // Find which column was clicked
+            const col = Math.round(((clickX - startCol + width) % width));
+            if (col < 0 || col >= totalCols) return;
+
+            // Convert click Y to a frequency, snap to scale
+            const semitoneInOctave = contourYToSemitoneInOctave(clickY, canvas.height);
+            // Use the original target's octave as reference
+            const origFreq = editedContour[col];
+            if (origFreq <= 0) return;
+
+            const origSemitones = 12.0 * Math.log2(origFreq / 16.3516);
+            const origOctave = Math.floor(origSemitones / 12.0);
+            const newSemitones = origOctave * 12.0 + semitoneInOctave;
+            const newFreq = 16.3516 * Math.pow(2, newSemitones / 12.0);
+
+            // Snap to current scale
+            const noteBits = corrector.get_notes();
+            const snapped = noteBits > 0 ? WebPitchCorrector.snap_to_scale(newFreq, noteBits) : newFreq;
+
+            // Apply to a range of columns around the click for smoother editing
+            const radius = 5;
+            for (let i = Math.max(0, col - radius); i <= Math.min(totalCols - 1, col + radius); i++) {
+                editedContour[i] = snapped;
+            }
+
+            drawPostCorrectionOverlay();
+        });
     </script>
 </body>
 </html>
