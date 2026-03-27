@@ -159,12 +159,60 @@ impl PitchTarget for NoteSnapper {
     }
 }
 
+/// Follows a pre-defined sequence of target frequencies indexed by time.
+pub struct PitchContour {
+    /// Target frequency per column (0.0 = no target / passthrough).
+    contour: Vec<f32>,
+    /// Total number of audio samples in the recording.
+    total_samples: usize,
+    /// Counts ratio_fn invocations (one per phase vocoder hop).
+    hop_count: AtomicU32,
+}
+
+impl PitchContour {
+    pub fn new(contour: Vec<f32>, total_samples: usize) -> Self {
+        Self {
+            contour,
+            total_samples,
+            hop_count: AtomicU32::new(0),
+        }
+    }
+
+    pub fn reset(&self) {
+        self.hop_count.store(0, Ordering::Relaxed);
+    }
+}
+
+impl PitchTarget for PitchContour {
+    fn target(&self, _detected_freq: f32) -> Option<f32> {
+        if self.contour.is_empty() || self.total_samples == 0 {
+            return None;
+        }
+        let hop = self.hop_count.fetch_add(1, Ordering::Relaxed) as usize;
+        let hop_size = crate::signal_processing::BUFFER_SIZE / 4;
+        let sample_pos = hop * hop_size;
+        let col = sample_pos * self.contour.len() / self.total_samples;
+        let col = col.min(self.contour.len() - 1);
+        let freq = self.contour[col];
+        if freq > 0.0 {
+            Some(freq)
+        } else {
+            None
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 
 pub struct PitchCorrector {
     shift_semitones: Arc<AtomicU32>,
     last_target: Arc<AtomicU32>,
-    target: Arc<dyn PitchTarget>,
+    target: Arc<Mutex<Arc<dyn PitchTarget>>>,
+    default_snapper: Option<Arc<NoteSnapper>>,
     processor: PhaseVocoderPitchShifter<RatioFn>,
 }
 
@@ -174,22 +222,28 @@ impl PitchCorrector {
     }
 
     pub fn with_notes(notes: Notes) -> Self {
-        Self::with_target(Arc::new(NoteSnapper::new(notes)))
+        let snapper = Arc::new(NoteSnapper::new(notes));
+        let snapper_clone = snapper.clone();
+        let mut corrector = Self::with_target(snapper);
+        corrector.default_snapper = Some(snapper_clone);
+        corrector
     }
 
     pub fn with_target(target: Arc<dyn PitchTarget>) -> Self {
         let shift = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let last_target = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let shared_target: Arc<Mutex<Arc<dyn PitchTarget>>> = Arc::new(Mutex::new(target));
         let shift_clone = shift.clone();
         let last_target_clone = last_target.clone();
-        let target_clone = target.clone();
+        let target_clone = shared_target.clone();
         let detector = Mutex::new(YinPitchDetector::new());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
             let semitones = f32::from_bits(shift_clone.load(Ordering::Relaxed));
             let shift_ratio = (2.0f32).powf(semitones / 12.0);
+            let current_target = target_clone.lock().unwrap().clone();
 
             let correction = match detector.lock().unwrap().detect(frame) {
-                Some(freq) => match target_clone.target(freq) {
+                Some(freq) => match current_target.target(freq) {
                     Some(t) => {
                         last_target_clone.store(t.to_bits(), Ordering::Relaxed);
                         t / freq
@@ -210,7 +264,8 @@ impl PitchCorrector {
         PitchCorrector {
             shift_semitones: shift,
             last_target,
-            target,
+            target: shared_target,
+            default_snapper: None,
             processor,
         }
     }
@@ -229,9 +284,17 @@ impl PitchCorrector {
         self.last_target.clone()
     }
 
-    /// Downcast to NoteSnapper for note-set control. Returns None if using a different target.
+    /// Returns the default NoteSnapper if this corrector was created with `with_notes`.
     pub fn as_note_snapper(&self) -> Option<&NoteSnapper> {
-        self.target.as_ref().as_any().downcast_ref::<NoteSnapper>()
+        self.default_snapper.as_deref()
+    }
+
+    pub fn set_target(&self, target: Arc<dyn PitchTarget>) {
+        *self.target.lock().unwrap() = target;
+    }
+
+    pub fn target_handle(&self) -> Arc<Mutex<Arc<dyn PitchTarget>>> {
+        self.target.clone()
     }
 }
 

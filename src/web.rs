@@ -1,4 +1,4 @@
-use crate::pitch_correction::{Notes, PitchCorrector};
+use crate::pitch_correction::{NoteSnapper, Notes, PitchContour, PitchCorrector, PitchTarget};
 use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
@@ -42,6 +42,8 @@ pub struct WebPitchCorrector {
     shift_control: Arc<AtomicU32>,
     last_target: Arc<AtomicU32>,
     notes_control: Arc<AtomicU16>,
+    target_handle: Arc<Mutex<Arc<dyn PitchTarget>>>,
+    default_target: Arc<dyn PitchTarget>,
     sweep_active: Arc<AtomicBool>,
     input_active: Arc<AtomicBool>,
     recording: Arc<Mutex<Vec<f32>>>,
@@ -72,6 +74,8 @@ impl WebPitchCorrector {
         let shift_control = corrector.shift_control();
         let last_target = corrector.last_target_control();
         let notes_control = corrector.as_note_snapper().unwrap().notes_control();
+        let target_handle = corrector.target_handle();
+        let default_target = target_handle.lock().unwrap().clone();
 
         // Pipeline: input_contour -> input_spectrogram -> corrector -> contour -> spectrogram
         let processor = Arc::new(compose(
@@ -212,6 +216,8 @@ impl WebPitchCorrector {
             shift_control,
             last_target,
             notes_control,
+            target_handle,
+            default_target,
             sweep_active,
             input_active,
             recording,
@@ -311,6 +317,19 @@ impl WebPitchCorrector {
         use crate::pitch_correction::nearest_note;
         let notes = Notes::from_bits_truncate(note_bits);
         nearest_note(freq, notes)
+    }
+
+    /// Set a pitch contour as the active target for playback.
+    /// `contour` is a JS Float32Array of target frequencies (one per column).
+    pub fn set_contour(&self, contour: &[f32]) {
+        let total_samples = self.recording.lock().unwrap().len();
+        let pc = Arc::new(PitchContour::new(contour.to_vec(), total_samples));
+        *self.target_handle.lock().unwrap() = pc;
+    }
+
+    /// Restore the default NoteSnapper target.
+    pub fn clear_contour(&self) {
+        *self.target_handle.lock().unwrap() = self.default_target.clone();
     }
 
     pub fn draw_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
