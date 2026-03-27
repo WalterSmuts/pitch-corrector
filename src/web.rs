@@ -1,4 +1,4 @@
-use crate::pitch_correction::{NoteSnapper, Notes, PitchContour, PitchCorrector, PitchTarget};
+use crate::pitch_correction::{Notes, PitchContour, PitchCorrector, PitchTarget};
 use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};

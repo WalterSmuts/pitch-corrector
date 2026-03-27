@@ -304,6 +304,14 @@
         function startPlayback() {
             if (!corrector || corrector.recording_len() === 0) return;
             if (corrector.playback_progress() >= 1.0) corrector.seek(0);
+
+            // If post-correction is active, set the edited contour as the target
+            if (postCorrectionActive && editedContour) {
+                corrector.set_contour(new Float32Array(editedContour));
+            } else {
+                corrector.clear_contour();
+            }
+
             clearOutputCanvases();
             corrector.play_recording();
             setState('playing');
@@ -321,6 +329,8 @@
                 if (corrector.is_playing()) {
                     animFrame = requestAnimationFrame(drawPlaybackFrame);
                 } else {
+                    // Restore default target after playback
+                    corrector.clear_contour();
                     setState('stopped');
                 }
             }
@@ -416,7 +426,10 @@
 
         els.playBtn.addEventListener('click', () => {
             if (state === 'playing') {
-                if (corrector) corrector.stop_playback();
+                if (corrector) {
+                    corrector.stop_playback();
+                    corrector.clear_contour();
+                }
                 restorePlayhead();
                 setState('paused');
             } else if (state === 'stopped' || state === 'paused') {
