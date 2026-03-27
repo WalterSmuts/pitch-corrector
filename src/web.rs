@@ -1,8 +1,8 @@
-use crate::pitch_correction::{Notes, PitchContour, PitchCorrector, PitchTarget};
+use crate::pitch_correction::{Notes, PitchCorrector, PitchCorrectorControls};
 use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
@@ -39,11 +39,7 @@ pub struct WebPitchCorrector {
     contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
     input_contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
-    shift_control: Arc<AtomicU32>,
-    target_log: Arc<Mutex<Vec<f32>>>,
-    notes_control: Arc<AtomicU16>,
-    target_handle: Arc<Mutex<Arc<dyn PitchTarget>>>,
-    default_target: Arc<dyn PitchTarget>,
+    controls: PitchCorrectorControls,
     sweep_active: Arc<AtomicBool>,
     input_active: Arc<AtomicBool>,
     recording: Arc<Mutex<Vec<f32>>>,
@@ -71,11 +67,7 @@ impl WebPitchCorrector {
         let input_spectrogram_buffer = input_spectrogram_display.clone_display_buffer();
 
         let corrector = PitchCorrector::new();
-        let shift_control = corrector.shift_control();
-        let target_log = corrector.target_log();
-        let notes_control = corrector.as_note_snapper().unwrap().notes_control();
-        let target_handle = corrector.target_handle();
-        let default_target = target_handle.lock().unwrap().clone();
+        let controls = corrector.controls();
 
         // Pipeline: input_contour -> input_spectrogram -> corrector -> contour -> spectrogram
         let processor = Arc::new(compose(
@@ -213,11 +205,7 @@ impl WebPitchCorrector {
             contour_buffer,
             input_spectrogram_buffer,
             input_contour_buffer,
-            shift_control,
-            target_log,
-            notes_control,
-            target_handle,
-            default_target,
+            controls,
             sweep_active,
             input_active,
             recording,
@@ -238,30 +226,29 @@ impl WebPitchCorrector {
     }
 
     pub fn set_shift(&self, semitones: f32) {
-        self.shift_control
-            .store(semitones.to_bits(), Ordering::Relaxed);
+        self.controls.set_shift(semitones);
     }
 
     pub fn get_shift(&self) -> f32 {
-        f32::from_bits(self.shift_control.load(Ordering::Relaxed))
+        self.controls.get_shift()
     }
 
     /// Returns the recorded target contour (one entry per phase vocoder hop)
     /// and clears the log.
     pub fn take_target_contour(&self) -> Vec<f32> {
-        std::mem::take(&mut *self.target_log.lock().unwrap())
+        self.controls.take_target_log()
     }
 
     pub fn clear_target_log(&self) {
-        self.target_log.lock().unwrap().clear();
+        self.controls.clear_target_log();
     }
 
     pub fn set_notes(&self, bits: u16) {
-        self.notes_control.store(bits, Ordering::Relaxed);
+        self.controls.set_notes(Notes::from_bits_truncate(bits));
     }
 
     pub fn get_notes(&self) -> u16 {
-        self.notes_control.load(Ordering::Relaxed)
+        self.controls.get_notes().bits()
     }
 
     pub fn stop(&self) {
@@ -330,15 +317,13 @@ impl WebPitchCorrector {
     }
 
     /// Set a pitch contour as the active target for playback.
-    /// `contour` is a JS Float32Array of target frequencies (one per hop).
     pub fn set_contour(&self, contour: &[f32]) {
-        let pc = Arc::new(PitchContour::new(contour.to_vec()));
-        *self.target_handle.lock().unwrap() = pc;
+        self.controls.set_contour(contour.to_vec());
     }
 
     /// Restore the default NoteSnapper target.
     pub fn clear_contour(&self) {
-        *self.target_handle.lock().unwrap() = self.default_target.clone();
+        self.controls.clear_contour();
     }
 
     pub fn draw_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {

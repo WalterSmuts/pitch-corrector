@@ -83,8 +83,12 @@ pub struct NoteSnapper {
 
 impl NoteSnapper {
     pub fn new(notes: Notes) -> Self {
+        Self::with_notes_control(Arc::new(AtomicU16::new(notes.bits())))
+    }
+
+    pub fn with_notes_control(note_set: Arc<AtomicU16>) -> Self {
         Self {
-            note_set: Arc::new(AtomicU16::new(notes.bits())),
+            note_set,
             prev_target: AtomicU32::new(0.0f32.to_bits()),
         }
     }
@@ -198,12 +202,57 @@ impl PitchTarget for PitchContour {
 
 type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 
-pub struct PitchCorrector {
+/// Remote control for a `PitchCorrector` that has been moved into a pipeline.
+pub struct PitchCorrectorControls {
     shift_semitones: Arc<AtomicU32>,
+    notes: Arc<AtomicU16>,
     target_log: Arc<Mutex<Vec<f32>>>,
     target: Arc<Mutex<Arc<dyn PitchTarget>>>,
-    default_snapper: Option<Arc<NoteSnapper>>,
+    default_target: Arc<dyn PitchTarget>,
+}
+
+impl PitchCorrectorControls {
+    pub fn set_shift(&self, semitones: f32) {
+        self.shift_semitones
+            .store(semitones.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn get_shift(&self) -> f32 {
+        f32::from_bits(self.shift_semitones.load(Ordering::Relaxed))
+    }
+
+    pub fn set_notes(&self, notes: Notes) {
+        self.notes.store(notes.bits(), Ordering::Relaxed);
+    }
+
+    pub fn get_notes(&self) -> Notes {
+        Notes::from_bits_truncate(self.notes.load(Ordering::Relaxed))
+    }
+
+    pub fn set_contour(&self, contour: Vec<f32>) {
+        *self.target.lock().unwrap() = Arc::new(PitchContour::new(contour));
+    }
+
+    pub fn clear_contour(&self) {
+        *self.target.lock().unwrap() = self.default_target.clone();
+    }
+
+    pub fn take_target_log(&self) -> Vec<f32> {
+        std::mem::take(&mut *self.target_log.lock().unwrap())
+    }
+
+    pub fn clear_target_log(&self) {
+        self.target_log.lock().unwrap().clear();
+    }
+
+    pub fn snap_to_scale(&self, freq: f32) -> f32 {
+        nearest_note(freq, self.get_notes())
+    }
+}
+
+pub struct PitchCorrector {
     processor: PhaseVocoderPitchShifter<RatioFn>,
+    controls: PitchCorrectorControls,
 }
 
 impl PitchCorrector {
@@ -212,17 +261,19 @@ impl PitchCorrector {
     }
 
     pub fn with_notes(notes: Notes) -> Self {
-        let snapper = Arc::new(NoteSnapper::new(notes));
-        let snapper_clone = snapper.clone();
+        let notes_atomic = Arc::new(AtomicU16::new(notes.bits()));
+        let snapper = Arc::new(NoteSnapper::with_notes_control(notes_atomic.clone()));
         let mut corrector = Self::with_target(snapper);
-        corrector.default_snapper = Some(snapper_clone);
+        corrector.controls.notes = notes_atomic;
         corrector
     }
 
     pub fn with_target(target: Arc<dyn PitchTarget>) -> Self {
         let shift = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let notes = Arc::new(AtomicU16::new(0));
         let target_log: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-        let shared_target: Arc<Mutex<Arc<dyn PitchTarget>>> = Arc::new(Mutex::new(target));
+        let shared_target: Arc<Mutex<Arc<dyn PitchTarget>>> = Arc::new(Mutex::new(target.clone()));
+
         let shift_clone = shift.clone();
         let log_clone = target_log.clone();
         let target_clone = shared_target.clone();
@@ -258,39 +309,26 @@ impl PitchCorrector {
         });
         let processor = PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn);
         PitchCorrector {
-            shift_semitones: shift,
-            target_log,
-            target: shared_target,
-            default_snapper: None,
             processor,
+            controls: PitchCorrectorControls {
+                shift_semitones: shift,
+                notes,
+                target_log,
+                target: shared_target,
+                default_target: target,
+            },
         }
     }
 
-    #[allow(dead_code)]
-    pub fn set_semitones(&self, semitones: f32) {
-        self.shift_semitones
-            .store(semitones.to_bits(), Ordering::Relaxed);
-    }
-
-    pub fn shift_control(&self) -> Arc<AtomicU32> {
-        self.shift_semitones.clone()
-    }
-
-    pub fn target_log(&self) -> Arc<Mutex<Vec<f32>>> {
-        self.target_log.clone()
-    }
-
-    /// Returns the default NoteSnapper if this corrector was created with `with_notes`.
-    pub fn as_note_snapper(&self) -> Option<&NoteSnapper> {
-        self.default_snapper.as_deref()
-    }
-
-    pub fn set_target(&self, target: Arc<dyn PitchTarget>) {
-        *self.target.lock().unwrap() = target;
-    }
-
-    pub fn target_handle(&self) -> Arc<Mutex<Arc<dyn PitchTarget>>> {
-        self.target.clone()
+    /// Extract the controls handle before moving this into a pipeline.
+    pub fn controls(&self) -> PitchCorrectorControls {
+        PitchCorrectorControls {
+            shift_semitones: self.controls.shift_semitones.clone(),
+            notes: self.controls.notes.clone(),
+            target_log: self.controls.target_log.clone(),
+            target: self.controls.target.clone(),
+            default_target: self.controls.default_target.clone(),
+        }
     }
 }
 
@@ -401,12 +439,9 @@ mod tests {
     #[test]
     fn set_notes_at_runtime() {
         let corrector = PitchCorrector::new();
-        let snapper = corrector.as_note_snapper().unwrap();
-        snapper.set_notes(Notes::major(Notes::C));
-        assert_eq!(
-            Notes::from_bits_truncate(snapper.notes_control().load(Ordering::Relaxed)),
-            Notes::major(Notes::C)
-        );
+        let controls = corrector.controls();
+        controls.set_notes(Notes::major(Notes::C));
+        assert_eq!(controls.get_notes(), Notes::major(Notes::C));
     }
 
     #[test]

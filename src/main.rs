@@ -126,9 +126,7 @@ fn main() {
             use pitch_correction::Notes;
 
             let corrector = pitch_correction::PitchCorrector::new();
-            let shift = corrector.shift_control();
-            let snapper = corrector.as_note_snapper().unwrap();
-            let notes = snapper.notes_control();
+            let controls = corrector.controls();
             let status = user_inferface.status_handle();
             let _streams = hardware::setup_passthrough_processor(pipeline!(
                 user_inferface.create_display_processor(),
@@ -161,31 +159,25 @@ fn main() {
             log_panics::init();
             user_inferface.run_with_key_handler(move |key| {
                 use crossterm::event::KeyCode;
-                let get_shift = || f32::from_bits(shift.load(std::sync::atomic::Ordering::Relaxed));
-                let set_shift =
-                    |v: f32| shift.store(v.to_bits(), std::sync::atomic::Ordering::Relaxed);
 
                 match key {
                     KeyCode::Up => {
-                        let s = get_shift() + 1.0;
-                        set_shift(s);
+                        let s = controls.get_shift() + 1.0;
+                        controls.set_shift(s);
                         update_status(scale_presets[scale_idx].0, s);
                     }
                     KeyCode::Down => {
-                        let s = get_shift() - 1.0;
-                        set_shift(s);
+                        let s = controls.get_shift() - 1.0;
+                        controls.set_shift(s);
                         update_status(scale_presets[scale_idx].0, s);
                     }
                     KeyCode::Char('s') => {
                         scale_idx = (scale_idx + 1) % scale_presets.len();
-                        notes.store(
-                            scale_presets[scale_idx].1.bits(),
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
-                        update_status(scale_presets[scale_idx].0, get_shift());
+                        controls.set_notes(scale_presets[scale_idx].1);
+                        update_status(scale_presets[scale_idx].0, controls.get_shift());
                     }
                     KeyCode::Char('0') => {
-                        set_shift(0.0);
+                        controls.set_shift(0.0);
                         update_status(scale_presets[scale_idx].0, 0.0);
                     }
                     _ => {}
