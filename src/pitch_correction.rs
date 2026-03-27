@@ -1,55 +1,43 @@
 use crate::music::{Note, Scale};
 use crate::signal_processing::{PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector};
-use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use std::any::Any;
-
 /// Strategy for choosing a target frequency given the detected pitch.
-pub trait PitchTarget: Send + Sync {
+trait PitchTarget: Send + Sync {
     /// Given the detected frequency, return the target frequency.
     /// Return `None` to leave pitch unchanged.
     fn target(&self, detected_freq: f32) -> Option<f32>;
-
-    fn as_any(&self) -> &dyn Any;
 }
 
 /// Snaps detected pitch to the nearest note in a scale, with hysteresis.
-pub struct NoteSnapper {
-    note_set: Arc<AtomicU16>,
+struct NoteSnapper {
+    scale: Arc<Mutex<Scale>>,
     prev_target: AtomicU32,
 }
 
 impl NoteSnapper {
-    pub fn new(scale: Scale) -> Self {
-        Self::with_notes_control(Arc::new(AtomicU16::new(scale.bits())))
-    }
-
-    pub fn with_notes_control(note_set: Arc<AtomicU16>) -> Self {
+    fn new(scale: Scale) -> Self {
         Self {
-            note_set,
+            scale: Arc::new(Mutex::new(scale)),
             prev_target: AtomicU32::new(0.0f32.to_bits()),
         }
     }
 
-    pub fn set_notes(&self, scale: Scale) {
-        self.note_set.store(scale.bits(), Ordering::Relaxed);
-    }
-
-    pub fn notes_control(&self) -> Arc<AtomicU16> {
-        self.note_set.clone()
+    fn scale_control(&self) -> Arc<Mutex<Scale>> {
+        self.scale.clone()
     }
 }
 
 impl PitchTarget for NoteSnapper {
     fn target(&self, detected_freq: f32) -> Option<f32> {
-        let current_notes = Scale::from_bits(self.note_set.load(Ordering::Relaxed));
-        if current_notes.is_empty() {
+        let current = *self.scale.lock().unwrap();
+        if current.is_empty() {
             return None;
         }
 
-        let target = current_notes.nearest_note(detected_freq);
+        let target = current.nearest_note(detected_freq);
 
         // Schmitt trigger: only switch note if detected pitch has
         // crossed more than half a semitone past the previous target
@@ -69,14 +57,10 @@ impl PitchTarget for NoteSnapper {
 
         Some(final_target)
     }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 /// Follows a pre-defined sequence of target frequencies indexed by hop.
-pub struct PitchContour {
+struct PitchContour {
     /// Target frequency per hop (0.0 = no target / passthrough).
     contour: Vec<f32>,
     /// Counts ratio_fn invocations (one per phase vocoder hop).
@@ -84,7 +68,7 @@ pub struct PitchContour {
 }
 
 impl PitchContour {
-    pub fn new(contour: Vec<f32>) -> Self {
+    fn new(contour: Vec<f32>) -> Self {
         Self {
             contour,
             hop_count: AtomicU32::new(0),
@@ -106,10 +90,6 @@ impl PitchTarget for PitchContour {
             None
         }
     }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
 }
 
 type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
@@ -117,7 +97,7 @@ type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 /// Remote control for a `PitchCorrector` that has been moved into a pipeline.
 pub struct PitchCorrectorControls {
     shift_semitones: Arc<AtomicU32>,
-    notes: Arc<AtomicU16>,
+    scale: Arc<Mutex<Scale>>,
     target_log: Arc<Mutex<Vec<f32>>>,
     target: Arc<Mutex<Arc<dyn PitchTarget>>>,
     default_target: Arc<dyn PitchTarget>,
@@ -134,11 +114,11 @@ impl PitchCorrectorControls {
     }
 
     pub fn set_notes(&self, scale: Scale) {
-        self.notes.store(scale.bits(), Ordering::Relaxed);
+        *self.scale.lock().unwrap() = scale;
     }
 
     pub fn get_notes(&self) -> Scale {
-        Scale::from_bits(self.notes.load(Ordering::Relaxed))
+        *self.scale.lock().unwrap()
     }
 
     pub fn set_contour(&self, contour: Vec<f32>) {
@@ -179,16 +159,16 @@ impl PitchCorrector {
     }
 
     pub fn with_notes(scale: Scale) -> Self {
-        let notes_atomic = Arc::new(AtomicU16::new(scale.bits()));
-        let snapper = Arc::new(NoteSnapper::with_notes_control(notes_atomic.clone()));
+        let snapper = Arc::new(NoteSnapper::new(scale));
+        let scale_control = snapper.scale_control();
         let mut corrector = Self::with_target(snapper);
-        corrector.controls.notes = notes_atomic;
+        corrector.controls.scale = scale_control;
         corrector
     }
 
-    pub fn with_target(target: Arc<dyn PitchTarget>) -> Self {
+    fn with_target(target: Arc<dyn PitchTarget>) -> Self {
         let shift = Arc::new(AtomicU32::new(0.0f32.to_bits()));
-        let notes = Arc::new(AtomicU16::new(0));
+        let scale = Arc::new(Mutex::new(Scale::empty()));
         let target_log: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
         let shared_target: Arc<Mutex<Arc<dyn PitchTarget>>> = Arc::new(Mutex::new(target.clone()));
 
@@ -230,7 +210,7 @@ impl PitchCorrector {
             processor,
             controls: PitchCorrectorControls {
                 shift_semitones: shift,
-                notes,
+                scale,
                 target_log,
                 target: shared_target,
                 default_target: target,
@@ -242,7 +222,7 @@ impl PitchCorrector {
     pub fn controls(&self) -> PitchCorrectorControls {
         PitchCorrectorControls {
             shift_semitones: self.controls.shift_semitones.clone(),
-            notes: self.controls.notes.clone(),
+            scale: self.controls.scale.clone(),
             target_log: self.controls.target_log.clone(),
             target: self.controls.target.clone(),
             default_target: self.controls.default_target.clone(),
