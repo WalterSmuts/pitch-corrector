@@ -52,19 +52,35 @@ pub struct PhaseVocoderPitchShifter<F: Fn(&[f32]) -> f32 + Send + Sync> {
     state: Mutex<PhaseVocoderState>,
 }
 
+struct BinData {
+    magnitudes: Vec<f32>,
+    true_freq: Vec<f32>,
+    freq_deriv: Vec<f32>,
+}
+
+impl BinData {
+    fn resize(&mut self, len: usize) {
+        self.magnitudes.resize(len, 0.0);
+        self.true_freq.resize(len, 0.0);
+        self.freq_deriv.resize(len, 0.0);
+    }
+
+    fn clear(&mut self) {
+        self.magnitudes.iter_mut().for_each(|v| *v = 0.0);
+        self.true_freq.iter_mut().for_each(|v| *v = 0.0);
+        self.freq_deriv.iter_mut().for_each(|v| *v = 0.0);
+    }
+}
+
 struct PhaseVocoderState {
     input_frame: Vec<f32>,
     input_pos: usize,
     prev_input_phase: Vec<f32>,
     prev_output_phase: Vec<f32>,
     output_accum: Vec<f32>,
-    magnitudes: Vec<f32>,
-    true_freq: Vec<f32>,
-    freq_deriv: Vec<f32>,
-    new_magnitudes: Vec<f32>,
-    new_freq: Vec<f32>,
-    new_freq_deriv: Vec<f32>,
-    new_bins: Vec<Complex<f32>>,
+    analysis: BinData,
+    synthesis: BinData,
+    synthesis_bins: Vec<Complex<f32>>,
     windowed: Vec<f32>,
     window: Vec<f32>,
     analysis_spectrum: Option<DynRealDft<f32>>,
@@ -330,17 +346,17 @@ impl HighPassFilter {
         let cutoff_bin = get_cutoff_bin(cutoff_frequency);
         let zeroth_bin = if cutoff_bin.is_some() { 0.0 } else { 1.0 };
 
-        let mut frequncy_bins = vec![Complex::default(); BUFFER_SIZE / 2];
-        let frequncy_bins = if let Some(cutoff_bin) = cutoff_bin {
-            for bin in frequncy_bins[cutoff_bin..].iter_mut() {
+        let mut frequency_bins = vec![Complex::default(); BUFFER_SIZE / 2];
+        let frequency_bins = if let Some(cutoff_bin) = cutoff_bin {
+            for bin in frequency_bins[cutoff_bin..].iter_mut() {
                 *bin = Complex::new(1.0, 0.0);
             }
-            frequncy_bins.into_boxed_slice()
+            frequency_bins.into_boxed_slice()
         } else {
-            frequncy_bins.into_boxed_slice()
+            frequency_bins.into_boxed_slice()
         };
 
-        let frequency_response = DynRealDft::new(zeroth_bin, &frequncy_bins, BUFFER_SIZE);
+        let frequency_response = DynRealDft::new(zeroth_bin, &frequency_bins, BUFFER_SIZE);
 
         Self { frequency_response }
     }
@@ -362,17 +378,17 @@ impl LowPassFilter {
         let cutoff_bin = get_cutoff_bin(cutoff_frequency);
         let zeroth_bin = 1.0;
 
-        let mut frequncy_bins = vec![Complex::default(); BUFFER_SIZE / 2];
-        let frequncy_bins = if let Some(cutoff_bin) = cutoff_bin {
-            for bin in frequncy_bins[..cutoff_bin].iter_mut() {
+        let mut frequency_bins = vec![Complex::default(); BUFFER_SIZE / 2];
+        let frequency_bins = if let Some(cutoff_bin) = cutoff_bin {
+            for bin in frequency_bins[..cutoff_bin].iter_mut() {
                 *bin = Complex::new(1.0, 0.0);
             }
-            frequncy_bins.into_boxed_slice()
+            frequency_bins.into_boxed_slice()
         } else {
-            frequncy_bins.into_boxed_slice()
+            frequency_bins.into_boxed_slice()
         };
 
-        let frequency_response = DynRealDft::new(zeroth_bin, &frequncy_bins, BUFFER_SIZE);
+        let frequency_response = DynRealDft::new(zeroth_bin, &frequency_bins, BUFFER_SIZE);
 
         Self { frequency_response }
     }
@@ -443,13 +459,17 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
                 prev_input_phase: vec![],
                 prev_output_phase: vec![],
                 output_accum: vec![0.0; BUFFER_SIZE],
-                magnitudes: vec![],
-                true_freq: vec![],
-                freq_deriv: vec![],
-                new_magnitudes: vec![],
-                new_freq: vec![],
-                new_freq_deriv: vec![],
-                new_bins: vec![],
+                analysis: BinData {
+                    magnitudes: vec![],
+                    true_freq: vec![],
+                    freq_deriv: vec![],
+                },
+                synthesis: BinData {
+                    magnitudes: vec![],
+                    true_freq: vec![],
+                    freq_deriv: vec![],
+                },
+                synthesis_bins: vec![],
                 windowed: vec![0.0; BUFFER_SIZE],
                 window,
                 analysis_spectrum: Some(DynRealDft::new(
@@ -496,18 +516,16 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
         if state.prev_input_phase.len() != num_bins {
             state.prev_input_phase.resize(num_bins, 0.0);
             state.prev_output_phase.resize(num_bins, 0.0);
-            state.magnitudes.resize(num_bins, 0.0);
-            state.true_freq.resize(num_bins, 0.0);
-            state.freq_deriv.resize(num_bins, 0.0);
-            state.new_magnitudes.resize(num_bins, 0.0);
-            state.new_freq.resize(num_bins, 0.0);
-            state.new_freq_deriv.resize(num_bins, 0.0);
-            state.new_bins.resize(BUFFER_SIZE / 2, Complex::default());
+            state.analysis.resize(num_bins);
+            state.synthesis.resize(num_bins);
+            state
+                .synthesis_bins
+                .resize(BUFFER_SIZE / 2, Complex::default());
         }
 
         // Analysis: compute magnitude, time derivative, and frequency derivative
         for k in 0..num_bins {
-            state.magnitudes[k] = bins[k].norm();
+            state.analysis.magnitudes[k] = bins[k].norm();
             let phase = bins[k].arg();
 
             // Time derivative (backward difference)
@@ -518,7 +536,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             if phase_diff > std::f32::consts::PI {
                 phase_diff -= std::f32::consts::TAU;
             }
-            state.true_freq[k] = expected_phase_advance(k + 1) + phase_diff;
+            state.analysis.true_freq[k] = expected_phase_advance(k + 1) + phase_diff;
 
             // Frequency derivative (centered difference)
             if k > 0 && k < num_bins - 1 {
@@ -527,23 +545,15 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
                 if fd > std::f32::consts::PI {
                     fd -= std::f32::consts::TAU;
                 }
-                state.freq_deriv[k] = fd / 2.0;
+                state.analysis.freq_deriv[k] = fd / 2.0;
             } else {
-                state.freq_deriv[k] = 0.0;
+                state.analysis.freq_deriv[k] = 0.0;
             }
         }
 
         // Synthesis: shift bins
-        for v in state.new_magnitudes.iter_mut() {
-            *v = 0.0;
-        }
-        for v in state.new_freq.iter_mut() {
-            *v = 0.0;
-        }
-        for v in state.new_freq_deriv.iter_mut() {
-            *v = 0.0;
-        }
-        for b in state.new_bins.iter_mut() {
+        state.synthesis.clear();
+        for b in state.synthesis_bins.iter_mut() {
             *b = Complex::default();
         }
 
@@ -553,17 +563,17 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             let hi = lo + 1;
             if hi < num_bins {
                 let frac = src - lo as f32;
-                state.new_magnitudes[k] =
-                    state.magnitudes[lo] * (1.0 - frac) + state.magnitudes[hi] * frac;
-                state.new_freq[k] = (state.true_freq[lo] * (1.0 - frac)
-                    + state.true_freq[hi] * frac)
+                state.synthesis.magnitudes[k] = state.analysis.magnitudes[lo] * (1.0 - frac)
+                    + state.analysis.magnitudes[hi] * frac;
+                state.synthesis.true_freq[k] = (state.analysis.true_freq[lo] * (1.0 - frac)
+                    + state.analysis.true_freq[hi] * frac)
                     * scaling_ratio;
-                state.new_freq_deriv[k] =
-                    state.freq_deriv[lo] * (1.0 - frac) + state.freq_deriv[hi] * frac;
+                state.synthesis.freq_deriv[k] = state.analysis.freq_deriv[lo] * (1.0 - frac)
+                    + state.analysis.freq_deriv[hi] * frac;
             } else if lo < num_bins {
-                state.new_magnitudes[k] = state.magnitudes[lo];
-                state.new_freq[k] = state.true_freq[lo] * scaling_ratio;
-                state.new_freq_deriv[k] = state.freq_deriv[lo];
+                state.synthesis.magnitudes[k] = state.analysis.magnitudes[lo];
+                state.synthesis.true_freq[k] = state.analysis.true_freq[lo] * scaling_ratio;
+                state.synthesis.freq_deriv[k] = state.analysis.freq_deriv[lo];
             }
         }
 
@@ -577,8 +587,8 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
 
         // Seed with previous frame bins (candidates for time propagation)
         for k in 0..num_bins {
-            if state.new_magnitudes[k] > 1e-10 {
-                heap.push((state.new_magnitudes[k].to_bits(), k, true));
+            if state.synthesis.magnitudes[k] > 1e-10 {
+                heap.push((state.synthesis.magnitudes[k].to_bits(), k, true));
             }
         }
 
@@ -588,22 +598,22 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             }
             if from_prev {
                 // Time direction: classical phase accumulation
-                new_phase[k] = state.prev_output_phase[k] + state.new_freq[k];
+                new_phase[k] = state.prev_output_phase[k] + state.synthesis.true_freq[k];
             }
             computed[k] = true;
 
             // Propagate in frequency direction to neighbors
             if k + 1 < num_bins && !computed[k + 1] {
-                let phase_up =
-                    new_phase[k] + (state.new_freq_deriv[k] + state.new_freq_deriv[k + 1]) / 2.0;
+                let phase_up = new_phase[k]
+                    + (state.synthesis.freq_deriv[k] + state.synthesis.freq_deriv[k + 1]) / 2.0;
                 new_phase[k + 1] = phase_up;
-                heap.push((state.new_magnitudes[k + 1].to_bits(), k + 1, false));
+                heap.push((state.synthesis.magnitudes[k + 1].to_bits(), k + 1, false));
             }
             if k > 0 && !computed[k - 1] {
-                let phase_down =
-                    new_phase[k] - (state.new_freq_deriv[k] + state.new_freq_deriv[k - 1]) / 2.0;
+                let phase_down = new_phase[k]
+                    - (state.synthesis.freq_deriv[k] + state.synthesis.freq_deriv[k - 1]) / 2.0;
                 new_phase[k - 1] = phase_down;
-                heap.push((state.new_magnitudes[k - 1].to_bits(), k - 1, false));
+                heap.push((state.synthesis.magnitudes[k - 1].to_bits(), k - 1, false));
             }
         }
 
@@ -611,7 +621,8 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
 
         // Build synthesis bins
         for k in 0..num_bins {
-            state.new_bins[k] = Complex::from_polar(state.new_magnitudes[k], new_phase[k]);
+            state.synthesis_bins[k] =
+                Complex::from_polar(state.synthesis.magnitudes[k], new_phase[k]);
         }
 
         // IFFT
@@ -621,7 +632,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             let n = synth.get_frequency_bins().len();
             synth
                 .get_frequency_bins_mut()
-                .copy_from_slice(&state.new_bins[..n]);
+                .copy_from_slice(&state.synthesis_bins[..n]);
         }
         state
             .synthesis_spectrum
@@ -1271,8 +1282,7 @@ mod tests {
         let num_samples = BUFFER_SIZE * 80;
         let mut output = Vec::new();
         for i in 0..num_samples {
-            let sample =
-                (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
+            let sample = (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
             processor.push_sample(sample);
             while let Some(o) = processor.pop_sample() {
                 output.push(o);
@@ -1300,15 +1310,21 @@ mod tests {
         let bin_hz = SAMPLE_RATE as f32 / ANALYSIS_SIZE as f32;
 
         // Print top 10 bins for diagnostics
-        let mut indexed: Vec<(usize, f32)> = bins.iter().enumerate()
-            .map(|(i, b)| (i, b.norm_sqr())).collect();
+        let mut indexed: Vec<(usize, f32)> = bins
+            .iter()
+            .enumerate()
+            .map(|(i, b)| (i, b.norm_sqr()))
+            .collect();
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         let total_energy: f32 = indexed.iter().map(|(_, e)| e).sum();
         eprintln!("  Top 5 bins (ratio={scaling_ratio:.3}):");
         for (rank, (bin, energy)) in indexed.iter().take(5).enumerate() {
             eprintln!(
                 "    #{}: bin {} ({:.1}Hz) = {:.2}%",
-                rank + 1, bin, *bin as f32 * bin_hz, energy / total_energy * 100.0
+                rank + 1,
+                bin,
+                *bin as f32 * bin_hz,
+                energy / total_energy * 100.0
             );
         }
 
@@ -1409,8 +1425,7 @@ mod tests {
             if i == switch_at {
                 ratio.store(ratio_after.to_bits(), Ordering::Relaxed);
             }
-            let sample =
-                (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
+            let sample = (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
             processor.push_sample(sample);
             while let Some(o) = processor.pop_sample() {
                 output.push(o);
@@ -1460,8 +1475,8 @@ mod tests {
 
             // Is this window near the transition?
             let window_center = pos + ANALYSIS_SIZE / 2;
-            let near_transition = (window_center as i64 - switch_output as i64).unsigned_abs()
-                < ANALYSIS_SIZE as u64;
+            let near_transition =
+                (window_center as i64 - switch_output as i64).unsigned_abs() < ANALYSIS_SIZE as u64;
 
             if near_transition {
                 transition_windows += 1;
@@ -1564,8 +1579,7 @@ mod tests {
 
         let mut spec_scratch = vec![0.0f32; SPEC_SIZE];
         let mut spec_spectrum = spec_scratch.real_fft();
-        let contour_scratch: Vec<f32> =
-            (0..CONTOUR_SIZE).map(|i| (i as f32 * 0.1).sin()).collect();
+        let contour_scratch: Vec<f32> = (0..CONTOUR_SIZE).map(|i| (i as f32 * 0.1).sin()).collect();
         let mut detector = YinPitchDetector::new();
 
         // Warmup
