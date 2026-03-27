@@ -69,7 +69,7 @@ impl WebPitchCorrector {
 
         let corrector = PitchCorrector::new();
         let shift_control = corrector.shift_control();
-        let notes_control = corrector.notes_control();
+        let notes_control = corrector.as_note_snapper().unwrap().notes_control();
 
         // Pipeline: input_contour -> input_spectrogram -> corrector -> contour -> spectrogram
         let processor = Arc::new(compose(
@@ -311,20 +311,44 @@ impl WebPitchCorrector {
     }
     pub fn draw_pitch_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
         let ds = &mut *self.draw_state.lock().unwrap();
-        draw_contour(canvas, column_x, &self.contour_buffer, "rgb(50,255,120)", &mut ds.output_detector, &mut ds.contour_scratch);
+        draw_contour(
+            canvas,
+            column_x,
+            &self.contour_buffer,
+            "rgb(50,255,120)",
+            &mut ds.output_detector,
+            &mut ds.contour_scratch,
+        );
     }
 
     pub fn draw_input_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
         let ds = &mut *self.draw_state.lock().unwrap();
-        draw_contour(canvas, column_x, &self.input_contour_buffer, "rgb(255,150,50)", &mut ds.input_detector, &mut ds.contour_scratch);
+        draw_contour(
+            canvas,
+            column_x,
+            &self.input_contour_buffer,
+            "rgb(255,150,50)",
+            &mut ds.input_detector,
+            &mut ds.contour_scratch,
+        );
     }
 
     pub fn draw_waveform(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_waveform_from(canvas, column_x, &self.spectrogram_buffer, "rgb(50,255,120)");
+        draw_waveform_from(
+            canvas,
+            column_x,
+            &self.spectrogram_buffer,
+            "rgb(50,255,120)",
+        );
     }
 
     pub fn draw_input_waveform(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_waveform_from(canvas, column_x, &self.input_spectrogram_buffer, "rgb(255,150,50)");
+        draw_waveform_from(
+            canvas,
+            column_x,
+            &self.input_spectrogram_buffer,
+            "rgb(255,150,50)",
+        );
     }
 }
 
@@ -494,7 +518,11 @@ fn draw_waveform_from(
     let buf = buffer.lock().unwrap();
 
     // Find peak amplitude for this frame
-    let peak = buf.iter().map(|s| s.abs()).fold(0.0f32, f32::max).max(0.001);
+    let peak = buf
+        .iter()
+        .map(|s| s.abs())
+        .fold(0.0f32, f32::max)
+        .max(0.001);
 
     // RMS for filled bar, peak for outline
     let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
@@ -508,11 +536,21 @@ fn draw_waveform_from(
     // Peak bar (dim)
     ctx.set_global_alpha(0.3);
     ctx.set_fill_style_str(color);
-    ctx.fill_rect(column_x as f64, (mid - peak_h) as f64, 1.0, (peak_h * 2.0) as f64);
+    ctx.fill_rect(
+        column_x as f64,
+        (mid - peak_h) as f64,
+        1.0,
+        (peak_h * 2.0) as f64,
+    );
 
     // RMS bar (bright)
     ctx.set_global_alpha(1.0);
-    ctx.fill_rect(column_x as f64, (mid - rms_h) as f64, 1.0, (rms_h * 2.0) as f64);
+    ctx.fill_rect(
+        column_x as f64,
+        (mid - rms_h) as f64,
+        1.0,
+        (rms_h * 2.0) as f64,
+    );
 
     // Write-head bar
     let bar_x = ((column_x as u32 + 1) % canvas.width()) as f64;
@@ -528,4 +566,3 @@ fn heatmap(v: u8) -> (u8, u8, u8) {
         _ => (255, 255 - (v - 192) * 4, 0),
     }
 }
-

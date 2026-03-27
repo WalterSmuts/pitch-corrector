@@ -64,6 +64,40 @@ impl Notes {
     }
 }
 
+use std::any::Any;
+
+/// Strategy for choosing a target frequency given the detected pitch.
+pub trait PitchTarget: Send + Sync {
+    /// Given the detected frequency, return the target frequency.
+    /// Return `None` to leave pitch unchanged.
+    fn target(&self, detected_freq: f32) -> Option<f32>;
+
+    fn as_any(&self) -> &dyn Any;
+}
+
+/// Snaps detected pitch to the nearest note in a scale, with hysteresis.
+pub struct NoteSnapper {
+    note_set: Arc<AtomicU16>,
+    prev_target: AtomicU32,
+}
+
+impl NoteSnapper {
+    pub fn new(notes: Notes) -> Self {
+        Self {
+            note_set: Arc::new(AtomicU16::new(notes.bits())),
+            prev_target: AtomicU32::new(0.0f32.to_bits()),
+        }
+    }
+
+    pub fn set_notes(&self, notes: Notes) {
+        self.note_set.store(notes.bits(), Ordering::Relaxed);
+    }
+
+    pub fn notes_control(&self) -> Arc<AtomicU16> {
+        self.note_set.clone()
+    }
+}
+
 fn nearest_note(freq: f32, notes: Notes) -> f32 {
     if notes.is_empty() {
         return freq;
@@ -92,11 +126,44 @@ fn nearest_note(freq: f32, notes: Notes) -> f32 {
     16.3516 * (2.0f32).powf(target_semitones / 12.0)
 }
 
+impl PitchTarget for NoteSnapper {
+    fn target(&self, detected_freq: f32) -> Option<f32> {
+        let current_notes = Notes::from_bits_truncate(self.note_set.load(Ordering::Relaxed));
+        if current_notes.is_empty() {
+            return None;
+        }
+
+        let target = nearest_note(detected_freq, current_notes);
+
+        // Schmitt trigger: only switch note if detected pitch has
+        // crossed more than half a semitone past the previous target
+        let prev = f32::from_bits(self.prev_target.load(Ordering::Relaxed));
+        let final_target = if prev > 0.0 && target != prev {
+            let dist_from_prev = (12.0 * (detected_freq / prev).log2()).abs();
+            if dist_from_prev < 0.5 {
+                prev
+            } else {
+                self.prev_target.store(target.to_bits(), Ordering::Relaxed);
+                target
+            }
+        } else {
+            self.prev_target.store(target.to_bits(), Ordering::Relaxed);
+            target
+        };
+
+        Some(final_target)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 
 pub struct PitchCorrector {
     shift_semitones: Arc<AtomicU32>,
-    note_set: Arc<AtomicU16>,
+    target: Arc<dyn PitchTarget>,
     processor: PhaseVocoderPitchShifter<RatioFn>,
 }
 
@@ -106,43 +173,23 @@ impl PitchCorrector {
     }
 
     pub fn with_notes(notes: Notes) -> Self {
+        Self::with_target(Arc::new(NoteSnapper::new(notes)))
+    }
+
+    pub fn with_target(target: Arc<dyn PitchTarget>) -> Self {
         let shift = Arc::new(AtomicU32::new(0.0f32.to_bits()));
-        let note_set = Arc::new(AtomicU16::new(notes.bits()));
         let shift_clone = shift.clone();
-        let notes_clone = note_set.clone();
-        let prev_target = AtomicU32::new(0.0f32.to_bits());
+        let target_clone = target.clone();
         let detector = Mutex::new(YinPitchDetector::new());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
-            let current_notes = Notes::from_bits_truncate(notes_clone.load(Ordering::Relaxed));
             let semitones = f32::from_bits(shift_clone.load(Ordering::Relaxed));
             let shift_ratio = (2.0f32).powf(semitones / 12.0);
 
-            if current_notes.is_empty() {
-                return shift_ratio;
-            }
-
             let correction = match detector.lock().unwrap().detect(frame) {
-                Some(freq) => {
-                    let target = nearest_note(freq, current_notes);
-
-                    // Schmitt trigger: only switch note if detected pitch has
-                    // crossed more than half a semitone past the previous target
-                    let prev = f32::from_bits(prev_target.load(Ordering::Relaxed));
-                    let final_target = if prev > 0.0 && target != prev {
-                        let dist_from_prev = (12.0 * (freq / prev).log2()).abs();
-                        if dist_from_prev < 0.5 {
-                            prev
-                        } else {
-                            prev_target.store(target.to_bits(), Ordering::Relaxed);
-                            target
-                        }
-                    } else {
-                        prev_target.store(target.to_bits(), Ordering::Relaxed);
-                        target
-                    };
-
-                    final_target / freq
-                }
+                Some(freq) => match target_clone.target(freq) {
+                    Some(t) => t / freq,
+                    None => 1.0,
+                },
                 None => 1.0,
             };
             correction * shift_ratio
@@ -150,7 +197,7 @@ impl PitchCorrector {
         let processor = PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn);
         PitchCorrector {
             shift_semitones: shift,
-            note_set,
+            target,
             processor,
         }
     }
@@ -165,14 +212,9 @@ impl PitchCorrector {
         self.shift_semitones.clone()
     }
 
-    #[allow(dead_code)]
-    pub fn set_notes(&self, notes: Notes) {
-        self.note_set.store(notes.bits(), Ordering::Relaxed);
-    }
-
-    #[allow(dead_code)]
-    pub fn notes_control(&self) -> Arc<AtomicU16> {
-        self.note_set.clone()
+    /// Downcast to NoteSnapper for note-set control. Returns None if using a different target.
+    pub fn as_note_snapper(&self) -> Option<&NoteSnapper> {
+        self.target.as_ref().as_any().downcast_ref::<NoteSnapper>()
     }
 }
 
@@ -283,9 +325,10 @@ mod tests {
     #[test]
     fn set_notes_at_runtime() {
         let corrector = PitchCorrector::new();
-        corrector.set_notes(Notes::major(Notes::C));
+        let snapper = corrector.as_note_snapper().unwrap();
+        snapper.set_notes(Notes::major(Notes::C));
         assert_eq!(
-            Notes::from_bits_truncate(corrector.note_set.load(Ordering::Relaxed)),
+            Notes::from_bits_truncate(snapper.notes_control().load(Ordering::Relaxed)),
             Notes::major(Notes::C)
         );
     }

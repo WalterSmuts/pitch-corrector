@@ -127,7 +127,8 @@ fn main() {
 
             let corrector = pitch_correction::PitchCorrector::new();
             let shift = corrector.shift_control();
-            let notes = corrector.notes_control();
+            let snapper = corrector.as_note_snapper().unwrap();
+            let notes = snapper.notes_control();
             let status = user_inferface.status_handle();
             let _streams = hardware::setup_passthrough_processor(pipeline!(
                 user_inferface.create_display_processor(),
