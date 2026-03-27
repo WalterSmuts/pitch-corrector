@@ -515,10 +515,11 @@
                 const y = freqToContourY(freq, height);
                 if (y < 0) continue;
 
-                ctx.fillStyle = 'rgba(255,80,200,0.8)';
+                ctx.strokeStyle = 'rgba(255,80,200,0.8)';
+                ctx.lineWidth = 1.5;
                 ctx.beginPath();
                 ctx.arc(x + 1, y, 3, 0, Math.PI * 2);
-                ctx.fill();
+                ctx.stroke();
             }
         }
 
