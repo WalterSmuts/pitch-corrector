@@ -64,6 +64,35 @@ impl Notes {
     }
 }
 
+/// A musical interval measured in semitones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(i8)]
+pub enum Interval {
+    Unison = 0,
+    MinorSecond = 1,
+    MajorSecond = 2,
+    MinorThird = 3,
+    MajorThird = 4,
+    PerfectFourth = 5,
+    Tritone = 6,
+    PerfectFifth = 7,
+    MinorSixth = 8,
+    MajorSixth = 9,
+    MinorSeventh = 10,
+    MajorSeventh = 11,
+    Octave = 12,
+}
+
+impl Interval {
+    pub fn semitones(self) -> i8 {
+        self as i8
+    }
+
+    pub fn to_ratio(self) -> f32 {
+        (2.0f32).powf(self.semitones() as f32 / 12.0)
+    }
+}
+
 use std::any::Any;
 
 /// Strategy for choosing a target frequency given the detected pitch.
