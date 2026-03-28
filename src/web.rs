@@ -316,6 +316,8 @@ impl WebPitchCorrector {
         *self.playback.recording.lock().unwrap() = samples.to_vec();
         self.playback.playback_pos.store(0, Ordering::Relaxed);
         self.playback.input_active.store(false, Ordering::Relaxed);
+        let _ = self.input_stream.pause();
+        let _ = self.output_stream.pause();
     }
 
     pub fn process_offline(&self, samples: &[f32]) {
