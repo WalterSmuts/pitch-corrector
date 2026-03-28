@@ -40,7 +40,7 @@ pub struct WebPitchCorrector {
     contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
     input_contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
-    controls: PitchCorrectorControls,
+    controls: Arc<PitchCorrectorControls>,
     sweep_active: Arc<AtomicBool>,
     input_active: Arc<AtomicBool>,
     recording: Arc<Mutex<Vec<f32>>>,
