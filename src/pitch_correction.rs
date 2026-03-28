@@ -91,10 +91,6 @@ impl PitchCorrectorControls {
     pub fn clear_target_pitch_contour(&self) {
         self.target_pitch_contour.lock().unwrap().clear();
     }
-
-    pub fn snap_to_scale(&self, freq: f32) -> f32 {
-        self.get_scale().nearest_pitch(freq).to_freq()
-    }
 }
 
 pub struct PitchCorrector {
