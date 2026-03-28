@@ -373,7 +373,7 @@
                     customBits |= (1 << parseInt(b.dataset.note));
                 });
                 if (corrector && currentScale === 'custom') {
-                    corrector.set_notes(customBits);
+                    corrector.set_scale(customBits);
                     if (state !== 'recording') clearOutputCanvases();
                 }
             });
@@ -384,9 +384,9 @@
             if (!corrector) return;
             const root = parseInt(document.getElementById('root-select').value);
             if (currentScale === 'custom') {
-                corrector.set_notes(customBits);
+                corrector.set_scale(customBits);
             } else {
-                corrector.set_notes(WebPitchCorrector.scale_bits(currentScale, root));
+                corrector.set_scale(WebPitchCorrector.scale_bits(currentScale, root));
             }
             if (state !== 'recording') clearOutputCanvases();
         }
@@ -571,7 +571,7 @@
             const refOctave = Math.floor(refSemitones / 12.0);
             const newFreq = 16.3516 * Math.pow(2, (refOctave * 12.0 + semitoneInOctave) / 12.0);
 
-            const noteBits = corrector.get_notes();
+            const noteBits = corrector.get_scale();
             const snapped = noteBits > 0 ? WebPitchCorrector.snap_to_scale(newFreq, noteBits) : newFreq;
 
             const hop = Math.floor(col * numHops / totalCols);

@@ -173,7 +173,7 @@ fn main() {
                     }
                     KeyCode::Char('s') => {
                         scale_idx = (scale_idx + 1) % scale_presets.len();
-                        controls.set_notes(scale_presets[scale_idx].1);
+                        controls.set_scale(scale_presets[scale_idx].1);
                         update_status(scale_presets[scale_idx].0, controls.get_shift());
                     }
                     KeyCode::Char('0') => {

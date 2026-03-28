@@ -244,12 +244,12 @@ impl WebPitchCorrector {
         self.controls.clear_target_log();
     }
 
-    pub fn set_notes(&self, bits: u16) {
-        self.controls.set_notes(Scale::from_bits(bits));
+    pub fn set_scale(&self, bits: u16) {
+        self.controls.set_scale(Scale::from_bits(bits));
     }
 
-    pub fn get_notes(&self) -> u16 {
-        self.controls.get_notes().bits()
+    pub fn get_scale(&self) -> u16 {
+        self.controls.get_scale().bits()
     }
 
     pub fn stop(&self) {

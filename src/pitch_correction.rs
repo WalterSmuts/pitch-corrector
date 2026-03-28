@@ -113,11 +113,11 @@ impl PitchCorrectorControls {
         f32::from_bits(self.shift_semitones.load(Ordering::Relaxed))
     }
 
-    pub fn set_notes(&self, scale: Scale) {
+    pub fn set_scale(&self, scale: Scale) {
         *self.scale.lock().unwrap() = scale;
     }
 
-    pub fn get_notes(&self) -> Scale {
+    pub fn get_scale(&self) -> Scale {
         *self.scale.lock().unwrap()
     }
 
@@ -138,7 +138,7 @@ impl PitchCorrectorControls {
     }
 
     pub fn snap_to_scale(&self, freq: f32) -> f32 {
-        self.get_notes().nearest_pitch(freq).to_freq()
+        self.get_scale().nearest_pitch(freq).to_freq()
     }
 }
 
@@ -155,10 +155,10 @@ impl Default for PitchCorrector {
 
 impl PitchCorrector {
     pub fn new() -> Self {
-        Self::with_notes(Scale::pentatonic(Note::C))
+        Self::with_scale(Scale::pentatonic(Note::C))
     }
 
-    pub fn with_notes(scale: Scale) -> Self {
+    pub fn with_scale(scale: Scale) -> Self {
         let snapper = Arc::new(NoteSnapper::new(scale));
         let scale_control = snapper.scale_control();
         let mut corrector = Self::with_target(snapper);
@@ -249,11 +249,11 @@ mod tests {
     const SAMPLE_RATE: usize = 44100;
 
     #[test]
-    fn set_notes_at_runtime() {
+    fn set_scale_at_runtime() {
         let corrector = PitchCorrector::new();
         let controls = corrector.controls();
-        controls.set_notes(Scale::major(Note::C));
-        assert_eq!(controls.get_notes(), Scale::major(Note::C));
+        controls.set_scale(Scale::major(Note::C));
+        assert_eq!(controls.get_scale(), Scale::major(Note::C));
     }
 
     #[test]
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn pitch_corrector_off_is_transparent_for_sweep() {
-        let corrector = PitchCorrector::with_notes(Scale::empty());
+        let corrector = PitchCorrector::with_scale(Scale::empty());
 
         let num_samples = BUFFER_SIZE * 40;
         let mut phase = 0.0f32;
@@ -338,7 +338,7 @@ mod tests {
     fn pitch_corrector_snaps_descending_sweep_to_scale() {
         use crate::signal_processing::YinPitchDetector;
 
-        let corrector = PitchCorrector::with_notes(Scale::pentatonic(Note::C));
+        let corrector = PitchCorrector::with_scale(Scale::pentatonic(Note::C));
 
         // Descending sweep 200Hz -> 50Hz
         let num_samples = BUFFER_SIZE * 80;
