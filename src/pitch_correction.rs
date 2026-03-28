@@ -18,15 +18,11 @@ struct NoteSnapper {
 }
 
 impl NoteSnapper {
-    fn new(scale: Scale) -> Self {
+    fn new(scale: Arc<Mutex<Scale>>) -> Self {
         Self {
-            scale: Arc::new(Mutex::new(scale)),
+            scale,
             prev_target: Mutex::new(None),
         }
-    }
-
-    fn scale_control(&self) -> Arc<Mutex<Scale>> {
-        self.scale.clone()
     }
 }
 
@@ -157,16 +153,13 @@ impl PitchCorrector {
     }
 
     pub fn with_scale(scale: Scale) -> Self {
-        let snapper = Arc::new(NoteSnapper::new(scale));
-        let scale_control = snapper.scale_control();
-        let mut corrector = Self::with_target(snapper);
-        corrector.controls.scale = scale_control;
-        corrector
+        let scale = Arc::new(Mutex::new(scale));
+        let snapper = Arc::new(NoteSnapper::new(scale.clone()));
+        Self::with_target(snapper, scale)
     }
 
-    fn with_target(target: Arc<dyn PitchTarget>) -> Self {
+    fn with_target(target: Arc<dyn PitchTarget>, scale: Arc<Mutex<Scale>>) -> Self {
         let shift = Arc::new(Mutex::new(Interval::UNISON));
-        let scale = Arc::new(Mutex::new(Scale::empty()));
         let target_pitch_contour: Arc<Mutex<Vec<Option<Pitch>>>> = Arc::new(Mutex::new(Vec::new()));
         let shared_target: Arc<Mutex<Arc<dyn PitchTarget>>> = Arc::new(Mutex::new(target.clone()));
 
