@@ -313,7 +313,7 @@ impl WebPitchCorrector {
 
     pub fn snap_to_scale(freq: f32, note_bits: u16) -> f32 {
         let notes = Scale::from_bits(note_bits);
-        notes.nearest_note(freq)
+        notes.nearest_pitch(freq).to_freq()
     }
 
     /// Set a pitch contour as the active target for playback.

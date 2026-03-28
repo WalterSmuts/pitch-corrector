@@ -37,7 +37,7 @@ impl PitchTarget for NoteSnapper {
             return None;
         }
 
-        let target = current.nearest_note(detected_freq);
+        let target = current.nearest_pitch(detected_freq).to_freq();
 
         // Schmitt trigger: only switch note if detected pitch has
         // crossed more than half a semitone past the previous target
@@ -138,7 +138,7 @@ impl PitchCorrectorControls {
     }
 
     pub fn snap_to_scale(&self, freq: f32) -> f32 {
-        self.get_notes().nearest_note(freq)
+        self.get_notes().nearest_pitch(freq).to_freq()
     }
 }
 
@@ -371,7 +371,7 @@ mod tests {
         let mut pos = skip;
         while pos + 2048 <= output.len() {
             if let Some(freq) = detector.detect(&output[pos..pos + 2048]) {
-                let target = pentatonic_c.nearest_note(freq);
+                let target = pentatonic_c.nearest_pitch(freq).to_freq();
                 let semitone_error = (12.0 * (freq / target).log2()).abs();
                 checked += 1;
                 if semitone_error < 0.5 {

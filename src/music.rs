@@ -157,7 +157,7 @@ impl Scale {
     }
 
     /// Snap a frequency to the nearest note in this scale.
-    /// Returns the original frequency if the scale is empty.
+    /// Returns the nearest chromatic pitch if the scale is empty.
     pub fn nearest_pitch(self, freq: f32) -> Pitch {
         let semitones_from_c0 = 12.0 * (freq / C0_FREQ).log2();
         let octave = (semitones_from_c0 / 12.0).floor();
@@ -192,15 +192,6 @@ impl Scale {
             Note::ALL[rounded.rem_euclid(12) as usize],
             rounded.div_euclid(12) as i8,
         )
-    }
-
-    /// Snap a frequency to the nearest note in this scale, returning the frequency.
-    /// Returns the original frequency if the scale is empty.
-    pub fn nearest_note(self, freq: f32) -> f32 {
-        if self.is_empty() {
-            return freq;
-        }
-        self.nearest_pitch(freq).to_freq()
     }
 }
 
@@ -321,19 +312,21 @@ mod tests {
     }
 
     #[test]
-    fn empty_returns_input() {
-        assert_eq!(Scale::empty().nearest_note(445.0), 445.0);
+    fn empty_snaps_to_chromatic() {
+        let p = Scale::empty().nearest_pitch(445.0);
+        assert_eq!(p.note, Note::A);
+        assert_eq!(p.octave, 4);
     }
 
     #[test]
     fn chromatic_snaps_to_a() {
-        let corrected = Scale::chromatic().nearest_note(445.0);
+        let corrected = Scale::chromatic().nearest_pitch(445.0).to_freq();
         approx::assert_abs_diff_eq!(corrected, 440.0, epsilon = 2.0);
     }
 
     #[test]
     fn pentatonic_c() {
-        let corrected = Scale::pentatonic(Note::C).nearest_note(349.23);
+        let corrected = Scale::pentatonic(Note::C).nearest_pitch(349.23).to_freq();
         assert!(
             (corrected - 329.63).abs() < 2.0 || (corrected - 392.0).abs() < 2.0,
             "Expected E4 or G4, got {corrected}"
@@ -343,7 +336,7 @@ mod tests {
     #[test]
     fn custom_note_set() {
         let s = Note::C | Note::G;
-        let corrected = s.nearest_note(349.23);
+        let corrected = s.nearest_pitch(349.23).to_freq();
         assert!(
             (corrected - 261.63).abs() < 2.0 || (corrected - 392.0).abs() < 2.0,
             "Expected C4 or G4, got {corrected}"
