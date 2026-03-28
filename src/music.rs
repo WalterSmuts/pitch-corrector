@@ -1,3 +1,6 @@
+/// Frequency of C0 in Hz.
+const C0_FREQ: f32 = 16.3516;
+
 /// A pitch class (note name without octave).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -37,7 +40,40 @@ impl Note {
     }
 }
 
-/// A set of notes forming a scale.
+/// An absolute pitch: a note class plus an octave.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Pitch {
+    pub note: Note,
+    pub octave: i8,
+}
+
+impl Pitch {
+    pub fn new(note: Note, octave: i8) -> Self {
+        Self { note, octave }
+    }
+
+    /// MIDI-style semitone number relative to C0.
+    pub fn semitones_from_c0(self) -> f32 {
+        self.octave as f32 * 12.0 + self.note as u8 as f32
+    }
+
+    pub fn to_freq(self) -> f32 {
+        C0_FREQ * (2.0f32).powf(self.semitones_from_c0() / 12.0)
+    }
+
+    pub fn from_freq(freq: f32) -> Self {
+        let semitones = 12.0 * (freq / C0_FREQ).log2();
+        let rounded = semitones.round() as i32;
+        let octave = rounded.div_euclid(12) as i8;
+        let note_idx = rounded.rem_euclid(12) as u8;
+        Self {
+            note: Note::ALL[note_idx as usize],
+            octave,
+        }
+    }
+}
+
+/// A set of note classes forming a scale.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Scale(u16);
 
@@ -54,7 +90,9 @@ impl Scale {
         let root_idx = root as u8;
         let mut bits = 0u16;
         for interval in intervals {
-            bits |= Note::ALL[((root_idx + interval.semitones() as u8) % 12) as usize].bit();
+            bits |= Note::ALL
+                [((root_idx + interval.semitones().rem_euclid(12) as u8) % 12) as usize]
+                .bit();
         }
         Self(bits)
     }
@@ -62,13 +100,13 @@ impl Scale {
     pub fn major(root: Note) -> Self {
         Self::from_intervals(
             &[
-                Interval::Unison,
-                Interval::MajorSecond,
-                Interval::MajorThird,
-                Interval::PerfectFourth,
-                Interval::PerfectFifth,
-                Interval::MajorSixth,
-                Interval::MajorSeventh,
+                Interval::UNISON,
+                Interval::MAJOR_SECOND,
+                Interval::MAJOR_THIRD,
+                Interval::PERFECT_FOURTH,
+                Interval::PERFECT_FIFTH,
+                Interval::MAJOR_SIXTH,
+                Interval::MAJOR_SEVENTH,
             ],
             root,
         )
@@ -77,13 +115,13 @@ impl Scale {
     pub fn minor(root: Note) -> Self {
         Self::from_intervals(
             &[
-                Interval::Unison,
-                Interval::MajorSecond,
-                Interval::MinorThird,
-                Interval::PerfectFourth,
-                Interval::PerfectFifth,
-                Interval::MinorSixth,
-                Interval::MinorSeventh,
+                Interval::UNISON,
+                Interval::MAJOR_SECOND,
+                Interval::MINOR_THIRD,
+                Interval::PERFECT_FOURTH,
+                Interval::PERFECT_FIFTH,
+                Interval::MINOR_SIXTH,
+                Interval::MINOR_SEVENTH,
             ],
             root,
         )
@@ -92,11 +130,11 @@ impl Scale {
     pub fn pentatonic(root: Note) -> Self {
         Self::from_intervals(
             &[
-                Interval::Unison,
-                Interval::MajorSecond,
-                Interval::MajorThird,
-                Interval::PerfectFifth,
-                Interval::MajorSixth,
+                Interval::UNISON,
+                Interval::MAJOR_SECOND,
+                Interval::MAJOR_THIRD,
+                Interval::PERFECT_FIFTH,
+                Interval::MAJOR_SIXTH,
             ],
             root,
         )
@@ -118,13 +156,19 @@ impl Scale {
         Self(bits & 0x0FFF)
     }
 
-    pub fn nearest_note(self, freq: f32) -> f32 {
-        if self.is_empty() {
-            return freq;
-        }
-        let semitones_from_c0 = 12.0 * (freq / 16.3516).log2();
+    /// Snap a frequency to the nearest note in this scale.
+    /// Returns the original frequency if the scale is empty.
+    pub fn nearest_pitch(self, freq: f32) -> Pitch {
+        let semitones_from_c0 = 12.0 * (freq / C0_FREQ).log2();
         let octave = (semitones_from_c0 / 12.0).floor();
         let semitone_in_octave = semitones_from_c0 - octave * 12.0;
+
+        if self.is_empty() {
+            // No scale — snap to nearest chromatic note
+            let rounded = semitone_in_octave.round() as i32;
+            let note_idx = rounded.rem_euclid(12) as usize;
+            return Pitch::new(Note::ALL[note_idx], octave as i8);
+        }
 
         let mut best_offset = 0.0f32;
         let mut best_dist = f32::MAX;
@@ -143,7 +187,20 @@ impl Scale {
         }
 
         let target_semitones = octave * 12.0 + best_offset;
-        16.3516 * (2.0f32).powf(target_semitones / 12.0)
+        let rounded = target_semitones.round() as i32;
+        Pitch::new(
+            Note::ALL[rounded.rem_euclid(12) as usize],
+            rounded.div_euclid(12) as i8,
+        )
+    }
+
+    /// Snap a frequency to the nearest note in this scale, returning the frequency.
+    /// Returns the original frequency if the scale is empty.
+    pub fn nearest_note(self, freq: f32) -> f32 {
+        if self.is_empty() {
+            return freq;
+        }
+        self.nearest_pitch(freq).to_freq()
     }
 }
 
@@ -161,10 +218,10 @@ impl std::ops::BitOr for Note {
     }
 }
 
-/// A musical interval measured in semitones.
+/// The quality of a simple interval within one octave.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(i8)]
-pub enum Interval {
+#[repr(u8)]
+pub enum SimpleInterval {
     Unison = 0,
     MinorSecond = 1,
     MajorSecond = 2,
@@ -177,12 +234,46 @@ pub enum Interval {
     MajorSixth = 9,
     MinorSeventh = 10,
     MajorSeventh = 11,
-    Octave = 12,
+}
+
+/// A musical interval: a simple interval plus zero or more octaves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Interval {
+    pub simple: SimpleInterval,
+    pub octaves: u8,
 }
 
 impl Interval {
-    pub fn semitones(self) -> i8 {
-        self as i8
+    pub const UNISON: Self = Self::simple(SimpleInterval::Unison);
+    pub const MINOR_SECOND: Self = Self::simple(SimpleInterval::MinorSecond);
+    pub const MAJOR_SECOND: Self = Self::simple(SimpleInterval::MajorSecond);
+    pub const MINOR_THIRD: Self = Self::simple(SimpleInterval::MinorThird);
+    pub const MAJOR_THIRD: Self = Self::simple(SimpleInterval::MajorThird);
+    pub const PERFECT_FOURTH: Self = Self::simple(SimpleInterval::PerfectFourth);
+    pub const TRITONE: Self = Self::simple(SimpleInterval::Tritone);
+    pub const PERFECT_FIFTH: Self = Self::simple(SimpleInterval::PerfectFifth);
+    pub const MINOR_SIXTH: Self = Self::simple(SimpleInterval::MinorSixth);
+    pub const MAJOR_SIXTH: Self = Self::simple(SimpleInterval::MajorSixth);
+    pub const MINOR_SEVENTH: Self = Self::simple(SimpleInterval::MinorSeventh);
+    pub const MAJOR_SEVENTH: Self = Self::simple(SimpleInterval::MajorSeventh);
+    pub const OCTAVE: Self = Self {
+        simple: SimpleInterval::Unison,
+        octaves: 1,
+    };
+
+    const fn simple(s: SimpleInterval) -> Self {
+        Self {
+            simple: s,
+            octaves: 0,
+        }
+    }
+
+    pub const fn compound(simple: SimpleInterval, octaves: u8) -> Self {
+        Self { simple, octaves }
+    }
+
+    pub fn semitones(self) -> i32 {
+        self.simple as i32 + self.octaves as i32 * 12
     }
 
     pub fn to_ratio(self) -> f32 {
@@ -257,5 +348,32 @@ mod tests {
             (corrected - 261.63).abs() < 2.0 || (corrected - 392.0).abs() < 2.0,
             "Expected C4 or G4, got {corrected}"
         );
+    }
+
+    #[test]
+    fn pitch_round_trip() {
+        let p = Pitch::new(Note::A, 4);
+        approx::assert_abs_diff_eq!(p.to_freq(), 440.0, epsilon = 0.1);
+        let p2 = Pitch::from_freq(440.0);
+        assert_eq!(p2, p);
+    }
+
+    #[test]
+    fn nearest_pitch_returns_correct_note() {
+        let p = Scale::chromatic().nearest_pitch(445.0);
+        assert_eq!(p.note, Note::A);
+        assert_eq!(p.octave, 4);
+    }
+
+    #[test]
+    fn compound_interval() {
+        let tenth = Interval::compound(SimpleInterval::MinorThird, 1);
+        assert_eq!(tenth.semitones(), 15);
+    }
+
+    #[test]
+    fn octave_interval() {
+        assert_eq!(Interval::OCTAVE.semitones(), 12);
+        approx::assert_abs_diff_eq!(Interval::OCTAVE.to_ratio(), 2.0, epsilon = 0.001);
     }
 }
