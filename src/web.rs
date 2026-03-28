@@ -596,7 +596,8 @@ fn draw_contour(
 
     // Detected pitch wrapped to one octave
     if let Some(freq) = pitch {
-        let semitone_in_octave = Pitch::from_freq(freq).note as u8 as f32;
+        let semitones_from_a4 = 12.0 * (freq / 440.0).log2();
+        let semitone_in_octave = (semitones_from_a4 + 57.0).rem_euclid(12.0);
         let y = height * (1.0 - semitone_in_octave / 12.0);
         ctx.set_fill_style_str(color);
         ctx.begin_path();
