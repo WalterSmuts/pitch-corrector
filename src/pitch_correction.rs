@@ -1,89 +1,48 @@
 use crate::music::{Interval, Note, Pitch, Scale};
 use crate::signal_processing::{PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-/// Strategy for choosing a target pitch given the detected pitch.
-trait PitchTarget: Send + Sync {
-    /// Given the detected frequency, return the target pitch.
-    /// Return `None` to leave pitch unchanged.
-    fn target(&self, detected_freq: f32) -> Option<Pitch>;
-}
-
 /// Snaps detected pitch to the nearest note in a scale, with hysteresis.
 struct NoteSnapper {
-    scale: Arc<Mutex<Scale>>,
-    prev_target: Mutex<Option<Pitch>>,
+    prev_target: Option<Pitch>,
 }
 
 impl NoteSnapper {
-    fn new(scale: Arc<Mutex<Scale>>) -> Self {
-        Self {
-            scale,
-            prev_target: Mutex::new(None),
-        }
+    fn new() -> Self {
+        Self { prev_target: None }
     }
-}
 
-impl PitchTarget for NoteSnapper {
-    fn target(&self, detected_freq: f32) -> Option<Pitch> {
-        let current = *self.scale.lock().unwrap();
-        if current.is_empty() {
+    /// Snap `detected_freq` to the nearest note in `scale`.
+    /// Returns `None` if the scale is empty (passthrough).
+    fn snap(&mut self, detected_freq: f32, scale: Scale) -> Option<Pitch> {
+        if scale.is_empty() {
             return None;
         }
 
-        let target = current.nearest_pitch(detected_freq);
+        let target = scale.nearest_pitch(detected_freq);
 
         // Schmitt trigger: only switch note if detected pitch has
         // crossed more than half a semitone past the previous target
-        let mut prev = self.prev_target.lock().unwrap();
-        let result = if let Some(p) = *prev {
+        let result = if let Some(p) = self.prev_target {
             if target != p {
                 let dist = (12.0 * (detected_freq / p.to_freq()).log2()).abs();
                 if dist < 0.5 {
                     p
                 } else {
-                    *prev = Some(target);
+                    self.prev_target = Some(target);
                     target
                 }
             } else {
                 target
             }
         } else {
-            *prev = Some(target);
+            self.prev_target = Some(target);
             target
         };
 
         Some(result)
-    }
-}
-
-/// Follows a pre-defined sequence of target frequencies indexed by hop.
-struct PitchContour {
-    /// Target pitch per hop (`None` = passthrough).
-    contour: Vec<Option<Pitch>>,
-    /// Counts ratio_fn invocations (one per phase vocoder hop).
-    hop_count: AtomicU32,
-}
-
-impl PitchContour {
-    fn new(contour: Vec<Option<Pitch>>) -> Self {
-        Self {
-            contour,
-            hop_count: AtomicU32::new(0),
-        }
-    }
-}
-
-impl PitchTarget for PitchContour {
-    fn target(&self, _detected_freq: f32) -> Option<Pitch> {
-        if self.contour.is_empty() {
-            return None;
-        }
-        let hop = self.hop_count.fetch_add(1, Ordering::Relaxed) as usize;
-        let idx = hop.min(self.contour.len() - 1);
-        self.contour[idx]
     }
 }
 
@@ -92,9 +51,10 @@ type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 /// Remote control for a `PitchCorrector` that has been moved into a pipeline.
 pub struct PitchCorrectorControls {
     shift: Mutex<Interval>,
-    scale: Arc<Mutex<Scale>>,
+    scale: Mutex<Scale>,
     target_pitch_contour: Mutex<Vec<Option<Pitch>>>,
-    target: Mutex<Arc<dyn PitchTarget>>,
+    contour: Mutex<Vec<Option<Pitch>>>,
+    contour_hop: AtomicUsize,
 }
 
 impl PitchCorrectorControls {
@@ -115,11 +75,13 @@ impl PitchCorrectorControls {
     }
 
     pub fn set_contour(&self, contour: Vec<Option<Pitch>>) {
-        *self.target.lock().unwrap() = Arc::new(PitchContour::new(contour));
+        *self.contour.lock().unwrap() = contour;
+        self.contour_hop.store(0, Ordering::Relaxed);
     }
 
     pub fn clear_contour(&self) {
-        *self.target.lock().unwrap() = Arc::new(NoteSnapper::new(self.scale.clone()));
+        self.contour.lock().unwrap().clear();
+        self.contour_hop.store(0, Ordering::Relaxed);
     }
 
     pub fn take_target_pitch_contour(&self) -> Vec<Option<Pitch>> {
@@ -152,42 +114,40 @@ impl PitchCorrector {
     }
 
     pub fn with_scale(scale: Scale) -> Self {
-        let scale = Arc::new(Mutex::new(scale));
-        let snapper: Arc<dyn PitchTarget> = Arc::new(NoteSnapper::new(scale.clone()));
         let controls = Arc::new(PitchCorrectorControls {
             shift: Mutex::new(Interval::UNISON),
-            scale,
+            scale: Mutex::new(scale),
             target_pitch_contour: Mutex::new(Vec::new()),
-            target: Mutex::new(snapper),
+            contour: Mutex::new(Vec::new()),
+            contour_hop: AtomicUsize::new(0),
         });
 
         let controls_clone = controls.clone();
         let detector = Mutex::new(YinPitchDetector::new());
+        let snapper = Mutex::new(NoteSnapper::new());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
             let shift_ratio = controls_clone.shift.lock().unwrap().to_ratio();
-            let current_target = controls_clone.target.lock().unwrap().clone();
+            let detected = detector.lock().unwrap().detect(frame);
 
-            let correction = match detector.lock().unwrap().detect(frame) {
-                Some(freq) => match current_target.target(freq) {
-                    Some(pitch) => {
-                        if let Ok(mut log) = controls_clone.target_pitch_contour.try_lock() {
-                            log.push(Some(pitch));
-                        }
-                        pitch.to_freq() / freq
-                    }
-                    None => {
-                        if let Ok(mut log) = controls_clone.target_pitch_contour.try_lock() {
-                            log.push(None);
-                        }
-                        1.0
-                    }
-                },
-                None => {
-                    if let Ok(mut log) = controls_clone.target_pitch_contour.try_lock() {
-                        log.push(None);
-                    }
-                    1.0
+            // Check for active contour, otherwise snap to scale
+            let target_pitch = {
+                let contour = controls_clone.contour.lock().unwrap();
+                if !contour.is_empty() {
+                    let hop = controls_clone.contour_hop.fetch_add(1, Ordering::Relaxed);
+                    contour[hop.min(contour.len() - 1)]
+                } else {
+                    let scale = *controls_clone.scale.lock().unwrap();
+                    detected.and_then(|freq| snapper.lock().unwrap().snap(freq, scale))
                 }
+            };
+
+            if let Ok(mut log) = controls_clone.target_pitch_contour.try_lock() {
+                log.push(target_pitch);
+            }
+
+            let correction = match (target_pitch, detected) {
+                (Some(pitch), Some(freq)) => pitch.to_freq() / freq,
+                _ => 1.0,
             };
             correction * shift_ratio
         });
