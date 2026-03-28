@@ -32,6 +32,14 @@ struct DrawState {
     input_detector: YinPitchDetector,
 }
 
+struct PlaybackState {
+    sweep_active: AtomicBool,
+    input_active: AtomicBool,
+    recording: Mutex<Vec<f32>>,
+    playback_pos: AtomicU32,
+    playing: AtomicBool,
+}
+
 #[wasm_bindgen]
 pub struct WebPitchCorrector {
     input_stream: cpal::Stream,
@@ -41,11 +49,7 @@ pub struct WebPitchCorrector {
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
     input_contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     controls: Arc<PitchCorrectorControls>,
-    sweep_active: Arc<AtomicBool>,
-    input_active: Arc<AtomicBool>,
-    recording: Arc<Mutex<Vec<f32>>>,
-    playback_pos: Arc<AtomicU32>,
-    playing: Arc<AtomicBool>,
+    playback: Arc<PlaybackState>,
     draw_state: Mutex<DrawState>,
 }
 
@@ -97,28 +101,29 @@ impl WebPitchCorrector {
             .default_output_config()
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
 
-        let sweep_active = Arc::new(AtomicBool::new(false));
-        let sweep_flag = sweep_active.clone();
+        let playback = Arc::new(PlaybackState {
+            sweep_active: AtomicBool::new(false),
+            input_active: AtomicBool::new(true),
+            recording: Mutex::new(Vec::new()),
+            playback_pos: AtomicU32::new(0),
+            playing: AtomicBool::new(false),
+        });
+
         // Pack two f32s: [sample_counter, accumulated_phase]
         let sweep_counter = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let sweep_phase = Arc::new(AtomicU32::new(0.0f32.to_bits()));
         let sweep_counter_clone = sweep_counter.clone();
         let sweep_phase_clone = sweep_phase.clone();
 
-        let input_active = Arc::new(AtomicBool::new(true));
-        let input_active_flag = input_active.clone();
-
-        let recording: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
-        let recording_clone = recording.clone();
-
+        let input_playback = playback.clone();
         let input_stream = input_device
             .build_input_stream(
                 input_config.into(),
                 move |data: &[f32], _| {
-                    if !input_active_flag.load(Ordering::Relaxed) {
+                    if !input_playback.input_active.load(Ordering::Relaxed) {
                         return;
                     }
-                    if sweep_flag.load(Ordering::Relaxed) {
+                    if input_playback.sweep_active.load(Ordering::Relaxed) {
                         let mut counter =
                             f32::from_bits(sweep_counter_clone.load(Ordering::Relaxed));
                         let mut phase = f32::from_bits(sweep_phase_clone.load(Ordering::Relaxed));
@@ -128,7 +133,7 @@ impl WebPitchCorrector {
                             phase -= phase.floor();
                             let sample = (phase * std::f32::consts::TAU).sin() * 0.5;
                             input_processor.push_sample(sample);
-                            if let Ok(mut rec) = recording_clone.try_lock() {
+                            if let Ok(mut rec) = input_playback.recording.try_lock() {
                                 rec.push(sample);
                             }
                             counter += 1.0;
@@ -139,7 +144,7 @@ impl WebPitchCorrector {
                         sweep_counter_clone.store(counter.to_bits(), Ordering::Relaxed);
                         sweep_phase_clone.store(phase.to_bits(), Ordering::Relaxed);
                     } else {
-                        if let Ok(mut rec) = recording_clone.try_lock() {
+                        if let Ok(mut rec) = input_playback.recording.try_lock() {
                             rec.extend_from_slice(data);
                         }
                         for &sample in data {
@@ -152,19 +157,15 @@ impl WebPitchCorrector {
             )
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
 
-        let playback_rec = recording.clone();
-        let playback_pos_out = Arc::new(AtomicU32::new(0));
-        let playback_pos_clone = playback_pos_out.clone();
-        let playback_playing = Arc::new(AtomicBool::new(false));
-        let playback_flag = playback_playing.clone();
-
+        let output_playback = playback.clone();
         let output_stream = output_device
             .build_output_stream(
                 output_config.into(),
                 move |data: &mut [f32], _| {
-                    if playback_flag.load(Ordering::Relaxed) {
-                        if let Ok(rec) = playback_rec.try_lock() {
-                            let mut p = playback_pos_clone.load(Ordering::Relaxed) as usize;
+                    if output_playback.playing.load(Ordering::Relaxed) {
+                        if let Ok(rec) = output_playback.recording.try_lock() {
+                            let mut p =
+                                output_playback.playback_pos.load(Ordering::Relaxed) as usize;
                             for _ in 0..data.len() {
                                 if p < rec.len() {
                                     output_processor.push_sample(rec[p]);
@@ -172,9 +173,11 @@ impl WebPitchCorrector {
                                 }
                             }
                             if p >= rec.len() {
-                                playback_flag.store(false, Ordering::Relaxed);
+                                output_playback.playing.store(false, Ordering::Relaxed);
                             }
-                            playback_pos_clone.store(p as u32, Ordering::Relaxed);
+                            output_playback
+                                .playback_pos
+                                .store(p as u32, Ordering::Relaxed);
                         }
                     }
                     for sample in data.iter_mut() {
@@ -207,11 +210,7 @@ impl WebPitchCorrector {
             input_spectrogram_buffer,
             input_contour_buffer,
             controls,
-            sweep_active,
-            input_active,
-            recording,
-            playback_pos: playback_pos_out,
-            playing: playback_playing,
+            playback,
             draw_state: Mutex::new({
                 let spec_scratch = vec![0.0f32; SPECTROGRAM_SIZE];
                 let spec_spectrum = spec_scratch.real_fft();
@@ -260,32 +259,32 @@ impl WebPitchCorrector {
     }
 
     pub fn stop(&self) {
-        self.input_active.store(false, Ordering::Relaxed);
+        self.playback.input_active.store(false, Ordering::Relaxed);
         let _ = self.input_stream.pause();
         let _ = self.output_stream.pause();
     }
 
     pub fn recording_len(&self) -> usize {
-        self.recording.lock().unwrap().len()
+        self.playback.recording.lock().unwrap().len()
     }
 
     pub fn play_recording(&self) -> Result<(), JsValue> {
-        if self.recording.lock().unwrap().is_empty() {
+        if self.playback.recording.lock().unwrap().is_empty() {
             return Ok(());
         }
-        self.input_active.store(false, Ordering::Relaxed);
-        self.playing.store(true, Ordering::Relaxed);
+        self.playback.input_active.store(false, Ordering::Relaxed);
+        self.playback.playing.store(true, Ordering::Relaxed);
         let _ = self.output_stream.play();
         Ok(())
     }
 
     pub fn stop_playback(&self) {
-        self.playing.store(false, Ordering::Relaxed);
+        self.playback.playing.store(false, Ordering::Relaxed);
         let _ = self.output_stream.pause();
     }
 
     pub fn is_playing(&self) -> bool {
-        self.playing.load(Ordering::Relaxed)
+        self.playback.playing.load(Ordering::Relaxed)
     }
 
     pub fn playback_progress(&self) -> f32 {
@@ -293,17 +292,17 @@ impl WebPitchCorrector {
         if len == 0 {
             return 0.0;
         }
-        self.playback_pos.load(Ordering::Relaxed) as f32 / len as f32
+        self.playback.playback_pos.load(Ordering::Relaxed) as f32 / len as f32
     }
 
     pub fn seek(&self, fraction: f32) {
         let len = self.recording_len() as f32;
         let pos = (fraction.clamp(0.0, 1.0) * len) as u32;
-        self.playback_pos.store(pos, Ordering::Relaxed);
+        self.playback.playback_pos.store(pos, Ordering::Relaxed);
     }
 
     pub fn set_sweep(&self, active: bool) {
-        self.sweep_active.store(active, Ordering::Relaxed);
+        self.playback.sweep_active.store(active, Ordering::Relaxed);
     }
 
     pub fn scale_bits(preset: &str, root: u8) -> u16 {
