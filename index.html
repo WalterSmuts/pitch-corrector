@@ -502,7 +502,6 @@
                 return;
             }
             corrector.load_recording(samples);
-            corrector.process_offline(samples);
             targetContour = [];
             editedContour = null;
             postCorrectionActive = false;
@@ -511,9 +510,13 @@
             recordedColumns = 0;
             allCanvasIds.forEach(id => canvases[id].getContext('2d').clearRect(0, 0, canvases[id].width, canvases[id].height));
 
-            // Draw from the populated display buffers
+            // Process in chunks, drawing after each
             const width = canvases['input-spectrogram'].width;
-            for (let x = 0; x < width; x++) {
+            const samplesPerCol = Math.ceil(samples.length / width);
+            let offset = 0;
+            for (let x = 0; x < width && offset < samples.length; x++) {
+                const chunk = samples.subarray(offset);
+                offset += corrector.process_offline(chunk, samplesPerCol);
                 corrector.draw_spectrogram(canvases['output-spectrogram'], x);
                 corrector.draw_input_spectrogram(canvases['input-spectrogram'], x);
                 corrector.draw_pitch_contour(canvases['output-contour'], x);
@@ -522,7 +525,7 @@
                 corrector.draw_input_waveform(canvases['input-waveform'], x);
                 recordedColumns++;
             }
-            columnX = width;
+            columnX = recordedColumns % width;
             targetContour = Array.from(corrector.take_target_pitch_contour());
             setState('stopped');
         }

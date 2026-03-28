@@ -320,8 +320,13 @@ impl WebPitchCorrector {
         let _ = self.output_stream.pause();
     }
 
-    pub fn process_offline(&self, samples: &[f32]) {
-        self.pipeline.push_samples(samples);
+    pub fn process_offline(&self, samples: &[f32], count: usize) -> usize {
+        let n = samples.len().min(count);
+        for &s in &samples[..n] {
+            self.pipeline.processor.push_sample(s);
+            while self.pipeline.processor.pop_sample().is_some() {}
+        }
+        n
     }
 
     pub fn play_recording(&self) -> Result<(), JsValue> {
