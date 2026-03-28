@@ -89,46 +89,51 @@ impl PitchTarget for PitchContour {
 
 type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 
-/// Remote control for a `PitchCorrector` that has been moved into a pipeline.
-pub struct PitchCorrectorControls {
-    shift: Arc<Mutex<Interval>>,
+struct PitchCorrectorState {
+    shift: Mutex<Interval>,
     scale: Arc<Mutex<Scale>>,
-    target_pitch_contour: Arc<Mutex<Vec<Option<Pitch>>>>,
-    target: Arc<Mutex<Arc<dyn PitchTarget>>>,
+    target_pitch_contour: Mutex<Vec<Option<Pitch>>>,
+    target: Mutex<Arc<dyn PitchTarget>>,
     default_target: Arc<dyn PitchTarget>,
+}
+
+/// Remote control for a `PitchCorrector` that has been moved into a pipeline.
+#[derive(Clone)]
+pub struct PitchCorrectorControls {
+    state: Arc<PitchCorrectorState>,
 }
 
 impl PitchCorrectorControls {
     pub fn set_shift(&self, interval: Interval) {
-        *self.shift.lock().unwrap() = interval;
+        *self.state.shift.lock().unwrap() = interval;
     }
 
     pub fn get_shift(&self) -> Interval {
-        *self.shift.lock().unwrap()
+        *self.state.shift.lock().unwrap()
     }
 
     pub fn set_scale(&self, scale: Scale) {
-        *self.scale.lock().unwrap() = scale;
+        *self.state.scale.lock().unwrap() = scale;
     }
 
     pub fn get_scale(&self) -> Scale {
-        *self.scale.lock().unwrap()
+        *self.state.scale.lock().unwrap()
     }
 
     pub fn set_contour(&self, contour: Vec<Option<Pitch>>) {
-        *self.target.lock().unwrap() = Arc::new(PitchContour::new(contour));
+        *self.state.target.lock().unwrap() = Arc::new(PitchContour::new(contour));
     }
 
     pub fn clear_contour(&self) {
-        *self.target.lock().unwrap() = self.default_target.clone();
+        *self.state.target.lock().unwrap() = self.state.default_target.clone();
     }
 
     pub fn take_target_pitch_contour(&self) -> Vec<Option<Pitch>> {
-        std::mem::take(&mut *self.target_pitch_contour.lock().unwrap())
+        std::mem::take(&mut *self.state.target_pitch_contour.lock().unwrap())
     }
 
     pub fn clear_target_pitch_contour(&self) {
-        self.target_pitch_contour.lock().unwrap().clear();
+        self.state.target_pitch_contour.lock().unwrap().clear();
     }
 
     pub fn snap_to_scale(&self, freq: f32) -> f32 {
@@ -154,40 +159,41 @@ impl PitchCorrector {
 
     pub fn with_scale(scale: Scale) -> Self {
         let scale = Arc::new(Mutex::new(scale));
-        let snapper = Arc::new(NoteSnapper::new(scale.clone()));
-        Self::with_target(snapper, scale)
+        let snapper: Arc<dyn PitchTarget> = Arc::new(NoteSnapper::new(scale.clone()));
+        let state = Arc::new(PitchCorrectorState {
+            shift: Mutex::new(Interval::UNISON),
+            scale,
+            target_pitch_contour: Mutex::new(Vec::new()),
+            target: Mutex::new(snapper.clone()),
+            default_target: snapper,
+        });
+        Self::with_state(state)
     }
 
-    fn with_target(target: Arc<dyn PitchTarget>, scale: Arc<Mutex<Scale>>) -> Self {
-        let shift = Arc::new(Mutex::new(Interval::UNISON));
-        let target_pitch_contour: Arc<Mutex<Vec<Option<Pitch>>>> = Arc::new(Mutex::new(Vec::new()));
-        let shared_target: Arc<Mutex<Arc<dyn PitchTarget>>> = Arc::new(Mutex::new(target.clone()));
-
-        let shift_clone = shift.clone();
-        let log_clone = target_pitch_contour.clone();
-        let target_clone = shared_target.clone();
+    fn with_state(state: Arc<PitchCorrectorState>) -> Self {
+        let state_clone = state.clone();
         let detector = Mutex::new(YinPitchDetector::new());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
-            let shift_ratio = shift_clone.lock().unwrap().to_ratio();
-            let current_target = target_clone.lock().unwrap().clone();
+            let shift_ratio = state_clone.shift.lock().unwrap().to_ratio();
+            let current_target = state_clone.target.lock().unwrap().clone();
 
             let correction = match detector.lock().unwrap().detect(frame) {
                 Some(freq) => match current_target.target(freq) {
                     Some(pitch) => {
-                        if let Ok(mut log) = log_clone.try_lock() {
+                        if let Ok(mut log) = state_clone.target_pitch_contour.try_lock() {
                             log.push(Some(pitch));
                         }
                         pitch.to_freq() / freq
                     }
                     None => {
-                        if let Ok(mut log) = log_clone.try_lock() {
+                        if let Ok(mut log) = state_clone.target_pitch_contour.try_lock() {
                             log.push(None);
                         }
                         1.0
                     }
                 },
                 None => {
-                    if let Ok(mut log) = log_clone.try_lock() {
+                    if let Ok(mut log) = state_clone.target_pitch_contour.try_lock() {
                         log.push(None);
                     }
                     1.0
@@ -198,25 +204,13 @@ impl PitchCorrector {
         let processor = PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn);
         PitchCorrector {
             processor,
-            controls: PitchCorrectorControls {
-                shift,
-                scale,
-                target_pitch_contour,
-                target: shared_target,
-                default_target: target,
-            },
+            controls: PitchCorrectorControls { state },
         }
     }
 
     /// Extract the controls handle before moving this into a pipeline.
     pub fn controls(&self) -> PitchCorrectorControls {
-        PitchCorrectorControls {
-            shift: self.controls.shift.clone(),
-            scale: self.controls.scale.clone(),
-            target_pitch_contour: self.controls.target_pitch_contour.clone(),
-            target: self.controls.target.clone(),
-            default_target: self.controls.default_target.clone(),
-        }
+        self.controls.clone()
     }
 }
 
