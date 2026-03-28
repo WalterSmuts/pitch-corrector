@@ -95,7 +95,6 @@ pub struct PitchCorrectorControls {
     scale: Arc<Mutex<Scale>>,
     target_pitch_contour: Mutex<Vec<Option<Pitch>>>,
     target: Mutex<Arc<dyn PitchTarget>>,
-    default_target: Arc<dyn PitchTarget>,
 }
 
 impl PitchCorrectorControls {
@@ -120,7 +119,7 @@ impl PitchCorrectorControls {
     }
 
     pub fn clear_contour(&self) {
-        *self.target.lock().unwrap() = self.default_target.clone();
+        *self.target.lock().unwrap() = Arc::new(NoteSnapper::new(self.scale.clone()));
     }
 
     pub fn take_target_pitch_contour(&self) -> Vec<Option<Pitch>> {
@@ -159,8 +158,7 @@ impl PitchCorrector {
             shift: Mutex::new(Interval::UNISON),
             scale,
             target_pitch_contour: Mutex::new(Vec::new()),
-            target: Mutex::new(snapper.clone()),
-            default_target: snapper,
+            target: Mutex::new(snapper),
         });
 
         let controls_clone = controls.clone();
