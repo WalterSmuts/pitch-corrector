@@ -584,6 +584,16 @@ fn draw_contour(
         }
     }
 
+    // Persistent note labels — redraw every frame over the left margin
+    ctx.set_fill_style_str("rgb(10,10,20)");
+    ctx.fill_rect(0.0, 0.0, 30.0, height as f64);
+    for (semitone, name) in note_names.iter().enumerate() {
+        let y = height * (1.0 - semitone as f32 / 12.0);
+        ctx.set_fill_style_str("rgba(255,255,255,0.7)");
+        ctx.set_font("11px monospace");
+        let _ = ctx.fill_text(name, 4.0, (y - 3.0) as f64);
+    }
+
     // Detected pitch wrapped to one octave
     if let Some(freq) = pitch {
         let semitone_in_octave = Pitch::from_freq(freq).note as u8 as f32;
