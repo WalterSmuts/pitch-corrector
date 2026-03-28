@@ -4,11 +4,11 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-/// Strategy for choosing a target frequency given the detected pitch.
+/// Strategy for choosing a target pitch given the detected pitch.
 trait PitchTarget: Send + Sync {
-    /// Given the detected frequency, return the target frequency.
+    /// Given the detected frequency, return the target pitch.
     /// Return `None` to leave pitch unchanged.
-    fn target(&self, detected_freq: f32) -> Option<f32>;
+    fn target(&self, detected_freq: f32) -> Option<Pitch>;
 }
 
 /// Snaps detected pitch to the nearest note in a scale, with hysteresis.
@@ -31,37 +31,35 @@ impl NoteSnapper {
 }
 
 impl PitchTarget for NoteSnapper {
-    fn target(&self, detected_freq: f32) -> Option<f32> {
+    fn target(&self, detected_freq: f32) -> Option<Pitch> {
         let current = *self.scale.lock().unwrap();
         if current.is_empty() {
             return None;
         }
 
         let target = current.nearest_pitch(detected_freq);
-        let target_freq = target.to_freq();
 
         // Schmitt trigger: only switch note if detected pitch has
         // crossed more than half a semitone past the previous target
         let mut prev = self.prev_target.lock().unwrap();
-        let final_freq = if let Some(p) = *prev {
-            let prev_freq = p.to_freq();
+        let result = if let Some(p) = *prev {
             if target != p {
-                let dist = (12.0 * (detected_freq / prev_freq).log2()).abs();
+                let dist = (12.0 * (detected_freq / p.to_freq()).log2()).abs();
                 if dist < 0.5 {
-                    prev_freq
+                    p
                 } else {
                     *prev = Some(target);
-                    target_freq
+                    target
                 }
             } else {
-                target_freq
+                target
             }
         } else {
             *prev = Some(target);
-            target_freq
+            target
         };
 
-        Some(final_freq)
+        Some(result)
     }
 }
 
@@ -83,13 +81,13 @@ impl PitchContour {
 }
 
 impl PitchTarget for PitchContour {
-    fn target(&self, _detected_freq: f32) -> Option<f32> {
+    fn target(&self, _detected_freq: f32) -> Option<Pitch> {
         if self.contour.is_empty() {
             return None;
         }
         let hop = self.hop_count.fetch_add(1, Ordering::Relaxed) as usize;
         let idx = hop.min(self.contour.len() - 1);
-        self.contour[idx].map(|p| p.to_freq())
+        self.contour[idx]
     }
 }
 
@@ -182,11 +180,11 @@ impl PitchCorrector {
 
             let correction = match detector.lock().unwrap().detect(frame) {
                 Some(freq) => match current_target.target(freq) {
-                    Some(t) => {
+                    Some(pitch) => {
                         if let Ok(mut log) = log_clone.try_lock() {
-                            log.push(Some(Pitch::from_freq(t)));
+                            log.push(Some(pitch));
                         }
-                        t / freq
+                        pitch.to_freq() / freq
                     }
                     None => {
                         if let Ok(mut log) = log_clone.try_lock() {
