@@ -32,34 +32,25 @@ struct DrawState {
     input_detector: YinPitchDetector,
 }
 
-struct PlaybackState {
-    sweep_active: AtomicBool,
-    input_active: AtomicBool,
-    recording: Mutex<Vec<f32>>,
-    playback_pos: AtomicU32,
-    playing: AtomicBool,
-}
-
-#[wasm_bindgen]
-pub struct WebPitchCorrector {
-    input_stream: cpal::Stream,
-    output_stream: cpal::Stream,
+/// Audio processing pipeline, independent of audio I/O.
+pub struct Pipeline {
     processor: Arc<dyn StreamProcessor + Send + Sync>,
     spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
     contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
     input_contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     controls: Arc<PitchCorrectorControls>,
-    playback: Arc<PlaybackState>,
     draw_state: Mutex<DrawState>,
 }
 
-#[wasm_bindgen]
-impl WebPitchCorrector {
-    #[wasm_bindgen(constructor)]
-    pub fn new() -> Result<WebPitchCorrector, JsValue> {
-        console_log::init_with_level(log::Level::Info).ok();
+impl Default for Pipeline {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
+impl Pipeline {
+    pub fn new() -> Self {
         let spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
         let spectrogram_buffer = spectrogram_display.clone_display_buffer();
 
@@ -75,7 +66,6 @@ impl WebPitchCorrector {
         let corrector = PitchCorrector::new();
         let controls = corrector.controls();
 
-        // Pipeline: input_contour -> input_spectrogram -> corrector -> contour -> spectrogram
         let processor: Arc<dyn StreamProcessor + Send + Sync> = Arc::new(compose(
             input_contour_display,
             compose(
@@ -83,8 +73,69 @@ impl WebPitchCorrector {
                 compose(corrector, compose(contour_display, spectrogram_display)),
             ),
         ));
-        let input_processor = processor.clone();
-        let output_processor = processor.clone();
+
+        let spec_scratch = vec![0.0f32; SPECTROGRAM_SIZE];
+        let spec_spectrum = spec_scratch.real_fft();
+
+        Pipeline {
+            processor,
+            spectrogram_buffer,
+            contour_buffer,
+            input_spectrogram_buffer,
+            input_contour_buffer,
+            controls,
+            draw_state: Mutex::new(DrawState {
+                spec_scratch,
+                spec_spectrum,
+                contour_scratch: vec![0.0f32; CONTOUR_SIZE],
+                output_detector: YinPitchDetector::new(),
+                input_detector: YinPitchDetector::new(),
+            }),
+        }
+    }
+
+    pub fn processor(&self) -> &Arc<dyn StreamProcessor + Send + Sync> {
+        &self.processor
+    }
+
+    pub fn controls(&self) -> &Arc<PitchCorrectorControls> {
+        &self.controls
+    }
+
+    /// Push samples through the pipeline without audio I/O.
+    pub fn push_samples(&self, samples: &[f32]) {
+        for &s in samples {
+            self.processor.push_sample(s);
+            while self.processor.pop_sample().is_some() {}
+        }
+    }
+}
+
+struct PlaybackState {
+    sweep_active: AtomicBool,
+    input_active: AtomicBool,
+    recording: Mutex<Vec<f32>>,
+    playback_pos: AtomicU32,
+    playing: AtomicBool,
+}
+
+#[wasm_bindgen]
+pub struct WebPitchCorrector {
+    input_stream: cpal::Stream,
+    output_stream: cpal::Stream,
+    pipeline: Pipeline,
+    playback: Arc<PlaybackState>,
+}
+
+#[wasm_bindgen]
+impl WebPitchCorrector {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Result<WebPitchCorrector, JsValue> {
+        console_log::init_with_level(log::Level::Info).ok();
+
+        let pipeline = Pipeline::new();
+        let input_processor = pipeline.processor().clone();
+        let output_processor = pipeline.processor().clone();
 
         let host = cpal::default_host();
 
@@ -206,24 +257,8 @@ impl WebPitchCorrector {
         Ok(WebPitchCorrector {
             input_stream,
             output_stream,
-            processor,
-            spectrogram_buffer,
-            contour_buffer,
-            input_spectrogram_buffer,
-            input_contour_buffer,
-            controls,
+            pipeline,
             playback,
-            draw_state: Mutex::new({
-                let spec_scratch = vec![0.0f32; SPECTROGRAM_SIZE];
-                let spec_spectrum = spec_scratch.real_fft();
-                DrawState {
-                    spec_scratch,
-                    spec_spectrum,
-                    contour_scratch: vec![0.0f32; CONTOUR_SIZE],
-                    output_detector: YinPitchDetector::new(),
-                    input_detector: YinPitchDetector::new(),
-                }
-            }),
         })
     }
 
@@ -231,17 +266,20 @@ impl WebPitchCorrector {
         let s = semitones.round() as i32;
         let octaves = s.div_euclid(12) as i8;
         let simple = SimpleInterval::ALL[s.rem_euclid(12) as usize];
-        self.controls.set_shift(Interval::compound(simple, octaves));
+        self.pipeline
+            .controls
+            .set_shift(Interval::compound(simple, octaves));
     }
 
     pub fn get_shift(&self) -> f32 {
-        self.controls.get_shift().semitones() as f32
+        self.pipeline.controls.get_shift().semitones() as f32
     }
 
     /// Returns the recorded target pitch contour (one entry per phase vocoder hop)
     /// and clears it.
     pub fn take_target_pitch_contour(&self) -> Vec<f32> {
-        self.controls
+        self.pipeline
+            .controls
             .take_target_pitch_contour()
             .iter()
             .map(|p| p.map_or(0.0, |p| p.to_freq()))
@@ -249,15 +287,15 @@ impl WebPitchCorrector {
     }
 
     pub fn clear_target_pitch_contour(&self) {
-        self.controls.clear_target_pitch_contour();
+        self.pipeline.controls.clear_target_pitch_contour();
     }
 
     pub fn set_scale(&self, bits: u16) {
-        self.controls.set_scale(Scale::from_bits(bits));
+        self.pipeline.controls.set_scale(Scale::from_bits(bits));
     }
 
     pub fn get_scale(&self) -> u16 {
-        self.controls.get_scale().bits()
+        self.pipeline.controls.get_scale().bits()
     }
 
     pub fn stop(&self) {
@@ -280,13 +318,8 @@ impl WebPitchCorrector {
         self.playback.input_active.store(false, Ordering::Relaxed);
     }
 
-    /// Push samples through the pipeline without audio I/O.
-    /// Populates the display buffers so draw functions work.
     pub fn process_offline(&self, samples: &[f32]) {
-        for &s in samples {
-            self.processor.push_sample(s);
-            while self.processor.pop_sample().is_some() {}
-        }
+        self.pipeline.push_samples(samples);
     }
 
     pub fn play_recording(&self) -> Result<(), JsValue> {
@@ -355,29 +388,34 @@ impl WebPitchCorrector {
                 }
             })
             .collect();
-        self.controls.set_contour(pitches);
+        self.pipeline.controls.set_contour(pitches);
     }
 
     /// Restore the default NoteSnapper target.
     pub fn clear_contour(&self) {
-        self.controls.clear_contour();
+        self.pipeline.controls.clear_contour();
     }
 
     pub fn draw_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        let mut ds = self.draw_state.lock().unwrap();
-        draw_spectrogram_from(canvas, column_x, &self.spectrogram_buffer, &mut ds);
+        let mut ds = self.pipeline.draw_state.lock().unwrap();
+        draw_spectrogram_from(canvas, column_x, &self.pipeline.spectrogram_buffer, &mut ds);
     }
 
     pub fn draw_input_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        let mut ds = self.draw_state.lock().unwrap();
-        draw_spectrogram_from(canvas, column_x, &self.input_spectrogram_buffer, &mut ds);
+        let mut ds = self.pipeline.draw_state.lock().unwrap();
+        draw_spectrogram_from(
+            canvas,
+            column_x,
+            &self.pipeline.input_spectrogram_buffer,
+            &mut ds,
+        );
     }
     pub fn draw_pitch_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        let ds = &mut *self.draw_state.lock().unwrap();
+        let ds = &mut *self.pipeline.draw_state.lock().unwrap();
         draw_contour(
             canvas,
             column_x,
-            &self.contour_buffer,
+            &self.pipeline.contour_buffer,
             "rgb(50,255,120)",
             &mut ds.output_detector,
             &mut ds.contour_scratch,
@@ -385,11 +423,11 @@ impl WebPitchCorrector {
     }
 
     pub fn draw_input_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        let ds = &mut *self.draw_state.lock().unwrap();
+        let ds = &mut *self.pipeline.draw_state.lock().unwrap();
         draw_contour(
             canvas,
             column_x,
-            &self.input_contour_buffer,
+            &self.pipeline.input_contour_buffer,
             "rgb(255,150,50)",
             &mut ds.input_detector,
             &mut ds.contour_scratch,
@@ -400,7 +438,7 @@ impl WebPitchCorrector {
         draw_waveform_from(
             canvas,
             column_x,
-            &self.spectrogram_buffer,
+            &self.pipeline.spectrogram_buffer,
             "rgb(50,255,120)",
         );
     }
@@ -409,7 +447,7 @@ impl WebPitchCorrector {
         draw_waveform_from(
             canvas,
             column_x,
-            &self.input_spectrogram_buffer,
+            &self.pipeline.input_spectrogram_buffer,
             "rgb(255,150,50)",
         );
     }
