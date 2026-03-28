@@ -14,14 +14,14 @@ trait PitchTarget: Send + Sync {
 /// Snaps detected pitch to the nearest note in a scale, with hysteresis.
 struct NoteSnapper {
     scale: Arc<Mutex<Scale>>,
-    prev_target: AtomicU32,
+    prev_target: Mutex<Option<Pitch>>,
 }
 
 impl NoteSnapper {
     fn new(scale: Scale) -> Self {
         Self {
             scale: Arc::new(Mutex::new(scale)),
-            prev_target: AtomicU32::new(0.0f32.to_bits()),
+            prev_target: Mutex::new(None),
         }
     }
 
@@ -37,25 +37,31 @@ impl PitchTarget for NoteSnapper {
             return None;
         }
 
-        let target = current.nearest_pitch(detected_freq).to_freq();
+        let target = current.nearest_pitch(detected_freq);
+        let target_freq = target.to_freq();
 
         // Schmitt trigger: only switch note if detected pitch has
         // crossed more than half a semitone past the previous target
-        let prev = f32::from_bits(self.prev_target.load(Ordering::Relaxed));
-        let final_target = if prev > 0.0 && target != prev {
-            let dist_from_prev = (12.0 * (detected_freq / prev).log2()).abs();
-            if dist_from_prev < 0.5 {
-                prev
+        let mut prev = self.prev_target.lock().unwrap();
+        let final_freq = if let Some(p) = *prev {
+            let prev_freq = p.to_freq();
+            if target != p {
+                let dist = (12.0 * (detected_freq / prev_freq).log2()).abs();
+                if dist < 0.5 {
+                    prev_freq
+                } else {
+                    *prev = Some(target);
+                    target_freq
+                }
             } else {
-                self.prev_target.store(target.to_bits(), Ordering::Relaxed);
-                target
+                target_freq
             }
         } else {
-            self.prev_target.store(target.to_bits(), Ordering::Relaxed);
-            target
+            *prev = Some(target);
+            target_freq
         };
 
-        Some(final_target)
+        Some(final_freq)
     }
 }
 
