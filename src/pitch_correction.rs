@@ -1,4 +1,4 @@
-use crate::music::{Interval, Note, Scale};
+use crate::music::{Interval, Note, Pitch, Scale};
 use crate::signal_processing::{PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector};
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -61,14 +61,14 @@ impl PitchTarget for NoteSnapper {
 
 /// Follows a pre-defined sequence of target frequencies indexed by hop.
 struct PitchContour {
-    /// Target frequency per hop (0.0 = no target / passthrough).
-    contour: Vec<f32>,
+    /// Target pitch per hop (`None` = passthrough).
+    contour: Vec<Option<Pitch>>,
     /// Counts ratio_fn invocations (one per phase vocoder hop).
     hop_count: AtomicU32,
 }
 
 impl PitchContour {
-    fn new(contour: Vec<f32>) -> Self {
+    fn new(contour: Vec<Option<Pitch>>) -> Self {
         Self {
             contour,
             hop_count: AtomicU32::new(0),
@@ -83,12 +83,7 @@ impl PitchTarget for PitchContour {
         }
         let hop = self.hop_count.fetch_add(1, Ordering::Relaxed) as usize;
         let idx = hop.min(self.contour.len() - 1);
-        let freq = self.contour[idx];
-        if freq > 0.0 {
-            Some(freq)
-        } else {
-            None
-        }
+        self.contour[idx].map(|p| p.to_freq())
     }
 }
 
@@ -123,7 +118,7 @@ impl PitchCorrectorControls {
         *self.scale.lock().unwrap()
     }
 
-    pub fn set_contour(&self, contour: Vec<f32>) {
+    pub fn set_contour(&self, contour: Vec<Option<Pitch>>) {
         *self.target.lock().unwrap() = Arc::new(PitchContour::new(contour));
     }
 

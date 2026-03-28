@@ -1,4 +1,4 @@
-use crate::music::{Interval, Note, Scale, SimpleInterval};
+use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::pitch_correction::{PitchCorrector, PitchCorrectorControls};
 use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -321,7 +321,17 @@ impl WebPitchCorrector {
 
     /// Set a pitch contour as the active target for playback.
     pub fn set_contour(&self, contour: &[f32]) {
-        self.controls.set_contour(contour.to_vec());
+        let pitches = contour
+            .iter()
+            .map(|&f| {
+                if f > 0.0 {
+                    Some(Pitch::from_freq(f))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        self.controls.set_contour(pitches);
     }
 
     /// Restore the default NoteSnapper target.
