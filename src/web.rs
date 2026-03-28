@@ -237,14 +237,18 @@ impl WebPitchCorrector {
         self.controls.get_shift().semitones() as f32
     }
 
-    /// Returns the recorded target contour (one entry per phase vocoder hop)
-    /// and clears the log.
-    pub fn take_target_contour(&self) -> Vec<f32> {
-        self.controls.take_target_log()
+    /// Returns the recorded target pitch contour (one entry per phase vocoder hop)
+    /// and clears it.
+    pub fn take_target_pitch_contour(&self) -> Vec<f32> {
+        self.controls
+            .take_target_pitch_contour()
+            .iter()
+            .map(|p| p.map_or(0.0, |p| p.to_freq()))
+            .collect()
     }
 
-    pub fn clear_target_log(&self) {
-        self.controls.clear_target_log();
+    pub fn clear_target_pitch_contour(&self) {
+        self.controls.clear_target_pitch_contour();
     }
 
     pub fn set_scale(&self, bits: u16) {

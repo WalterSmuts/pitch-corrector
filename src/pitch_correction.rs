@@ -93,7 +93,7 @@ type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 pub struct PitchCorrectorControls {
     shift: Arc<AtomicI32>,
     scale: Arc<Mutex<Scale>>,
-    target_log: Arc<Mutex<Vec<f32>>>,
+    target_pitch_contour: Arc<Mutex<Vec<Option<Pitch>>>>,
     target: Arc<Mutex<Arc<dyn PitchTarget>>>,
     default_target: Arc<dyn PitchTarget>,
 }
@@ -126,12 +126,12 @@ impl PitchCorrectorControls {
         *self.target.lock().unwrap() = self.default_target.clone();
     }
 
-    pub fn take_target_log(&self) -> Vec<f32> {
-        std::mem::take(&mut *self.target_log.lock().unwrap())
+    pub fn take_target_pitch_contour(&self) -> Vec<Option<Pitch>> {
+        std::mem::take(&mut *self.target_pitch_contour.lock().unwrap())
     }
 
-    pub fn clear_target_log(&self) {
-        self.target_log.lock().unwrap().clear();
+    pub fn clear_target_pitch_contour(&self) {
+        self.target_pitch_contour.lock().unwrap().clear();
     }
 
     pub fn snap_to_scale(&self, freq: f32) -> f32 {
@@ -166,11 +166,11 @@ impl PitchCorrector {
     fn with_target(target: Arc<dyn PitchTarget>) -> Self {
         let shift = Arc::new(AtomicI32::new(0));
         let scale = Arc::new(Mutex::new(Scale::empty()));
-        let target_log: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
+        let target_pitch_contour: Arc<Mutex<Vec<Option<Pitch>>>> = Arc::new(Mutex::new(Vec::new()));
         let shared_target: Arc<Mutex<Arc<dyn PitchTarget>>> = Arc::new(Mutex::new(target.clone()));
 
         let shift_clone = shift.clone();
-        let log_clone = target_log.clone();
+        let log_clone = target_pitch_contour.clone();
         let target_clone = shared_target.clone();
         let detector = Mutex::new(YinPitchDetector::new());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
@@ -182,20 +182,20 @@ impl PitchCorrector {
                 Some(freq) => match current_target.target(freq) {
                     Some(t) => {
                         if let Ok(mut log) = log_clone.try_lock() {
-                            log.push(t);
+                            log.push(Some(Pitch::from_freq(t)));
                         }
                         t / freq
                     }
                     None => {
                         if let Ok(mut log) = log_clone.try_lock() {
-                            log.push(0.0);
+                            log.push(None);
                         }
                         1.0
                     }
                 },
                 None => {
                     if let Ok(mut log) = log_clone.try_lock() {
-                        log.push(0.0);
+                        log.push(None);
                     }
                     1.0
                 }
@@ -208,7 +208,7 @@ impl PitchCorrector {
             controls: PitchCorrectorControls {
                 shift,
                 scale,
-                target_log,
+                target_pitch_contour,
                 target: shared_target,
                 default_target: target,
             },
@@ -220,7 +220,7 @@ impl PitchCorrector {
         PitchCorrectorControls {
             shift: self.controls.shift.clone(),
             scale: self.controls.scale.clone(),
-            target_log: self.controls.target_log.clone(),
+            target_pitch_contour: self.controls.target_pitch_contour.clone(),
             target: self.controls.target.clone(),
             default_target: self.controls.default_target.clone(),
         }

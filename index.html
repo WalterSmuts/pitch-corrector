@@ -279,7 +279,7 @@
                 postCorrectionActive = false;
                 document.getElementById('post-correction-cb').checked = false;
                 contourSnapshot = null;
-                corrector.clear_target_log();
+                corrector.clear_target_pitch_contour();
 
                 setState('recording');
 
@@ -419,7 +419,7 @@
         els.stopBtn.addEventListener('click', () => {
             if (state === 'recording') {
                 if (corrector && corrector.recording_len() > 0) {
-                    targetContour = Array.from(corrector.take_target_contour());
+                    targetContour = Array.from(corrector.take_target_pitch_contour());
                     setState('stopped');
                 } else {
                     setState('idle');
