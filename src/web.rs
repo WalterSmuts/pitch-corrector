@@ -1,4 +1,4 @@
-use crate::music::{Note, Scale};
+use crate::music::{Interval, Note, Scale, SimpleInterval};
 use crate::pitch_correction::{PitchCorrector, PitchCorrectorControls};
 use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -227,11 +227,14 @@ impl WebPitchCorrector {
     }
 
     pub fn set_shift(&self, semitones: f32) {
-        self.controls.set_shift(semitones);
+        let s = semitones.round() as i32;
+        let octaves = s.div_euclid(12) as i8;
+        let simple = SimpleInterval::ALL[s.rem_euclid(12) as usize];
+        self.controls.set_shift(Interval::compound(simple, octaves));
     }
 
     pub fn get_shift(&self) -> f32 {
-        self.controls.get_shift()
+        self.controls.get_shift().semitones() as f32
     }
 
     /// Returns the recorded target contour (one entry per phase vocoder hop)
@@ -482,7 +485,7 @@ fn draw_contour(
     let note_names = [
         "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
     ];
-    for semitone in 0..12 {
+    for (semitone, name) in note_names.iter().enumerate() {
         let y = height * (1.0 - semitone as f32 / 12.0);
         // Item 5: pre-computed alpha strings
         let alpha_str = if semitone == 0 || semitone == 4 || semitone == 7 {
@@ -499,7 +502,7 @@ fn draw_contour(
         if column_x < 2.0 {
             ctx.set_fill_style_str("rgba(255,255,255,0.5)");
             ctx.set_font("10px monospace");
-            let _ = ctx.fill_text(note_names[semitone], 4.0, (y - 3.0) as f64);
+            let _ = ctx.fill_text(name, 4.0, (y - 3.0) as f64);
         }
     }
 

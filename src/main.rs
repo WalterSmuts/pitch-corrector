@@ -2,6 +2,7 @@ use clap::Parser;
 use cpal::Stream;
 use pitch_corrector::display::UserInterface;
 use pitch_corrector::hardware;
+use pitch_corrector::music::{Interval, SimpleInterval};
 use pitch_corrector::pitch_correction;
 use pitch_corrector::signal_processing::pipeline;
 use pitch_corrector::signal_processing::FrequencyDomainPitchShifter;
@@ -147,14 +148,14 @@ fn main() {
 
             let update_status = {
                 let status = status.clone();
-                move |scale_name: &str, semitones: f32| {
+                move |scale_name: &str, shift: Interval| {
                     *status.lock().unwrap() = format!(
-                        " Scale: {} | Shift: {:.0} semitones | [S]cale [Up/Down]shift [0]reset [L]ogger",
-                        scale_name, semitones
+                        " Scale: {} | Shift: {} semitones | [S]cale [Up/Down]shift [0]reset [L]ogger",
+                        scale_name, shift.semitones()
                     );
                 }
             };
-            update_status(scale_presets[scale_idx].0, 0.0);
+            update_status(scale_presets[scale_idx].0, Interval::UNISON);
 
             log_panics::init();
             user_inferface.run_with_key_handler(move |key| {
@@ -162,14 +163,20 @@ fn main() {
 
                 match key {
                     KeyCode::Up => {
-                        let s = controls.get_shift() + 1.0;
-                        controls.set_shift(s);
-                        update_status(scale_presets[scale_idx].0, s);
+                        let s = controls.get_shift().semitones() + 1;
+                        let octaves = s.div_euclid(12) as i8;
+                        let simple = SimpleInterval::ALL[s.rem_euclid(12) as usize];
+                        let interval = Interval::compound(simple, octaves);
+                        controls.set_shift(interval);
+                        update_status(scale_presets[scale_idx].0, interval);
                     }
                     KeyCode::Down => {
-                        let s = controls.get_shift() - 1.0;
-                        controls.set_shift(s);
-                        update_status(scale_presets[scale_idx].0, s);
+                        let s = controls.get_shift().semitones() - 1;
+                        let octaves = s.div_euclid(12) as i8;
+                        let simple = SimpleInterval::ALL[s.rem_euclid(12) as usize];
+                        let interval = Interval::compound(simple, octaves);
+                        controls.set_shift(interval);
+                        update_status(scale_presets[scale_idx].0, interval);
                     }
                     KeyCode::Char('s') => {
                         scale_idx = (scale_idx + 1) % scale_presets.len();
@@ -177,8 +184,8 @@ fn main() {
                         update_status(scale_presets[scale_idx].0, controls.get_shift());
                     }
                     KeyCode::Char('0') => {
-                        controls.set_shift(0.0);
-                        update_status(scale_presets[scale_idx].0, 0.0);
+                        controls.set_shift(Interval::UNISON);
+                        update_status(scale_presets[scale_idx].0, Interval::UNISON);
                     }
                     _ => {}
                 }

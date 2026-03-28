@@ -1,6 +1,6 @@
-use crate::music::{Note, Scale};
+use crate::music::{Interval, Note, Scale};
 use crate::signal_processing::{PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -96,7 +96,7 @@ type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 
 /// Remote control for a `PitchCorrector` that has been moved into a pipeline.
 pub struct PitchCorrectorControls {
-    shift_semitones: Arc<AtomicU32>,
+    shift: Arc<AtomicI32>,
     scale: Arc<Mutex<Scale>>,
     target_log: Arc<Mutex<Vec<f32>>>,
     target: Arc<Mutex<Arc<dyn PitchTarget>>>,
@@ -104,13 +104,15 @@ pub struct PitchCorrectorControls {
 }
 
 impl PitchCorrectorControls {
-    pub fn set_shift(&self, semitones: f32) {
-        self.shift_semitones
-            .store(semitones.to_bits(), Ordering::Relaxed);
+    pub fn set_shift(&self, interval: Interval) {
+        self.shift.store(interval.semitones(), Ordering::Relaxed);
     }
 
-    pub fn get_shift(&self) -> f32 {
-        f32::from_bits(self.shift_semitones.load(Ordering::Relaxed))
+    pub fn get_shift(&self) -> Interval {
+        let semitones = self.shift.load(Ordering::Relaxed);
+        let octaves = semitones.div_euclid(12) as i8;
+        let simple = semitones.rem_euclid(12) as u8;
+        Interval::compound(crate::music::SimpleInterval::ALL[simple as usize], octaves)
     }
 
     pub fn set_scale(&self, scale: Scale) {
@@ -167,7 +169,7 @@ impl PitchCorrector {
     }
 
     fn with_target(target: Arc<dyn PitchTarget>) -> Self {
-        let shift = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let shift = Arc::new(AtomicI32::new(0));
         let scale = Arc::new(Mutex::new(Scale::empty()));
         let target_log: Arc<Mutex<Vec<f32>>> = Arc::new(Mutex::new(Vec::new()));
         let shared_target: Arc<Mutex<Arc<dyn PitchTarget>>> = Arc::new(Mutex::new(target.clone()));
@@ -177,7 +179,7 @@ impl PitchCorrector {
         let target_clone = shared_target.clone();
         let detector = Mutex::new(YinPitchDetector::new());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
-            let semitones = f32::from_bits(shift_clone.load(Ordering::Relaxed));
+            let semitones = shift_clone.load(Ordering::Relaxed) as f32;
             let shift_ratio = (2.0f32).powf(semitones / 12.0);
             let current_target = target_clone.lock().unwrap().clone();
 
@@ -209,7 +211,7 @@ impl PitchCorrector {
         PitchCorrector {
             processor,
             controls: PitchCorrectorControls {
-                shift_semitones: shift,
+                shift,
                 scale,
                 target_log,
                 target: shared_target,
@@ -221,7 +223,7 @@ impl PitchCorrector {
     /// Extract the controls handle before moving this into a pipeline.
     pub fn controls(&self) -> PitchCorrectorControls {
         PitchCorrectorControls {
-            shift_semitones: self.controls.shift_semitones.clone(),
+            shift: self.controls.shift.clone(),
             scale: self.controls.scale.clone(),
             target_log: self.controls.target_log.clone(),
             target: self.controls.target.clone(),

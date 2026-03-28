@@ -227,11 +227,28 @@ pub enum SimpleInterval {
     MajorSeventh = 11,
 }
 
-/// A musical interval: a simple interval plus zero or more octaves.
+impl SimpleInterval {
+    pub const ALL: [SimpleInterval; 12] = [
+        SimpleInterval::Unison,
+        SimpleInterval::MinorSecond,
+        SimpleInterval::MajorSecond,
+        SimpleInterval::MinorThird,
+        SimpleInterval::MajorThird,
+        SimpleInterval::PerfectFourth,
+        SimpleInterval::Tritone,
+        SimpleInterval::PerfectFifth,
+        SimpleInterval::MinorSixth,
+        SimpleInterval::MajorSixth,
+        SimpleInterval::MinorSeventh,
+        SimpleInterval::MajorSeventh,
+    ];
+}
+
+/// A musical interval: a simple interval plus signed octave offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Interval {
     pub simple: SimpleInterval,
-    pub octaves: u8,
+    pub octaves: i8,
 }
 
 impl Interval {
@@ -259,7 +276,7 @@ impl Interval {
         }
     }
 
-    pub const fn compound(simple: SimpleInterval, octaves: u8) -> Self {
+    pub const fn compound(simple: SimpleInterval, octaves: i8) -> Self {
         Self { simple, octaves }
     }
 
@@ -269,6 +286,13 @@ impl Interval {
 
     pub fn to_ratio(self) -> f32 {
         (2.0f32).powf(self.semitones() as f32 / 12.0)
+    }
+
+    pub fn negate(self) -> Self {
+        Self {
+            simple: self.simple,
+            octaves: -self.octaves - if self.simple as u8 > 0 { 1 } else { 0 },
+        }
     }
 }
 
