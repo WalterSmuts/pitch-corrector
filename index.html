@@ -496,8 +496,9 @@
 
         function freqToContourY(freq, height) {
             if (freq <= 0) return -1;
-            const semitones = 12.0 * Math.log2(freq / 16.3516);
-            const inOctave = ((semitones % 12) + 12) % 12;
+            const semitones = 57.0 + 12.0 * Math.log2(freq / 440.0);
+            const note = Math.round(semitones) % 12;
+            const inOctave = ((note % 12) + 12) % 12;
             return height * (1.0 - inOctave / 12.0);
         }
 
@@ -567,9 +568,9 @@
             if (refFreq <= 0) return;
 
             const semitoneInOctave = contourYToSemitoneInOctave(clickY, canvas.height);
-            const refSemitones = 12.0 * Math.log2(refFreq / 16.3516);
+            const refSemitones = 57.0 + 12.0 * Math.log2(refFreq / 440.0);
             const refOctave = Math.floor(refSemitones / 12.0);
-            const newFreq = 16.3516 * Math.pow(2, (refOctave * 12.0 + semitoneInOctave) / 12.0);
+            const newFreq = 440.0 * Math.pow(2, (refOctave * 12.0 + semitoneInOctave - 57.0) / 12.0);
 
             const noteBits = corrector.get_scale();
             const snapped = noteBits > 0 ? WebPitchCorrector.snap_to_scale(newFreq, noteBits) : newFreq;
