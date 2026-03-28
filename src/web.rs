@@ -180,7 +180,10 @@ impl WebPitchCorrector {
                             f32::from_bits(sweep_counter_clone.load(Ordering::Relaxed));
                         let mut phase = f32::from_bits(sweep_phase_clone.load(Ordering::Relaxed));
                         for _ in data {
-                            let freq = 200.0 - (counter / 480000.0) * 150.0;
+                            // Sine sweep in pitch space: 50Hz–200Hz smoothly
+                            let t = counter / 960000.0;
+                            let sine = 0.5 - 0.5 * (std::f32::consts::TAU * t).cos();
+                            let freq = 50.0 * (200.0f32 / 50.0).powf(sine);
                             phase += freq / 48000.0;
                             phase -= phase.floor();
                             let sample = (phase * std::f32::consts::TAU).sin() * 0.5;
@@ -189,9 +192,6 @@ impl WebPitchCorrector {
                                 rec.push(sample);
                             }
                             counter += 1.0;
-                            if counter >= 480000.0 {
-                                counter = 0.0;
-                            }
                         }
                         sweep_counter_clone.store(counter.to_bits(), Ordering::Relaxed);
                         sweep_phase_clone.store(phase.to_bits(), Ordering::Relaxed);
