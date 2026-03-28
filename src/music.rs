@@ -1,5 +1,7 @@
-/// Frequency of C0 in Hz.
-const C0_FREQ: f32 = 16.3516;
+/// A4 concert pitch in Hz.
+const A4_FREQ: f32 = 440.0;
+/// A4 is 57 semitones above C0.
+const A4_SEMITONES: f32 = 4.0 * 12.0 + 9.0;
 
 /// A pitch class (note name without octave).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -58,11 +60,11 @@ impl Pitch {
     }
 
     pub fn to_freq(self) -> f32 {
-        C0_FREQ * (2.0f32).powf(self.semitones_from_c0() / 12.0)
+        A4_FREQ * (2.0f32).powf((self.semitones_from_c0() - A4_SEMITONES) / 12.0)
     }
 
     pub fn from_freq(freq: f32) -> Self {
-        let semitones = 12.0 * (freq / C0_FREQ).log2();
+        let semitones = A4_SEMITONES + 12.0 * (freq / A4_FREQ).log2();
         let rounded = semitones.round() as i32;
         let octave = rounded.div_euclid(12) as i8;
         let note_idx = rounded.rem_euclid(12) as u8;
@@ -159,7 +161,7 @@ impl Scale {
     /// Snap a frequency to the nearest note in this scale.
     /// Returns the nearest chromatic pitch if the scale is empty.
     pub fn nearest_pitch(self, freq: f32) -> Pitch {
-        let semitones_from_c0 = 12.0 * (freq / C0_FREQ).log2();
+        let semitones_from_c0 = A4_SEMITONES + 12.0 * (freq / A4_FREQ).log2();
         let octave = (semitones_from_c0 / 12.0).floor();
         let semitone_in_octave = semitones_from_c0 - octave * 12.0;
 
