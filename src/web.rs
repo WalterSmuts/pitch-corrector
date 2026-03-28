@@ -566,7 +566,6 @@ fn draw_contour(
     ];
     for (semitone, name) in note_names.iter().enumerate() {
         let y = height * (1.0 - semitone as f32 / 12.0);
-        // Item 5: pre-computed alpha strings
         let alpha_str = if semitone == 0 || semitone == 4 || semitone == 7 {
             GRID_ALPHA_STRONG
         } else {
@@ -579,8 +578,8 @@ fn draw_contour(
         ctx.stroke();
 
         if column_x < 2.0 {
-            ctx.set_fill_style_str("rgba(255,255,255,0.5)");
-            ctx.set_font("10px monospace");
+            ctx.set_fill_style_str("rgba(255,255,255,0.7)");
+            ctx.set_font("11px monospace");
             let _ = ctx.fill_text(name, 4.0, (y - 3.0) as f64);
         }
     }
