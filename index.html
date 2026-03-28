@@ -502,13 +502,28 @@
                 return;
             }
             corrector.load_recording(samples);
+            corrector.process_offline(samples);
             targetContour = [];
             editedContour = null;
             postCorrectionActive = false;
             document.getElementById('post-correction-cb').checked = false;
-            recordedColumns = 0;
             columnX = 0;
+            recordedColumns = 0;
             allCanvasIds.forEach(id => canvases[id].getContext('2d').clearRect(0, 0, canvases[id].width, canvases[id].height));
+
+            // Draw from the populated display buffers
+            const width = canvases['input-spectrogram'].width;
+            for (let x = 0; x < width; x++) {
+                corrector.draw_spectrogram(canvases['output-spectrogram'], x);
+                corrector.draw_input_spectrogram(canvases['input-spectrogram'], x);
+                corrector.draw_pitch_contour(canvases['output-contour'], x);
+                corrector.draw_input_contour(canvases['input-contour'], x);
+                corrector.draw_waveform(canvases['output-waveform'], x);
+                corrector.draw_input_waveform(canvases['input-waveform'], x);
+                recordedColumns++;
+            }
+            columnX = width;
+            targetContour = Array.from(corrector.take_target_pitch_contour());
             setState('stopped');
         }
 

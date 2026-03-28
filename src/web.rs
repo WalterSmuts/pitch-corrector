@@ -44,6 +44,7 @@ struct PlaybackState {
 pub struct WebPitchCorrector {
     input_stream: cpal::Stream,
     output_stream: cpal::Stream,
+    processor: Arc<dyn StreamProcessor + Send + Sync>,
     spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
     contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
@@ -75,7 +76,7 @@ impl WebPitchCorrector {
         let controls = corrector.controls();
 
         // Pipeline: input_contour -> input_spectrogram -> corrector -> contour -> spectrogram
-        let processor = Arc::new(compose(
+        let processor: Arc<dyn StreamProcessor + Send + Sync> = Arc::new(compose(
             input_contour_display,
             compose(
                 input_spectrogram_display,
@@ -205,6 +206,7 @@ impl WebPitchCorrector {
         Ok(WebPitchCorrector {
             input_stream,
             output_stream,
+            processor,
             spectrogram_buffer,
             contour_buffer,
             input_spectrogram_buffer,
@@ -276,6 +278,15 @@ impl WebPitchCorrector {
         *self.playback.recording.lock().unwrap() = samples.to_vec();
         self.playback.playback_pos.store(0, Ordering::Relaxed);
         self.playback.input_active.store(false, Ordering::Relaxed);
+    }
+
+    /// Push samples through the pipeline without audio I/O.
+    /// Populates the display buffers so draw functions work.
+    pub fn process_offline(&self, samples: &[f32]) {
+        for &s in samples {
+            self.processor.push_sample(s);
+            while self.processor.pop_sample().is_some() {}
+        }
     }
 
     pub fn play_recording(&self) -> Result<(), JsValue> {
