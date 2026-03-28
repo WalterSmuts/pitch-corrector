@@ -268,6 +268,16 @@ impl WebPitchCorrector {
         self.playback.recording.lock().unwrap().len()
     }
 
+    pub fn get_recording(&self) -> Vec<f32> {
+        self.playback.recording.lock().unwrap().clone()
+    }
+
+    pub fn load_recording(&self, samples: &[f32]) {
+        *self.playback.recording.lock().unwrap() = samples.to_vec();
+        self.playback.playback_pos.store(0, Ordering::Relaxed);
+        self.playback.input_active.store(false, Ordering::Relaxed);
+    }
+
     pub fn play_recording(&self) -> Result<(), JsValue> {
         if self.playback.recording.lock().unwrap().is_empty() {
             return Ok(());
