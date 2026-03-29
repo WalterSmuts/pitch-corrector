@@ -1,5 +1,7 @@
 use crate::music::{Interval, Note, Pitch, Scale};
-use crate::signal_processing::{PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector};
+use crate::signal_processing::{
+    PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, BUFFER_SIZE,
+};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -120,10 +122,25 @@ impl PitchCorrector {
 
         let controls_clone = controls.clone();
         let detector = Mutex::new(YinPitchDetector::new());
+        let prev_frame = Mutex::new(vec![0.0f32; BUFFER_SIZE]);
         let snapper = Mutex::new(NoteSnapper::new());
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
             let shift_ratio = controls_clone.shift.lock().unwrap().to_ratio();
-            let detected = detector.lock().unwrap().detect(frame);
+
+            // Try detection on current frame first; fall back to doubled buffer
+            let detected = {
+                let mut det = detector.lock().unwrap();
+                let short = det.detect(frame);
+                let mut prev = prev_frame.lock().unwrap();
+                let result = short.or_else(|| {
+                    let mut extended = Vec::with_capacity(prev.len() + frame.len());
+                    extended.extend_from_slice(&prev);
+                    extended.extend_from_slice(frame);
+                    det.detect(&extended)
+                });
+                prev.copy_from_slice(frame);
+                result
+            };
 
             // Check for active contour, otherwise snap to scale
             let target_pitch = {
@@ -175,9 +192,9 @@ impl StreamProcessor for PitchCorrector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::signal_processing::BUFFER_SIZE;
     use std::f32::consts::TAU;
 
-    const BUFFER_SIZE: usize = 1024;
     const SAMPLE_RATE: usize = 44100;
 
     #[test]
