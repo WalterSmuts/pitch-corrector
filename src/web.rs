@@ -237,8 +237,11 @@ impl WebPitchCorrector {
                         match output_processor.pop_sample() {
                             Some(s) => {
                                 *sample = s;
-                                if let Ok(mut rec) = output_playback.output_recording.try_lock() {
-                                    rec.push(s);
+                                if output_playback.input_active.load(Ordering::Relaxed) {
+                                    if let Ok(mut rec) = output_playback.output_recording.try_lock()
+                                    {
+                                        rec.push(s);
+                                    }
                                 }
                             }
                             None => {
