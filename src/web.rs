@@ -560,13 +560,11 @@ fn draw_contour(
     ctx.set_fill_style_str("rgb(10,10,20)");
     ctx.fill_rect(column_x as f64, 0.0, 2.0, height as f64);
 
-    // Semitone grid lines with note names
-    let note_names = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    for (semitone, name) in note_names.iter().enumerate() {
-        let y = height * (1.0 - semitone as f32 / 12.0);
-        let alpha_str = if semitone == 0 || semitone == 4 || semitone == 7 {
+    // Semitone grid lines (2 octaves)
+    for semitone in 0..24 {
+        let y = height * (1.0 - semitone as f32 / 24.0);
+        let note = semitone % 12;
+        let alpha_str = if note == 0 || note == 4 || note == 7 {
             GRID_ALPHA_STRONG
         } else {
             GRID_ALPHA_WEAK
@@ -576,29 +574,26 @@ fn draw_contour(
         ctx.move_to(column_x as f64, y as f64);
         ctx.line_to((column_x + 2.0) as f64, y as f64);
         ctx.stroke();
-
-        if column_x < 2.0 {
-            ctx.set_fill_style_str("rgba(255,255,255,0.7)");
-            ctx.set_font("11px monospace");
-            let _ = ctx.fill_text(name, 4.0, (y - 3.0) as f64);
-        }
     }
 
-    // Persistent note labels — redraw every frame over the left margin
+    // Persistent note labels — every 2 semitones for even spacing
+    let note_names = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
     ctx.set_fill_style_str("rgb(10,10,20)");
     ctx.fill_rect(0.0, 0.0, 30.0, height as f64);
-    for (semitone, name) in note_names.iter().enumerate() {
-        let y = height * (1.0 - semitone as f32 / 12.0);
-        ctx.set_fill_style_str("rgba(255,255,255,0.7)");
-        ctx.set_font("11px monospace");
-        let _ = ctx.fill_text(name, 4.0, (y - 3.0) as f64);
+    ctx.set_fill_style_str("rgba(255,255,255,0.7)");
+    ctx.set_font("10px monospace");
+    for semitone in (0..24).step_by(2) {
+        let y = height * (1.0 - semitone as f32 / 24.0);
+        let _ = ctx.fill_text(note_names[semitone % 12], 4.0, (y - 2.0) as f64);
     }
 
-    // Detected pitch wrapped to one octave
+    // Detected pitch wrapped to two octaves
     if let Some(freq) = pitch {
         let semitones_from_a4 = 12.0 * (freq / 440.0).log2();
-        let semitone_in_octave = (semitones_from_a4 + 57.0).rem_euclid(12.0);
-        let y = height * (1.0 - semitone_in_octave / 12.0);
+        let semitone_in_octave = (semitones_from_a4 + 57.0).rem_euclid(24.0);
+        let y = height * (1.0 - semitone_in_octave / 24.0);
         ctx.set_fill_style_str(color);
         ctx.begin_path();
         let _ = ctx.arc(
