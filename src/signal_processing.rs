@@ -1326,6 +1326,52 @@ mod tests {
         );
     }
 
+    /// Measures fine pitch accuracy in cents across a range of frequencies.
+    ///
+    /// Reports mean absolute error and worst-case error. Standard metric
+    /// in MIR: "Fine Pitch Error" (FPE).
+    #[test]
+    fn yin_fine_pitch_accuracy() {
+        let mut detector = YinPitchDetector::new();
+        // Test at many frequencies spanning the vocal range
+        let test_freqs: Vec<f32> = (0..30)
+            .map(|i| 80.0 * 2.0f32.powf(i as f32 / 6.0)) // 80Hz to ~2560Hz
+            .filter(|&f| f <= 2000.0)
+            .collect();
+
+        let mut total_cents_error = 0.0f32;
+        let mut worst_cents = 0.0f32;
+        let mut worst_freq = 0.0f32;
+        let mut tested = 0;
+
+        for &freq in &test_freqs {
+            let buffer = generate_sine(freq, BUFFER_SIZE);
+            if let Some(detected) = detector.detect(&buffer) {
+                let cents_error = (1200.0 * (detected / freq).log2()).abs();
+                total_cents_error += cents_error;
+                tested += 1;
+                if cents_error > worst_cents {
+                    worst_cents = cents_error;
+                    worst_freq = freq;
+                }
+            }
+        }
+
+        let mean_cents = total_cents_error / tested as f32;
+        eprintln!("YIN FINE PITCH ACCURACY ({tested} frequencies, {BUFFER_SIZE} samples):");
+        eprintln!("  mean error: {mean_cents:.2} cents");
+        eprintln!("  worst error: {worst_cents:.2} cents at {worst_freq:.1}Hz");
+
+        assert!(
+            mean_cents < 5.0,
+            "Mean pitch error {mean_cents:.2} cents exceeds 5 cent limit"
+        );
+        assert!(
+            worst_cents < 15.0,
+            "Worst pitch error {worst_cents:.2} cents at {worst_freq:.1}Hz exceeds 15 cent limit"
+        );
+    }
+
     /// Measure what fraction of output energy falls within ±tolerance_bins
     /// of the expected frequency after pitch-shifting a 440Hz sine.
     ///
