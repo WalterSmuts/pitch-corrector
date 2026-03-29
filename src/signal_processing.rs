@@ -1450,7 +1450,8 @@ mod tests {
 
     #[test]
     fn perf_phase_vocoder_shift_up_fifth_spectral_purity() {
-        let ratio = 3.0 / 2.0; // up a fifth
+        use crate::music::Interval;
+        let ratio = Interval::PERFECT_FIFTH.to_ratio();
         let (concentration, _, _) = measure_spectral_purity(ratio);
 
         eprintln!(
@@ -1469,7 +1470,8 @@ mod tests {
 
     #[test]
     fn perf_phase_vocoder_shift_down_fifth_spectral_purity() {
-        let ratio = 2.0 / 3.0; // down a fifth
+        use crate::music::Interval;
+        let ratio = Interval::PERFECT_FIFTH.negate().to_ratio();
         let (concentration, _, _) = measure_spectral_purity(ratio);
 
         eprintln!(

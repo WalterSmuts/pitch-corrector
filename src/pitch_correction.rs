@@ -175,6 +175,7 @@ impl StreamProcessor for PitchCorrector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::music::Pitch;
     use crate::signal_processing::BUFFER_SIZE;
     use std::f32::consts::TAU;
 
@@ -353,9 +354,11 @@ mod tests {
 
         let corrector = PitchCorrector::with_scale(Scale::pentatonic(Note::C));
 
-        // Swing between G3 (196Hz) and A3 (220Hz) — adjacent pentatonic notes
-        let center = (196.0f32.ln() + 220.0f32.ln()) / 2.0;
-        let swing = (220.0f32.ln() - 196.0f32.ln()) / 2.0;
+        // Swing between G3 and A3 — adjacent pentatonic notes
+        let g3 = Pitch::new(Note::G, 3).to_freq();
+        let a3 = Pitch::new(Note::A, 3).to_freq();
+        let center = (g3.ln() + a3.ln()) / 2.0;
+        let swing = (a3.ln() - g3.ln()) / 2.0;
 
         // Test vibrato rates from 0.5Hz to 16Hz in doublings
         let rates: Vec<f32> = (0..6).map(|i| 0.5 * 2.0f32.powi(i)).collect();
@@ -447,9 +450,11 @@ mod tests {
 
         let pentatonic_c = Scale::pentatonic(Note::C);
 
-        // Same vibrato as tracking test, fixed at PERF_MIN_TRACKING_RATE
-        let center = (196.0f32.ln() + 220.0f32.ln()) / 2.0;
-        let swing = (220.0f32.ln() - 196.0f32.ln()) / 2.0;
+        // Same vibrato as tracking test
+        let g3 = Pitch::new(Note::G, 3).to_freq();
+        let a3 = Pitch::new(Note::A, 3).to_freq();
+        let center = (g3.ln() + a3.ln()) / 2.0;
+        let swing = (a3.ln() - g3.ln()) / 2.0;
 
         // Noise levels as fraction of signal amplitude: 0.0, 0.1, ..., 1.0
         let levels: Vec<f32> = (0..=10).map(|i| i as f32 * 0.1).collect();
