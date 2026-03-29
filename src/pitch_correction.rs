@@ -149,10 +149,14 @@ impl PitchCorrector {
                 _ => 1.0,
             };
 
-            // Smooth the correction ratio to avoid abrupt changes
+            // Smooth the correction ratio to avoid abrupt changes.
+            // Only update when we have a valid detection; hold the
+            // previous ratio during detection gaps.
             const SMOOTHING: f32 = 0.6;
             let mut prev = smoothed_ratio.lock().unwrap();
-            *prev += SMOOTHING * (target_ratio - *prev);
+            if target_pitch.is_some() && detected.is_some() {
+                *prev += SMOOTHING * (target_ratio - *prev);
+            }
             *prev * shift_ratio
         });
         let processor = PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn);
