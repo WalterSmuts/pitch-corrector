@@ -180,6 +180,14 @@ mod tests {
 
     const SAMPLE_RATE: usize = 44100;
 
+    // --- Perf thresholds ---
+    const PERF_CORRECTOR_TRANSPARENCY: f32 = 0.01; // max |similarity - 1.0|
+    const PERF_SNAPPING_ACCURACY: f32 = 0.90; // min fraction on scale
+    const PERF_TRACKING_PASS: f32 = 0.80; // min accuracy per rate
+    const PERF_MIN_TRACKING_RATE: f32 = 2.0; // Hz
+    const PERF_NOISE_PASS: f32 = 0.75; // min accuracy per noise level
+    const PERF_MIN_NOISE_TOLERANCE: f32 = 0.3; // amplitude
+
     #[test]
     fn set_scale_at_runtime() {
         let corrector = PitchCorrector::new();
@@ -259,9 +267,12 @@ mod tests {
             }
         }
 
-        eprintln!("CORRECTOR TRANSPARENCY: similarity={best_sim:.4} at offset {best_off}");
+        eprintln!(
+            "[PERF] corrector_transparency: similarity={best_sim:.4} (threshold: >{:.2})",
+            1.0 - PERF_CORRECTOR_TRANSPARENCY
+        );
         assert!(
-            (best_sim - 1.0).abs() < 0.01,
+            (best_sim - 1.0).abs() < PERF_CORRECTOR_TRANSPARENCY,
             "Corrector with empty notes should be transparent for sweep \
              (best similarity {best_sim:.3} at offset {best_off})"
         );
@@ -317,13 +328,15 @@ mod tests {
         assert!(checked > 5, "Not enough pitch detections: {checked}");
         let accuracy = correct as f32 / checked as f32;
         eprintln!(
-            "SNAPPING: {correct}/{checked} ({:.1}%) within 0.5 semitones",
-            accuracy * 100.0
+            "[PERF] corrector_snapping_accuracy: {correct}/{checked} ({:.1}%) (threshold: >{:.0}%)",
+            accuracy * 100.0,
+            PERF_SNAPPING_ACCURACY * 100.0
         );
         assert!(
-            accuracy > 0.90,
-            "Expected >90% of detected pitches on pentatonic C scale, \
+            accuracy > PERF_SNAPPING_ACCURACY,
+            "Expected >{:.0}% of detected pitches on pentatonic C scale, \
              but only {correct}/{checked} ({:.0}%) were within 0.5 semitones",
+            PERF_SNAPPING_ACCURACY * 100.0,
             accuracy * 100.0
         );
     }
@@ -377,7 +390,6 @@ mod tests {
         let mut detector = YinPitchDetector::new();
         let mut best_rate = 0.0f32;
 
-        eprintln!("TRACKING BANDWIDTH:");
         for (ri, &rate) in rates.iter().enumerate() {
             let region_start = ri * samples_per_rate;
             // Skip first quarter of each region for settling
@@ -406,28 +418,28 @@ mod tests {
                 0.0
             };
             eprintln!(
-                "  {rate:5.1}Hz vibrato: {correct:3}/{checked:3} ({:5.1}%) on scale",
+                "[PERF] corrector_tracking_{rate:.0}hz: {correct}/{checked} ({:5.1}%)",
                 accuracy * 100.0
             );
-            if accuracy >= 0.80 {
+            if accuracy >= PERF_TRACKING_PASS {
                 best_rate = rate;
             }
         }
 
-        eprintln!("  => fastest rate with >=80% accuracy: {best_rate:.1}Hz");
+        eprintln!("[PERF] corrector_tracking_bandwidth: {best_rate:.1}Hz (threshold: >={PERF_MIN_TRACKING_RATE:.1}Hz)");
 
         assert!(
-            best_rate >= 2.0,
-            "Pitch corrector should track at least 2Hz vibrato, but only managed {best_rate:.1}Hz"
+            best_rate >= PERF_MIN_TRACKING_RATE,
+            "Pitch corrector should track at least {PERF_MIN_TRACKING_RATE:.1}Hz vibrato, but only managed {best_rate:.1}Hz"
         );
     }
 
     /// Measures how much additive noise the pitch corrector can tolerate
-    /// while tracking a 2Hz vibrato (the minimum guaranteed tracking rate).
+    /// while tracking vibrato at PERF_MIN_TRACKING_RATE.
     ///
-    /// Generates a sine swinging between G3 and A3 at 2Hz with increasing
-    /// noise. Reports the highest noise amplitude where the corrector still
-    /// achieves ≥75% accuracy.
+    /// Generates a sine swinging between G3 and A3 with increasing noise.
+    /// Reports the highest noise amplitude where the corrector still
+    /// achieves ≥PERF_NOISE_PASS accuracy.
     #[test]
     fn perf_pitch_corrector_noise_tolerance() {
         use crate::signal_processing::YinPitchDetector;
@@ -435,8 +447,7 @@ mod tests {
 
         let pentatonic_c = Scale::pentatonic(Note::C);
 
-        // Same vibrato as tracking test, fixed at the MIN_TRACKING_RATE
-        const MIN_TRACKING_RATE: f32 = 2.0;
+        // Same vibrato as tracking test, fixed at PERF_MIN_TRACKING_RATE
         let center = (196.0f32.ln() + 220.0f32.ln()) / 2.0;
         let swing = (220.0f32.ln() - 196.0f32.ln()) / 2.0;
 
@@ -447,7 +458,6 @@ mod tests {
         let mut best_noise = 0.0f32;
         let mut rng = rand::rng();
 
-        eprintln!("NOISE TOLERANCE (at {MIN_TRACKING_RATE}Hz vibrato):");
         for &noise_amp in &levels {
             let corrector = PitchCorrector::with_scale(pentatonic_c);
 
@@ -455,7 +465,7 @@ mod tests {
             let mut input = Vec::with_capacity(samples_per_level);
             for i in 0..samples_per_level {
                 let t = i as f32 / SAMPLE_RATE as f32;
-                let vibrato = (TAU * MIN_TRACKING_RATE * t).sin();
+                let vibrato = (TAU * PERF_MIN_TRACKING_RATE * t).sin();
                 let freq = (center + swing * vibrato).exp();
                 phase += freq / SAMPLE_RATE as f32;
                 phase -= phase.floor();
@@ -501,19 +511,19 @@ mod tests {
                 f32::INFINITY
             };
             eprintln!(
-                "  noise={noise_amp:.1} (SNR={snr_db:5.1}dB): {correct:3}/{checked:3} ({:5.1}%) on scale",
+                "[PERF] corrector_noise_{noise_amp:.1}: {correct}/{checked} ({:5.1}%) SNR={snr_db:.1}dB",
                 accuracy * 100.0
             );
-            if accuracy >= 0.75 {
+            if accuracy >= PERF_NOISE_PASS {
                 best_noise = noise_amp;
             }
         }
 
-        eprintln!("  => max noise amplitude with >=75% accuracy: {best_noise:.1}");
+        eprintln!("[PERF] corrector_noise_tolerance: {best_noise:.1} (threshold: >={PERF_MIN_NOISE_TOLERANCE})");
 
         assert!(
-            best_noise >= 0.3,
-            "Pitch corrector should tolerate at least 0.3 noise amplitude, \
+            best_noise >= PERF_MIN_NOISE_TOLERANCE,
+            "Pitch corrector should tolerate at least {PERF_MIN_NOISE_TOLERANCE} noise amplitude, \
              but only managed {best_noise:.1}"
         );
     }

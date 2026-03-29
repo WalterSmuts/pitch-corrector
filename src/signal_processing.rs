@@ -868,6 +868,14 @@ mod tests {
     use super::*;
 
     const TEST_SAMPLE_SIZE: usize = BUFFER_SIZE * 10;
+
+    // --- Perf thresholds ---
+    const PERF_VOCODER_TRANSPARENCY: f32 = 0.01; // max |similarity - 1.0|
+    const PERF_SPECTRAL_PURITY: f32 = 0.99; // min energy concentration
+    const PERF_TRANSITION_WORST: f32 = 0.98; // min purity at transition
+    const PERF_TRANSITION_AVG: f32 = 0.99; // min avg purity at transition
+    const PERF_YIN_MEAN_CENTS: f32 = 5.0; // max mean pitch error
+    const PERF_YIN_WORST_CENTS: f32 = 15.0; // max worst pitch error
     const TEST_EQUALITY_EPISLON: f32 = 0.002;
 
     struct PassthroughBlockProcessor;
@@ -1200,8 +1208,9 @@ mod tests {
         let auto: f32 = input_slice.iter().map(|a| a * a).sum();
 
         let similarity = cross / auto;
+        eprintln!("[PERF] phase_vocoder_unity_transparency: similarity={similarity:.4} (threshold: >{:.2})", 1.0 - PERF_VOCODER_TRANSPARENCY);
         assert!(
-            (similarity - 1.0).abs() < 0.01,
+            (similarity - 1.0).abs() < PERF_VOCODER_TRANSPARENCY,
             "Phase vocoder at ratio 1.0 should be transparent, but similarity was {similarity:.3}"
         );
     }
@@ -1299,7 +1308,6 @@ mod tests {
         let mut octave_errors = 0;
         let mut tested = 0;
 
-        eprintln!("YIN OCTAVE ERROR RATE:");
         for &freq in &test_freqs {
             let buffer = generate_sine(freq, BUFFER_SIZE);
             if let Some(detected) = detector.detect(&buffer) {
@@ -1310,16 +1318,11 @@ mod tests {
                     || (cents - 2400.0).abs() < 100.0; // off by ~2 octaves
                 if is_octave_error {
                     octave_errors += 1;
-                    eprintln!("  {freq:.0}Hz: detected {detected:.1}Hz (octave error)");
                 }
             }
         }
 
-        let rate = octave_errors as f32 / tested as f32;
-        eprintln!(
-            "  => {octave_errors}/{tested} octave errors ({:.1}%)",
-            rate * 100.0
-        );
+        eprintln!("[PERF] yin_octave_error_rate: errors={octave_errors}/{tested} (threshold: 0)");
         assert!(
             octave_errors == 0,
             "YIN produced {octave_errors}/{tested} octave errors on pure sines"
@@ -1358,17 +1361,16 @@ mod tests {
         }
 
         let mean_cents = total_cents_error / tested as f32;
-        eprintln!("YIN FINE PITCH ACCURACY ({tested} frequencies, {BUFFER_SIZE} samples):");
-        eprintln!("  mean error: {mean_cents:.2} cents");
-        eprintln!("  worst error: {worst_cents:.2} cents at {worst_freq:.1}Hz");
+        eprintln!("[PERF] yin_fine_pitch_mean_error: {mean_cents:.2} cents (threshold: <{PERF_YIN_MEAN_CENTS})");
+        eprintln!("[PERF] yin_fine_pitch_worst_error: {worst_cents:.2} cents at {worst_freq:.1}Hz (threshold: <{PERF_YIN_WORST_CENTS})");
 
         assert!(
-            mean_cents < 5.0,
-            "Mean pitch error {mean_cents:.2} cents exceeds 5 cent limit"
+            mean_cents < PERF_YIN_MEAN_CENTS,
+            "Mean pitch error {mean_cents:.2} cents exceeds {PERF_YIN_MEAN_CENTS} cent limit"
         );
         assert!(
-            worst_cents < 15.0,
-            "Worst pitch error {worst_cents:.2} cents at {worst_freq:.1}Hz exceeds 15 cent limit"
+            worst_cents < PERF_YIN_WORST_CENTS,
+            "Worst pitch error {worst_cents:.2} cents at {worst_freq:.1}Hz exceeds {PERF_YIN_WORST_CENTS} cent limit"
         );
     }
 
@@ -1425,16 +1427,6 @@ mod tests {
             .collect();
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
         let total_energy: f32 = indexed.iter().map(|(_, e)| e).sum();
-        eprintln!("  Top 5 bins (ratio={scaling_ratio:.3}):");
-        for (rank, (bin, energy)) in indexed.iter().take(5).enumerate() {
-            eprintln!(
-                "    #{}: bin {} ({:.1}Hz) = {:.2}%",
-                rank + 1,
-                bin,
-                *bin as f32 * bin_hz,
-                energy / total_energy * 100.0
-            );
-        }
 
         // Find expected bin and measure energy concentration
         let expected_bin = (expected_freq / bin_hz).round() as usize;
@@ -1458,53 +1450,39 @@ mod tests {
 
     #[test]
     fn perf_phase_vocoder_shift_up_fifth_spectral_purity() {
-        let ratio = 3.0 / 2.0; // up a fifth: 440 -> 660Hz
-        let (concentration, expected_bin, peak_bin) = measure_spectral_purity(ratio);
-        let bin_hz = SAMPLE_RATE as f32 / 4096.0;
+        let ratio = 3.0 / 2.0; // up a fifth
+        let (concentration, _, _) = measure_spectral_purity(ratio);
 
         eprintln!(
-            "UP FIFTH: {:.1}% energy in band, expected bin {} ({:.1}Hz), peak bin {} ({:.1}Hz)",
+            "[PERF] phase_vocoder_shift_up_fifth_purity: {:.1}% (threshold: >{:.0}%)",
             concentration * 100.0,
-            expected_bin,
-            expected_bin as f32 * bin_hz,
-            peak_bin,
-            peak_bin as f32 * bin_hz,
+            PERF_SPECTRAL_PURITY * 100.0
         );
 
         assert!(
-            concentration > 0.99,
-            "Shift up a fifth: only {:.1}% energy near 660Hz (expected ≥99%). \
-             Peak at bin {peak_bin} ({:.1}Hz), expected bin {expected_bin} ({:.1}Hz). \
-             Likely phase vocoder distortion.",
+            concentration > PERF_SPECTRAL_PURITY,
+            "Shift up a fifth: only {:.1}% energy near expected freq (expected ≥{:.0}%).",
             concentration * 100.0,
-            peak_bin as f32 * bin_hz,
-            expected_bin as f32 * bin_hz,
+            PERF_SPECTRAL_PURITY * 100.0,
         );
     }
 
     #[test]
     fn perf_phase_vocoder_shift_down_fifth_spectral_purity() {
-        let ratio = 2.0 / 3.0; // down a fifth: 440 -> ~293Hz
-        let (concentration, expected_bin, peak_bin) = measure_spectral_purity(ratio);
-        let bin_hz = SAMPLE_RATE as f32 / 4096.0;
+        let ratio = 2.0 / 3.0; // down a fifth
+        let (concentration, _, _) = measure_spectral_purity(ratio);
 
         eprintln!(
-            "DOWN FIFTH: {:.1}% energy in band, expected bin {} ({:.1}Hz), peak bin {} ({:.1}Hz)",
+            "[PERF] phase_vocoder_shift_down_fifth_purity: {:.1}% (threshold: >{:.0}%)",
             concentration * 100.0,
-            expected_bin,
-            expected_bin as f32 * bin_hz,
-            peak_bin,
-            peak_bin as f32 * bin_hz,
+            PERF_SPECTRAL_PURITY * 100.0
         );
 
         assert!(
-            concentration > 0.99,
-            "Shift down a fifth: only {:.1}% energy near 293Hz (expected ≥99%). \
-             Peak at bin {peak_bin} ({:.1}Hz), expected bin {expected_bin} ({:.1}Hz). \
-             Likely phase vocoder distortion.",
+            concentration > PERF_SPECTRAL_PURITY,
+            "Shift down a fifth: only {:.1}% energy near expected freq (expected ≥{:.0}%).",
             concentration * 100.0,
-            peak_bin as f32 * bin_hz,
-            expected_bin as f32 * bin_hz,
+            PERF_SPECTRAL_PURITY * 100.0,
         );
     }
 
@@ -1606,26 +1584,32 @@ mod tests {
         };
 
         eprintln!(
-            "RATIO TRANSITION: worst purity {:.1}% at sample {worst_pos}, \
-             transition avg {:.1}% over {transition_windows} windows",
+            "[PERF] phase_vocoder_ratio_transition_worst: {:.1}% (threshold: >{:.0}%)",
             worst_purity * 100.0,
+            PERF_TRANSITION_WORST * 100.0,
+        );
+        eprintln!(
+            "[PERF] phase_vocoder_ratio_transition_avg: {:.1}% (threshold: >{:.0}%)",
             transition_avg * 100.0,
+            PERF_TRANSITION_AVG * 100.0,
         );
 
         // Steady-state should be very clean
         assert!(
-            worst_purity > 0.98,
+            worst_purity > PERF_TRANSITION_WORST,
             "Worst purity {:.1}% — excessive distortion during ratio change \
-             (expected >98% even at transition). Worst at sample {worst_pos}.",
+             (expected >{:.0}% even at transition). Worst at sample {worst_pos}.",
             worst_purity * 100.0,
+            PERF_TRANSITION_WORST * 100.0,
         );
 
         // Transition region average should still be reasonable
         assert!(
-            transition_avg > 0.99,
+            transition_avg > PERF_TRANSITION_AVG,
             "Transition region average purity {:.1}% — too much distortion \
-             around ratio change (expected >99%).",
+             around ratio change (expected >{:.0}%).",
             transition_avg * 100.0,
+            PERF_TRANSITION_AVG * 100.0,
         );
     }
 
@@ -1649,6 +1633,7 @@ mod tests {
             }
             while processor.pop_sample().is_some() {}
         });
+        eprintln!("[PERF] phase_vocoder_no_alloc: pass (threshold: zero allocations)");
     }
 
     #[test]
@@ -1676,6 +1661,7 @@ mod tests {
         assert_no_alloc::assert_no_alloc(|| {
             converter.process(&mut buf2);
         });
+        eprintln!("[PERF] ola_no_alloc: pass (threshold: zero allocations)");
     }
 
     #[test]
@@ -1719,5 +1705,6 @@ mod tests {
                 / contour_scratch.len() as f32)
                 .sqrt();
         });
+        eprintln!("[PERF] spectrogram_and_yin_no_alloc: pass (threshold: zero allocations)");
     }
 }
