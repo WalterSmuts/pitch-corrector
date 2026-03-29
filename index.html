@@ -54,6 +54,7 @@
         <button id="play-btn" style="display:none">▶ Play</button>
         <button id="sweep-btn" disabled>🎵 Sine Sweep</button>
         <button id="download-btn" style="display:none">⬇ Download WAV</button>
+        <button id="debug-btn" style="display:none">🐛 Debug Dump</button>
         <button id="upload-btn">⬆ Upload WAV</button>
         <input type="file" id="upload-input" accept=".wav" style="display:none">
     </div>
@@ -157,6 +158,7 @@
             playBtn: document.getElementById('play-btn'),
             sweepBtn: document.getElementById('sweep-btn'),
             downloadBtn: document.getElementById('download-btn'),
+            debugBtn: document.getElementById('debug-btn'),
             uploadBtn: document.getElementById('upload-btn'),
             uploadInput: document.getElementById('upload-input'),
         };
@@ -202,6 +204,7 @@
                     els.playBtn.textContent = '▶ Play';
                     els.sweepBtn.disabled = true;
                     els.downloadBtn.style.display = '';
+                    els.debugBtn.style.display = '';
                     break;
                 case 'playing':
                     els.status.textContent = '▶ Playing...';
@@ -461,6 +464,22 @@
             URL.revokeObjectURL(url);
         }
 
+        function downloadDebugDump() {
+            if (!corrector) return;
+            const input = Array.from(corrector.get_recording());
+            const output = Array.from(corrector.get_output_recording());
+            const target = Array.from(targetContour);
+            const edited = editedContour ? Array.from(editedContour) : null;
+            const dump = { sampleRate: SAMPLE_RATE, input, output, targetContour: target, editedContour: edited };
+            const blob = new Blob([JSON.stringify(dump)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'debug-dump.json';
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
         function decodeWav(arrayBuffer) {
             const view = new DataView(arrayBuffer);
             let offset = 12;
@@ -534,6 +553,7 @@
         els.recordBtn.addEventListener('click', startRecording);
 
         els.downloadBtn.addEventListener('click', downloadRecording);
+        els.debugBtn.addEventListener('click', downloadDebugDump);
         els.uploadBtn.addEventListener('click', () => els.uploadInput.click());
         els.uploadInput.addEventListener('change', (e) => {
             if (e.target.files[0]) uploadRecording(e.target.files[0]);

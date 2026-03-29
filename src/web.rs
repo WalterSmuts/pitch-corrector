@@ -115,6 +115,7 @@ struct PlaybackState {
     sweep_active: AtomicBool,
     input_active: AtomicBool,
     recording: Mutex<Vec<f32>>,
+    output_recording: Mutex<Vec<f32>>,
     playback_pos: AtomicU32,
     playing: AtomicBool,
 }
@@ -157,6 +158,7 @@ impl WebPitchCorrector {
             sweep_active: AtomicBool::new(false),
             input_active: AtomicBool::new(true),
             recording: Mutex::new(Vec::new()),
+            output_recording: Mutex::new(Vec::new()),
             playback_pos: AtomicU32::new(0),
             playing: AtomicBool::new(false),
         });
@@ -234,7 +236,12 @@ impl WebPitchCorrector {
                     }
                     for sample in data.iter_mut() {
                         match output_processor.pop_sample() {
-                            Some(s) => *sample = s,
+                            Some(s) => {
+                                *sample = s;
+                                if let Ok(mut rec) = output_playback.output_recording.try_lock() {
+                                    rec.push(s);
+                                }
+                            }
                             None => {
                                 log::warn!("Output callback: underrun — inserting silence");
                                 *sample = 0.0;
@@ -314,6 +321,7 @@ impl WebPitchCorrector {
 
     pub fn load_recording(&self, samples: &[f32]) {
         *self.playback.recording.lock().unwrap() = samples.to_vec();
+        self.playback.output_recording.lock().unwrap().clear();
         self.playback.playback_pos.store(0, Ordering::Relaxed);
         self.playback.input_active.store(false, Ordering::Relaxed);
         let _ = self.input_stream.pause();
@@ -324,9 +332,15 @@ impl WebPitchCorrector {
         let n = samples.len().min(count);
         for &s in &samples[..n] {
             self.pipeline.processor.push_sample(s);
-            while self.pipeline.processor.pop_sample().is_some() {}
+            while let Some(o) = self.pipeline.processor.pop_sample() {
+                self.playback.output_recording.lock().unwrap().push(o);
+            }
         }
         n
+    }
+
+    pub fn get_output_recording(&self) -> Vec<f32> {
+        self.playback.output_recording.lock().unwrap().clone()
     }
 
     pub fn play_recording(&self) -> Result<(), JsValue> {
