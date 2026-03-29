@@ -1282,6 +1282,50 @@ mod tests {
         let _ = detector.detect(&buffer);
     }
 
+    /// Tests YIN for octave errors across a range of frequencies.
+    ///
+    /// Octave errors (detecting 2× or 0.5× the true frequency) are YIN's
+    /// most common failure mode. Tests pure sines from 60Hz to 2000Hz and
+    /// reports any detection that is off by roughly an octave.
+    #[test]
+    fn yin_octave_error_rate() {
+        let mut detector = YinPitchDetector::new();
+        let test_freqs: Vec<f32> = [
+            60.0, 80.0, 100.0, 120.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0, 660.0, 880.0,
+            1000.0, 1500.0, 2000.0,
+        ]
+        .into();
+
+        let mut octave_errors = 0;
+        let mut tested = 0;
+
+        eprintln!("YIN OCTAVE ERROR RATE:");
+        for &freq in &test_freqs {
+            let buffer = generate_sine(freq, BUFFER_SIZE);
+            if let Some(detected) = detector.detect(&buffer) {
+                tested += 1;
+                let ratio = detected / freq;
+                let cents = (1200.0 * ratio.log2()).abs();
+                let is_octave_error = (cents - 1200.0).abs() < 100.0 // off by ~1 octave
+                    || (cents - 2400.0).abs() < 100.0; // off by ~2 octaves
+                if is_octave_error {
+                    octave_errors += 1;
+                    eprintln!("  {freq:.0}Hz: detected {detected:.1}Hz (octave error)");
+                }
+            }
+        }
+
+        let rate = octave_errors as f32 / tested as f32;
+        eprintln!(
+            "  => {octave_errors}/{tested} octave errors ({:.1}%)",
+            rate * 100.0
+        );
+        assert!(
+            octave_errors == 0,
+            "YIN produced {octave_errors}/{tested} octave errors on pure sines"
+        );
+    }
+
     /// Measure what fraction of output energy falls within ±tolerance_bins
     /// of the expected frequency after pitch-shifting a 440Hz sine.
     ///
