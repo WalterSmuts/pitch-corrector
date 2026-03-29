@@ -611,7 +611,7 @@ fn draw_contour(
         let _ = ctx.arc(
             (column_x + 1.0) as f64,
             y as f64,
-            4.0,
+            2.0,
             0.0,
             std::f64::consts::TAU,
         );
