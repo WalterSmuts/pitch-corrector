@@ -421,4 +421,93 @@ mod tests {
             "Pitch corrector should track at least 2Hz vibrato, but only managed {best_rate:.1}Hz"
         );
     }
+
+    /// Measures how much additive noise the pitch corrector can tolerate.
+    ///
+    /// Generates a steady 196Hz (G3) sine with increasing noise levels.
+    /// Reports the highest SNR (in dB below signal) where the corrector
+    /// still achieves ≥75% accuracy snapping to the pentatonic scale.
+    #[test]
+    fn pitch_corrector_noise_tolerance() {
+        use crate::signal_processing::YinPitchDetector;
+        use rand::Rng;
+
+        let pentatonic_c = Scale::pentatonic(Note::C);
+        let freq = 196.0; // G3
+
+        // Noise levels as fraction of signal amplitude: 0.0, 0.1, ..., 1.0
+        let levels: Vec<f32> = (0..=10).map(|i| i as f32 * 0.1).collect();
+        let samples_per_level = BUFFER_SIZE * 40;
+
+        let mut best_noise = 0.0f32;
+        let mut rng = rand::rng();
+
+        eprintln!("NOISE TOLERANCE:");
+        for &noise_amp in &levels {
+            let corrector = PitchCorrector::with_scale(pentatonic_c);
+
+            // Generate signal + noise
+            let mut phase = 0.0f32;
+            let mut input = Vec::with_capacity(samples_per_level);
+            for _ in 0..samples_per_level {
+                phase += freq / SAMPLE_RATE as f32;
+                phase -= phase.floor();
+                let signal = (phase * TAU).sin() * 0.5;
+                let noise = (rng.random::<f32>() * 2.0 - 1.0) * noise_amp * 0.5;
+                input.push(signal + noise);
+            }
+
+            let mut output = Vec::new();
+            for &s in &input {
+                corrector.push_sample(s);
+                while let Some(o) = corrector.pop_sample() {
+                    output.push(o);
+                }
+            }
+
+            let delay = input.len() - output.len();
+            let skip = (samples_per_level / 4).saturating_sub(delay);
+            let mut detector = YinPitchDetector::new();
+            let mut checked = 0;
+            let mut correct = 0;
+            let mut pos = skip;
+            while pos + BUFFER_SIZE <= output.len() {
+                if let Some(f) = detector.detect(&output[pos..pos + BUFFER_SIZE]) {
+                    let target = pentatonic_c.nearest_pitch(f).to_freq();
+                    let err = (12.0 * (f / target).log2()).abs();
+                    checked += 1;
+                    if err < 0.5 {
+                        correct += 1;
+                    }
+                }
+                pos += BUFFER_SIZE;
+            }
+
+            let accuracy = if checked > 0 {
+                correct as f32 / checked as f32
+            } else {
+                0.0
+            };
+            let snr_db = if noise_amp > 0.0 {
+                20.0 * (1.0 / noise_amp).log10()
+            } else {
+                f32::INFINITY
+            };
+            eprintln!(
+                "  noise={noise_amp:.1} (SNR={snr_db:5.1}dB): {correct:3}/{checked:3} ({:5.1}%) on scale",
+                accuracy * 100.0
+            );
+            if accuracy >= 0.75 {
+                best_noise = noise_amp;
+            }
+        }
+
+        eprintln!("  => max noise amplitude with >=75% accuracy: {best_noise:.1}");
+
+        assert!(
+            best_noise >= 0.3,
+            "Pitch corrector should tolerate at least 0.3 noise amplitude, \
+             but only managed {best_noise:.1}"
+        );
+    }
 }
