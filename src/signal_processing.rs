@@ -1161,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_vocoder_unity_ratio_is_transparent() {
+    fn perf_phase_vocoder_unity_ratio_is_transparent() {
         let input_freq = 440.0;
         let processor = PhaseVocoderPitchShifter::new(1.0);
 
@@ -1288,7 +1288,7 @@ mod tests {
     /// most common failure mode. Tests pure sines from 60Hz to 2000Hz and
     /// reports any detection that is off by roughly an octave.
     #[test]
-    fn yin_octave_error_rate() {
+    fn perf_yin_octave_error_rate() {
         let mut detector = YinPitchDetector::new();
         let test_freqs: Vec<f32> = [
             60.0, 80.0, 100.0, 120.0, 150.0, 200.0, 250.0, 300.0, 400.0, 500.0, 660.0, 880.0,
@@ -1331,7 +1331,7 @@ mod tests {
     /// Reports mean absolute error and worst-case error. Standard metric
     /// in MIR: "Fine Pitch Error" (FPE).
     #[test]
-    fn yin_fine_pitch_accuracy() {
+    fn perf_yin_fine_pitch_accuracy() {
         let mut detector = YinPitchDetector::new();
         // Test at many frequencies spanning the vocal range
         let test_freqs: Vec<f32> = (0..30)
@@ -1457,7 +1457,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_vocoder_shift_up_fifth_spectral_purity() {
+    fn perf_phase_vocoder_shift_up_fifth_spectral_purity() {
         let ratio = 3.0 / 2.0; // up a fifth: 440 -> 660Hz
         let (concentration, expected_bin, peak_bin) = measure_spectral_purity(ratio);
         let bin_hz = SAMPLE_RATE as f32 / 4096.0;
@@ -1483,7 +1483,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_vocoder_shift_down_fifth_spectral_purity() {
+    fn perf_phase_vocoder_shift_down_fifth_spectral_purity() {
         let ratio = 2.0 / 3.0; // down a fifth: 440 -> ~293Hz
         let (concentration, expected_bin, peak_bin) = measure_spectral_purity(ratio);
         let bin_hz = SAMPLE_RATE as f32 / 4096.0;
@@ -1509,7 +1509,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_vocoder_ratio_transition_distortion() {
+    fn perf_phase_vocoder_ratio_transition_distortion() {
         use std::sync::atomic::AtomicU32;
 
         const ANALYSIS_SIZE: usize = 4096;
@@ -1630,7 +1630,7 @@ mod tests {
     }
 
     #[test]
-    fn phase_vocoder_no_alloc_after_warmup() {
+    fn perf_phase_vocoder_no_alloc_after_warmup() {
         let processor = PhaseVocoderPitchShifter::new(0.5);
 
         // Warmup: let it allocate internal buffers and easyfft thread-local scratch
@@ -1652,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn ola_no_alloc_after_warmup() {
+    fn perf_ola_no_alloc_after_warmup() {
         use easyfft::dyn_size::realfft::{DynRealFft, DynRealIfft};
 
         // Test raw easyfft _using calls
@@ -1679,7 +1679,7 @@ mod tests {
     }
 
     #[test]
-    fn spectrogram_and_yin_no_alloc_after_warmup() {
+    fn perf_spectrogram_and_yin_no_alloc_after_warmup() {
         use easyfft::dyn_size::realfft::DynRealFft;
 
         const SPEC_SIZE: usize = SPECTROGRAM_SIZE;

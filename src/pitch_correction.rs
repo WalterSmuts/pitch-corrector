@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn pitch_corrector_off_is_transparent_for_sweep() {
+    fn perf_pitch_corrector_off_is_transparent_for_sweep() {
         let corrector = PitchCorrector::with_scale(Scale::empty());
 
         let num_samples = BUFFER_SIZE * 40;
@@ -268,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn pitch_corrector_snaps_descending_sweep_to_scale() {
+    fn perf_pitch_corrector_snaps_descending_sweep_to_scale() {
         use crate::signal_processing::YinPitchDetector;
 
         let corrector = PitchCorrector::with_scale(Scale::pentatonic(Note::C));
@@ -335,7 +335,7 @@ mod tests {
     /// output is correctly snapped. Reports the fastest vibrato rate (Hz)
     /// that still achieves ≥80% accuracy.
     #[test]
-    fn pitch_corrector_tracking_bandwidth() {
+    fn perf_pitch_corrector_tracking_bandwidth() {
         use crate::signal_processing::YinPitchDetector;
 
         let corrector = PitchCorrector::with_scale(Scale::pentatonic(Note::C));
@@ -429,7 +429,7 @@ mod tests {
     /// noise. Reports the highest noise amplitude where the corrector still
     /// achieves ≥75% accuracy.
     #[test]
-    fn pitch_corrector_noise_tolerance() {
+    fn perf_pitch_corrector_noise_tolerance() {
         use crate::signal_processing::YinPitchDetector;
         use rand::Rng;
 
