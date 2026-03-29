@@ -649,7 +649,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             *s /= BUFFER_SIZE as f32;
         }
 
-        // Apply synthesis window, normalized for 75% overlap
+        // Apply synthesis window, normalized for 75% overlap (Hanning² sums to 1.5)
         for (s, w) in state.ifft_output.iter_mut().zip(state.window.iter()) {
             *s *= w / 1.5;
         }

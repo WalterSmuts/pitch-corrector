@@ -121,6 +121,7 @@ impl PitchCorrector {
         let controls_clone = controls.clone();
         let detector = Mutex::new(YinPitchDetector::new());
         let snapper = Mutex::new(NoteSnapper::new());
+        let smoothed_ratio = Mutex::new(1.0f32);
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
             let shift_ratio = controls_clone.shift.lock().unwrap().to_ratio();
             let detected = detector.lock().unwrap().detect(frame);
@@ -143,11 +144,16 @@ impl PitchCorrector {
                 .unwrap()
                 .push(target_pitch);
 
-            let correction = match (target_pitch, detected) {
+            let target_ratio = match (target_pitch, detected) {
                 (Some(pitch), Some(freq)) => pitch.to_freq() / freq,
                 _ => 1.0,
             };
-            correction * shift_ratio
+
+            // Smooth the correction ratio to avoid abrupt changes
+            const SMOOTHING: f32 = 0.6;
+            let mut prev = smoothed_ratio.lock().unwrap();
+            *prev += SMOOTHING * (target_ratio - *prev);
+            *prev * shift_ratio
         });
         let processor = PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn);
         PitchCorrector {
