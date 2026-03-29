@@ -137,9 +137,11 @@ impl PitchCorrector {
                 }
             };
 
-            if let Ok(mut log) = controls_clone.target_pitch_contour.try_lock() {
-                log.push(target_pitch);
-            }
+            controls_clone
+                .target_pitch_contour
+                .lock()
+                .unwrap()
+                .push(target_pitch);
 
             let correction = match (target_pitch, detected) {
                 (Some(pitch), Some(freq)) => pitch.to_freq() / freq,
