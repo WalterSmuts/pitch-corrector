@@ -805,6 +805,12 @@ impl YinPitchDetector {
             return None;
         }
 
+        // Reject silence / noise floor
+        let energy: f32 = buffer.iter().map(|s| s * s).sum::<f32>() / buffer.len() as f32;
+        if energy < 1e-4 {
+            return None;
+        }
+
         self.cmnd.resize(half_len, 0.0);
         self.cumulative_mean_normalized_difference(buffer, half_len);
         let tau = self.absolute_threshold()?;
