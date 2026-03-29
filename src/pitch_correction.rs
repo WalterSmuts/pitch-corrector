@@ -259,8 +259,9 @@ mod tests {
             }
         }
 
+        eprintln!("CORRECTOR TRANSPARENCY: similarity={best_sim:.4} at offset {best_off}");
         assert!(
-            (best_sim - 1.0).abs() < 0.05,
+            (best_sim - 1.0).abs() < 0.01,
             "Corrector with empty notes should be transparent for sweep \
              (best similarity {best_sim:.3} at offset {best_off})"
         );
@@ -315,9 +316,13 @@ mod tests {
 
         assert!(checked > 5, "Not enough pitch detections: {checked}");
         let accuracy = correct as f32 / checked as f32;
+        eprintln!(
+            "SNAPPING: {correct}/{checked} ({:.1}%) within 0.5 semitones",
+            accuracy * 100.0
+        );
         assert!(
-            accuracy > 0.75,
-            "Expected >75% of detected pitches on pentatonic C scale, \
+            accuracy > 0.90,
+            "Expected >90% of detected pitches on pentatonic C scale, \
              but only {correct}/{checked} ({:.0}%) were within 0.5 semitones",
             accuracy * 100.0
         );

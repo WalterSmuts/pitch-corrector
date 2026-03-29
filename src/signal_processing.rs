@@ -1201,7 +1201,7 @@ mod tests {
 
         let similarity = cross / auto;
         assert!(
-            (similarity - 1.0).abs() < 0.05,
+            (similarity - 1.0).abs() < 0.01,
             "Phase vocoder at ratio 1.0 should be transparent, but similarity was {similarity:.3}"
         );
     }
@@ -1382,8 +1382,8 @@ mod tests {
         );
 
         assert!(
-            concentration > 0.95,
-            "Shift up a fifth: only {:.1}% energy near 660Hz (expected ≥95%). \
+            concentration > 0.99,
+            "Shift up a fifth: only {:.1}% energy near 660Hz (expected ≥99%). \
              Peak at bin {peak_bin} ({:.1}Hz), expected bin {expected_bin} ({:.1}Hz). \
              Likely phase vocoder distortion.",
             concentration * 100.0,
@@ -1408,8 +1408,8 @@ mod tests {
         );
 
         assert!(
-            concentration > 0.95,
-            "Shift down a fifth: only {:.1}% energy near 293Hz (expected ≥95%). \
+            concentration > 0.99,
+            "Shift down a fifth: only {:.1}% energy near 293Hz (expected ≥99%). \
              Peak at bin {peak_bin} ({:.1}Hz), expected bin {expected_bin} ({:.1}Hz). \
              Likely phase vocoder distortion.",
             concentration * 100.0,
@@ -1524,17 +1524,17 @@ mod tests {
 
         // Steady-state should be very clean
         assert!(
-            worst_purity > 0.85,
+            worst_purity > 0.98,
             "Worst purity {:.1}% — excessive distortion during ratio change \
-             (expected >85% even at transition). Worst at sample {worst_pos}.",
+             (expected >98% even at transition). Worst at sample {worst_pos}.",
             worst_purity * 100.0,
         );
 
         // Transition region average should still be reasonable
         assert!(
-            transition_avg > 0.90,
+            transition_avg > 0.99,
             "Transition region average purity {:.1}% — too much distortion \
-             around ratio change (expected >90%).",
+             around ratio change (expected >99%).",
             transition_avg * 100.0,
         );
     }
