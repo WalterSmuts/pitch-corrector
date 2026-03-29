@@ -166,6 +166,21 @@
         const allCanvasIds = ['input-spectrogram','input-contour','input-waveform','output-spectrogram','output-contour','output-waveform'];
         const canvases = Object.fromEntries(allCanvasIds.map(id => [id, document.getElementById(id)]));
 
+        // Draw a synced playhead on all visible canvases, saving pixels underneath
+        function drawSyncedPlayhead(x) {
+            allCanvasIds.forEach(id => {
+                const c = canvases[id];
+                if (c.style.display === 'none') return;
+                savedColumns[id] = c.getContext('2d').getImageData(x, 0, 4, c.height);
+            });
+            lastPlayheadX = x;
+            allCanvasIds.forEach(id => {
+                const c = canvases[id];
+                if (c.style.display === 'none') return;
+                drawPlayhead(c, x);
+            });
+        }
+
         function setState(newState) {
             const prev = state;
             state = newState;
@@ -295,13 +310,16 @@
 
                 function draw() {
                     if (state !== 'recording') return;
+                    restorePlayhead();
                     corrector.draw_spectrogram(canvases['output-spectrogram'], columnX);
                     corrector.draw_input_spectrogram(canvases['input-spectrogram'], columnX);
                     corrector.draw_pitch_contour(canvases['output-contour'], columnX);
                     corrector.draw_input_contour(canvases['input-contour'], columnX);
                     corrector.draw_waveform(canvases['output-waveform'], columnX);
                     corrector.draw_input_waveform(canvases['input-waveform'], columnX);
-                    columnX = (columnX + 1) % canvases['output-spectrogram'].width;
+                    const width = canvases['output-spectrogram'].width;
+                    drawSyncedPlayhead((columnX + 1) % width);
+                    columnX = (columnX + 1) % width;
                     recordedColumns++;
                     animFrame = requestAnimationFrame(draw);
                 }
@@ -332,11 +350,22 @@
             function drawPlaybackFrame() {
                 if (state !== 'playing') return;
 
-                // Draw output views at current playback column
-                corrector.draw_spectrogram(canvases['output-spectrogram'], playColumnX);
-                corrector.draw_pitch_contour(canvases['output-contour'], playColumnX);
-                corrector.draw_waveform(canvases['output-waveform'], playColumnX);
-                playColumnX = (playColumnX + 1) % canvases['output-spectrogram'].width;
+                restorePlayhead();
+
+                // Derive column from actual playback progress
+                const width = canvases['output-spectrogram'].width;
+                const progress = corrector.playback_progress();
+                const totalCols = Math.min(recordedColumns, width);
+                const newCol = Math.floor(progress * totalCols) % width;
+
+                // Draw all columns we may have skipped
+                while (playColumnX !== newCol) {
+                    corrector.draw_spectrogram(canvases['output-spectrogram'], playColumnX);
+                    corrector.draw_pitch_contour(canvases['output-contour'], playColumnX);
+                    corrector.draw_waveform(canvases['output-waveform'], playColumnX);
+                    playColumnX = (playColumnX + 1) % width;
+                }
+                drawSyncedPlayhead((playColumnX + 1) % width);
 
                 if (corrector.is_playing()) {
                     animFrame = requestAnimationFrame(drawPlaybackFrame);
@@ -363,6 +392,8 @@
             let offset = (clickX - (columnX - totalCols) + canvasWidth) % canvasWidth;
             if (offset > totalCols) offset = totalCols;
             corrector.seek(offset / totalCols);
+            restorePlayhead();
+            drawSyncedPlayhead(Math.floor(clickX));
         }
 
         // --- Scale / shift controls ---

@@ -539,10 +539,6 @@ fn draw_spectrogram_from(
         ctx.fill_rect(column_x as f64, y_pixel as f64, 1.0, 1.0);
     }
 
-    // Write-head bar
-    let bar_x = ((column_x as u32 + 1) % canvas.width()) as f64;
-    ctx.set_fill_style_str("rgba(255,255,255,0.8)");
-    ctx.fill_rect(bar_x, 0.0, 4.0, height as f64);
 }
 
 fn draw_contour(
@@ -622,10 +618,6 @@ fn draw_contour(
         ctx.fill();
     }
 
-    // Write-head bar
-    let bar_x = ((column_x as u32 + 2) % canvas.width()) as f64;
-    ctx.set_fill_style_str("rgba(255,255,255,0.8)");
-    ctx.fill_rect(bar_x, 0.0, 4.0, height as f64);
 }
 
 fn draw_waveform_from(
@@ -680,10 +672,6 @@ fn draw_waveform_from(
         (rms_h * 2.0) as f64,
     );
 
-    // Write-head bar
-    let bar_x = ((column_x as u32 + 1) % canvas.width()) as f64;
-    ctx.set_fill_style_str("rgba(255,255,255,0.8)");
-    ctx.fill_rect(bar_x, 0.0, 4.0, height as f64);
 }
 
 fn heatmap(v: u8) -> (u8, u8, u8) {
