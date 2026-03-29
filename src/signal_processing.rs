@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 pub const BUFFER_SIZE: usize = 1024;
+pub const PITCH_DETECTION_SIZE: usize = 2048;
+pub const SPECTROGRAM_SIZE: usize = 8192;
 const SAMPLE_RATE: usize = 44100;
 
 pub trait StreamProcessor {
@@ -1585,12 +1587,13 @@ mod tests {
     fn spectrogram_and_yin_no_alloc_after_warmup() {
         use easyfft::dyn_size::realfft::DynRealFft;
 
-        const SPEC_SIZE: usize = 8192;
-        const CONTOUR_SIZE: usize = 2048;
+        const SPEC_SIZE: usize = SPECTROGRAM_SIZE;
 
         let mut spec_scratch = vec![0.0f32; SPEC_SIZE];
         let mut spec_spectrum = spec_scratch.real_fft();
-        let contour_scratch: Vec<f32> = (0..CONTOUR_SIZE).map(|i| (i as f32 * 0.1).sin()).collect();
+        let contour_scratch: Vec<f32> = (0..PITCH_DETECTION_SIZE)
+            .map(|i| (i as f32 * 0.1).sin())
+            .collect();
         let mut detector = YinPitchDetector::new();
 
         // Warmup

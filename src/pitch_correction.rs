@@ -1,6 +1,6 @@
 use crate::music::{Interval, Note, Pitch, Scale};
 use crate::signal_processing::{
-    PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, BUFFER_SIZE,
+    PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, BUFFER_SIZE, PITCH_DETECTION_SIZE,
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -127,13 +127,13 @@ impl PitchCorrector {
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
             let shift_ratio = controls_clone.shift.lock().unwrap().to_ratio();
 
-            // Try detection on current frame first; fall back to doubled buffer
+            // Try detection on current frame first; fall back to PITCH_DETECTION_SIZE buffer
             let detected = {
                 let mut det = detector.lock().unwrap();
                 let short = det.detect(frame);
                 let mut prev = prev_frame.lock().unwrap();
                 let result = short.or_else(|| {
-                    let mut extended = Vec::with_capacity(prev.len() + frame.len());
+                    let mut extended = Vec::with_capacity(PITCH_DETECTION_SIZE);
                     extended.extend_from_slice(&prev);
                     extended.extend_from_slice(frame);
                     det.detect(&extended)

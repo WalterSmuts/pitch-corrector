@@ -1,4 +1,4 @@
-use crate::signal_processing::DisplayProcessor;
+use crate::signal_processing::{DisplayProcessor, BUFFER_SIZE};
 use crossterm::event;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableMouseCapture;
@@ -31,8 +31,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 use tui_logger::TuiLoggerSmartWidget;
-
-const BUFFER_SIZE: usize = 1024;
 
 #[derive(PartialEq)]
 enum State {

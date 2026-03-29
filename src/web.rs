@@ -1,6 +1,9 @@
 use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::pitch_correction::{PitchCorrector, PitchCorrectorControls};
-use crate::signal_processing::{compose, DisplayProcessor, StreamProcessor, YinPitchDetector};
+use crate::signal_processing::{
+    compose, DisplayProcessor, StreamProcessor, YinPitchDetector, PITCH_DETECTION_SIZE,
+    SPECTROGRAM_SIZE,
+};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -8,9 +11,6 @@ use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
-
-const SPECTROGRAM_SIZE: usize = 8192;
-const CONTOUR_SIZE: usize = 2048;
 
 // Pre-computed RGB strings for heatmap: avoids format!() per pixel
 static HEATMAP_LUT: std::sync::LazyLock<[String; 256]> = std::sync::LazyLock::new(|| {
@@ -36,9 +36,9 @@ struct DrawState {
 pub struct Pipeline {
     processor: Arc<dyn StreamProcessor + Send + Sync>,
     spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
+    contour_buffer: Arc<Mutex<[f32; PITCH_DETECTION_SIZE]>>,
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    input_contour_buffer: Arc<Mutex<[f32; CONTOUR_SIZE]>>,
+    input_contour_buffer: Arc<Mutex<[f32; PITCH_DETECTION_SIZE]>>,
     controls: Arc<PitchCorrectorControls>,
     draw_state: Mutex<DrawState>,
 }
@@ -54,10 +54,10 @@ impl Pipeline {
         let spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
         let spectrogram_buffer = spectrogram_display.clone_display_buffer();
 
-        let contour_display: DisplayProcessor<CONTOUR_SIZE> = DisplayProcessor::new();
+        let contour_display: DisplayProcessor<PITCH_DETECTION_SIZE> = DisplayProcessor::new();
         let contour_buffer = contour_display.clone_display_buffer();
 
-        let input_contour_display: DisplayProcessor<CONTOUR_SIZE> = DisplayProcessor::new();
+        let input_contour_display: DisplayProcessor<PITCH_DETECTION_SIZE> = DisplayProcessor::new();
         let input_contour_buffer = input_contour_display.clone_display_buffer();
 
         let input_spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
@@ -87,7 +87,7 @@ impl Pipeline {
             draw_state: Mutex::new(DrawState {
                 spec_scratch,
                 spec_spectrum,
-                contour_scratch: vec![0.0f32; CONTOUR_SIZE],
+                contour_scratch: vec![0.0f32; PITCH_DETECTION_SIZE],
                 output_detector: YinPitchDetector::new(),
                 input_detector: YinPitchDetector::new(),
             }),
@@ -546,7 +546,7 @@ fn draw_spectrogram_from(
 fn draw_contour(
     canvas: &HtmlCanvasElement,
     column_x: f32,
-    buffer: &Arc<Mutex<[f32; CONTOUR_SIZE]>>,
+    buffer: &Arc<Mutex<[f32; PITCH_DETECTION_SIZE]>>,
     color: &str,
     detector: &mut YinPitchDetector,
     scratch: &mut Vec<f32>,

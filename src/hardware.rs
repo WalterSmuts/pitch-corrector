@@ -1,4 +1,4 @@
-use crate::signal_processing::StreamProcessor;
+use crate::signal_processing::{StreamProcessor, BUFFER_SIZE};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::StreamConfig;
 use cpal::{BufferSize, Stream};
@@ -8,7 +8,6 @@ use log::{debug, error, info};
 use std::sync::Arc;
 
 const SAMPLE_RATE: u32 = 44100;
-const BUFFER_SIZE: usize = 1024;
 
 pub fn setup_passthrough_processor<T>(processor: T) -> (Stream, Stream)
 where
