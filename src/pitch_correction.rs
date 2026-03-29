@@ -327,4 +327,98 @@ mod tests {
             accuracy * 100.0
         );
     }
+
+    /// Measures how quickly the pitch corrector adapts to changing targets.
+    ///
+    /// Generates a sine whose pitch swings between two pentatonic notes with
+    /// increasing vibrato rate. At each rate we measure what fraction of the
+    /// output is correctly snapped. Reports the fastest vibrato rate (Hz)
+    /// that still achieves ≥80% accuracy.
+    #[test]
+    fn pitch_corrector_tracking_bandwidth() {
+        use crate::signal_processing::YinPitchDetector;
+
+        let corrector = PitchCorrector::with_scale(Scale::pentatonic(Note::C));
+
+        // Swing between G3 (196Hz) and A3 (220Hz) — adjacent pentatonic notes
+        let center = (196.0f32.ln() + 220.0f32.ln()) / 2.0;
+        let swing = (220.0f32.ln() - 196.0f32.ln()) / 2.0;
+
+        // Test vibrato rates from 0.5Hz to 16Hz in doublings
+        let rates: Vec<f32> = (0..6).map(|i| 0.5 * 2.0f32.powi(i)).collect();
+        let samples_per_rate = BUFFER_SIZE * 40;
+        let total_samples = samples_per_rate * rates.len();
+
+        // Generate input
+        let mut audio_phase = 0.0f32;
+        let mut input = Vec::with_capacity(total_samples);
+        for (ri, &rate) in rates.iter().enumerate() {
+            for j in 0..samples_per_rate {
+                let t = (ri * samples_per_rate + j) as f32 / SAMPLE_RATE as f32;
+                let vibrato = (TAU * rate * t).sin();
+                let freq = (center + swing * vibrato).exp();
+                audio_phase += freq / SAMPLE_RATE as f32;
+                audio_phase -= audio_phase.floor();
+                input.push((audio_phase * TAU).sin() * 0.5);
+            }
+        }
+
+        // Process
+        let mut output = Vec::with_capacity(total_samples);
+        for &s in &input {
+            corrector.push_sample(s);
+            while let Some(o) = corrector.pop_sample() {
+                output.push(o);
+            }
+        }
+
+        let delay = input.len() - output.len();
+        let pentatonic_c = Scale::pentatonic(Note::C);
+        let mut detector = YinPitchDetector::new();
+        let mut best_rate = 0.0f32;
+
+        eprintln!("TRACKING BANDWIDTH:");
+        for (ri, &rate) in rates.iter().enumerate() {
+            let region_start = ri * samples_per_rate;
+            // Skip first quarter of each region for settling
+            let analysis_start = (region_start + samples_per_rate / 4).saturating_sub(delay);
+            let analysis_end = ((ri + 1) * samples_per_rate).saturating_sub(delay);
+
+            let step = BUFFER_SIZE;
+            let mut checked = 0;
+            let mut correct = 0;
+            let mut pos = analysis_start;
+            while pos + BUFFER_SIZE <= analysis_end.min(output.len()) {
+                if let Some(freq) = detector.detect(&output[pos..pos + BUFFER_SIZE]) {
+                    let target = pentatonic_c.nearest_pitch(freq).to_freq();
+                    let semitone_error = (12.0 * (freq / target).log2()).abs();
+                    checked += 1;
+                    if semitone_error < 0.5 {
+                        correct += 1;
+                    }
+                }
+                pos += step;
+            }
+
+            let accuracy = if checked > 0 {
+                correct as f32 / checked as f32
+            } else {
+                0.0
+            };
+            eprintln!(
+                "  {rate:5.1}Hz vibrato: {correct:3}/{checked:3} ({:5.1}%) on scale",
+                accuracy * 100.0
+            );
+            if accuracy >= 0.80 {
+                best_rate = rate;
+            }
+        }
+
+        eprintln!("  => fastest rate with >=80% accuracy: {best_rate:.1}Hz");
+
+        assert!(
+            best_rate >= 2.0,
+            "Pitch corrector should track at least 2Hz vibrato, but only managed {best_rate:.1}Hz"
+        );
+    }
 }
