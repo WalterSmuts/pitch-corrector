@@ -422,18 +422,23 @@ mod tests {
         );
     }
 
-    /// Measures how much additive noise the pitch corrector can tolerate.
+    /// Measures how much additive noise the pitch corrector can tolerate
+    /// while tracking a 2Hz vibrato (the minimum guaranteed tracking rate).
     ///
-    /// Generates a steady 196Hz (G3) sine with increasing noise levels.
-    /// Reports the highest SNR (in dB below signal) where the corrector
-    /// still achieves ≥75% accuracy snapping to the pentatonic scale.
+    /// Generates a sine swinging between G3 and A3 at 2Hz with increasing
+    /// noise. Reports the highest noise amplitude where the corrector still
+    /// achieves ≥75% accuracy.
     #[test]
     fn pitch_corrector_noise_tolerance() {
         use crate::signal_processing::YinPitchDetector;
         use rand::Rng;
 
         let pentatonic_c = Scale::pentatonic(Note::C);
-        let freq = 196.0; // G3
+
+        // Same vibrato as tracking test, fixed at the MIN_TRACKING_RATE
+        const MIN_TRACKING_RATE: f32 = 2.0;
+        let center = (196.0f32.ln() + 220.0f32.ln()) / 2.0;
+        let swing = (220.0f32.ln() - 196.0f32.ln()) / 2.0;
 
         // Noise levels as fraction of signal amplitude: 0.0, 0.1, ..., 1.0
         let levels: Vec<f32> = (0..=10).map(|i| i as f32 * 0.1).collect();
@@ -442,14 +447,16 @@ mod tests {
         let mut best_noise = 0.0f32;
         let mut rng = rand::rng();
 
-        eprintln!("NOISE TOLERANCE:");
+        eprintln!("NOISE TOLERANCE (at {MIN_TRACKING_RATE}Hz vibrato):");
         for &noise_amp in &levels {
             let corrector = PitchCorrector::with_scale(pentatonic_c);
 
-            // Generate signal + noise
             let mut phase = 0.0f32;
             let mut input = Vec::with_capacity(samples_per_level);
-            for _ in 0..samples_per_level {
+            for i in 0..samples_per_level {
+                let t = i as f32 / SAMPLE_RATE as f32;
+                let vibrato = (TAU * MIN_TRACKING_RATE * t).sin();
+                let freq = (center + swing * vibrato).exp();
                 phase += freq / SAMPLE_RATE as f32;
                 phase -= phase.floor();
                 let signal = (phase * TAU).sin() * 0.5;
