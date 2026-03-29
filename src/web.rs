@@ -1,8 +1,7 @@
 use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::pitch_correction::{PitchCorrector, PitchCorrectorControls};
 use crate::signal_processing::{
-    compose, DisplayProcessor, StreamProcessor, YinPitchDetector, PITCH_DETECTION_SIZE,
-    SPECTROGRAM_SIZE,
+    compose, DisplayProcessor, StreamProcessor, YinPitchDetector, BUFFER_SIZE, SPECTROGRAM_SIZE,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
@@ -36,9 +35,9 @@ struct DrawState {
 pub struct Pipeline {
     processor: Arc<dyn StreamProcessor + Send + Sync>,
     spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    contour_buffer: Arc<Mutex<[f32; PITCH_DETECTION_SIZE]>>,
+    contour_buffer: Arc<Mutex<[f32; BUFFER_SIZE]>>,
     input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    input_contour_buffer: Arc<Mutex<[f32; PITCH_DETECTION_SIZE]>>,
+    input_contour_buffer: Arc<Mutex<[f32; BUFFER_SIZE]>>,
     controls: Arc<PitchCorrectorControls>,
     draw_state: Mutex<DrawState>,
 }
@@ -54,10 +53,10 @@ impl Pipeline {
         let spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
         let spectrogram_buffer = spectrogram_display.clone_display_buffer();
 
-        let contour_display: DisplayProcessor<PITCH_DETECTION_SIZE> = DisplayProcessor::new();
+        let contour_display: DisplayProcessor<BUFFER_SIZE> = DisplayProcessor::new();
         let contour_buffer = contour_display.clone_display_buffer();
 
-        let input_contour_display: DisplayProcessor<PITCH_DETECTION_SIZE> = DisplayProcessor::new();
+        let input_contour_display: DisplayProcessor<BUFFER_SIZE> = DisplayProcessor::new();
         let input_contour_buffer = input_contour_display.clone_display_buffer();
 
         let input_spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
@@ -87,7 +86,7 @@ impl Pipeline {
             draw_state: Mutex::new(DrawState {
                 spec_scratch,
                 spec_spectrum,
-                contour_scratch: vec![0.0f32; PITCH_DETECTION_SIZE],
+                contour_scratch: vec![0.0f32; BUFFER_SIZE],
                 output_detector: YinPitchDetector::new(),
                 input_detector: YinPitchDetector::new(),
             }),
@@ -546,7 +545,7 @@ fn draw_spectrogram_from(
 fn draw_contour(
     canvas: &HtmlCanvasElement,
     column_x: f32,
-    buffer: &Arc<Mutex<[f32; PITCH_DETECTION_SIZE]>>,
+    buffer: &Arc<Mutex<[f32; BUFFER_SIZE]>>,
     color: &str,
     detector: &mut YinPitchDetector,
     scratch: &mut Vec<f32>,
