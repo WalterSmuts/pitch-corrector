@@ -7,6 +7,7 @@ use easyfft::dyn_size::realfft::DynRealFft;
 use easyfft::dyn_size::realfft::DynRealIfft;
 use easyfft::num_complex::Complex;
 use log::info;
+use std::collections::BinaryHeap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -87,6 +88,10 @@ struct PhaseVocoderState {
     analysis_spectrum: Option<DynRealDft<f32>>,
     synthesis_spectrum: Option<DynRealDft<f32>>,
     ifft_output: Vec<f32>,
+    // Pre-allocated PGHI scratch buffers
+    pghi_computed: Vec<bool>,
+    pghi_new_phase: Vec<f32>,
+    pghi_heap: BinaryHeap<(u32, usize, bool)>,
 }
 
 pub struct DisplayProcessor<const I: usize = BUFFER_SIZE> {
@@ -490,13 +495,14 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
                     BUFFER_SIZE,
                 )),
                 ifft_output: vec![0.0; BUFFER_SIZE],
+                pghi_computed: vec![false; BUFFER_SIZE / 2],
+                pghi_new_phase: vec![0.0; BUFFER_SIZE / 2],
+                pghi_heap: BinaryHeap::with_capacity(BUFFER_SIZE / 2),
             }),
         }
     }
 
     fn process_frame(state: &mut PhaseVocoderState, scaling_ratio: f32, hop_size: usize) {
-        use std::collections::BinaryHeap;
-
         let expected_phase_advance = |bin: usize| -> f32 {
             std::f32::consts::TAU * bin as f32 * hop_size as f32 / BUFFER_SIZE as f32
         };
@@ -586,48 +592,48 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
 
         // Phase Gradient Heap Integration (PGHI)
         // Propagate phase from loudest bin outward in both time and frequency
-        let mut computed = vec![false; num_bins];
-        let mut new_phase = vec![0.0f32; num_bins];
-
-        // Max-heap: (magnitude_bits, bin_index, from_prev_frame)
-        let mut heap: BinaryHeap<(u32, usize, bool)> = BinaryHeap::new();
+        state.pghi_computed.resize(num_bins, false);
+        state.pghi_computed.iter_mut().for_each(|v| *v = false);
+        state.pghi_new_phase.resize(num_bins, 0.0);
+        state.pghi_new_phase.iter_mut().for_each(|v| *v = 0.0);
+        state.pghi_heap.clear();
 
         // Seed with previous frame bins (candidates for time propagation)
         for k in 0..num_bins {
             if state.synthesis.magnitudes[k] > 1e-10 {
-                heap.push((state.synthesis.magnitudes[k].to_bits(), k, true));
+                state.pghi_heap.push((state.synthesis.magnitudes[k].to_bits(), k, true));
             }
         }
 
-        while let Some((_, k, from_prev)) = heap.pop() {
-            if computed[k] {
+        while let Some((_, k, from_prev)) = state.pghi_heap.pop() {
+            if state.pghi_computed[k] {
                 continue;
             }
             if from_prev {
                 // Time direction: classical phase accumulation
-                new_phase[k] = state.prev_output_phase[k] + state.synthesis.true_freq[k];
+                state.pghi_new_phase[k] = state.prev_output_phase[k] + state.synthesis.true_freq[k];
             }
-            computed[k] = true;
+            state.pghi_computed[k] = true;
 
             // Propagate in frequency direction to neighbors
-            if k + 1 < num_bins && !computed[k + 1] {
-                let phase_up = new_phase[k]
+            if k + 1 < num_bins && !state.pghi_computed[k + 1] {
+                let phase_up = state.pghi_new_phase[k]
                     + (state.synthesis.freq_deriv[k] + state.synthesis.freq_deriv[k + 1]) / 2.0;
-                new_phase[k + 1] = phase_up;
-                heap.push((state.synthesis.magnitudes[k + 1].to_bits(), k + 1, false));
+                state.pghi_new_phase[k + 1] = phase_up;
+                state.pghi_heap.push((state.synthesis.magnitudes[k + 1].to_bits(), k + 1, false));
             }
-            if k > 0 && !computed[k - 1] {
-                let phase_down = new_phase[k]
+            if k > 0 && !state.pghi_computed[k - 1] {
+                let phase_down = state.pghi_new_phase[k]
                     - (state.synthesis.freq_deriv[k] + state.synthesis.freq_deriv[k - 1]) / 2.0;
-                new_phase[k - 1] = phase_down;
-                heap.push((state.synthesis.magnitudes[k - 1].to_bits(), k - 1, false));
+                state.pghi_new_phase[k - 1] = phase_down;
+                state.pghi_heap.push((state.synthesis.magnitudes[k - 1].to_bits(), k - 1, false));
             }
         }
 
-        state.prev_output_phase.copy_from_slice(&new_phase);
+        state.prev_output_phase.copy_from_slice(&state.pghi_new_phase);
 
         // Build synthesis bins
-        for (k, phase) in new_phase.iter().enumerate().take(num_bins) {
+        for (k, phase) in state.pghi_new_phase.iter().enumerate().take(num_bins) {
             state.synthesis_bins[k] = Complex::from_polar(state.synthesis.magnitudes[k], *phase);
         }
 
