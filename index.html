@@ -604,9 +604,9 @@
         const postCorrectionCb = document.getElementById('post-correction-cb');
         postCorrectionCb.addEventListener('change', () => {
             postCorrectionActive = postCorrectionCb.checked;
-            if (postCorrectionActive && !editedContour) {
-                editedContour = targetContour.slice();
-                // Save canvas state before first overlay
+            if (postCorrectionActive) {
+                if (!editedContour) editedContour = targetContour.slice();
+                // Save canvas state before overlay
                 const canvas = canvases['output-contour'];
                 contourSnapshot = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
             }
