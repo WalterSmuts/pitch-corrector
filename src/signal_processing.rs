@@ -815,6 +815,24 @@ pub struct YinPitchDetector {
     /// adaptive gate so quiet-but-clear input is kept while inter-note
     /// silence is rejected relative to the current program level.
     peak_energy: f32,
+    // --- FFT difference-function scratch (alloc-free after warmup) ---
+    /// FFT length the scratch below is sized for (`2 * half_len`); 0 = unsized.
+    fft_size: usize,
+    /// First-half analysis window, zero-padded to `fft_size`.
+    window_buf: Vec<f32>,
+    /// Full `fft_size`-sample frame.
+    signal_buf: Vec<f32>,
+    /// Prefix sums of squared samples (`len = fft_size + 1`) for the energy
+    /// terms of the difference function.
+    psq: Vec<f32>,
+    /// Real inverse-FFT output holding the cross-correlation (unnormalized).
+    cc_buf: Vec<f32>,
+    /// Spectrum of `window_buf`.
+    window_spectrum: Option<DynRealDft<f32>>,
+    /// Spectrum of `signal_buf`.
+    signal_spectrum: Option<DynRealDft<f32>>,
+    /// `conj(window_spectrum) * signal_spectrum`, inverse-transformed to `cc_buf`.
+    corr_spectrum: Option<DynRealDft<f32>>,
 }
 
 impl Default for YinPitchDetector {
@@ -838,6 +856,14 @@ impl YinPitchDetector {
             cmnd: vec![0.0; BUFFER_SIZE / 2],
             sample_rate,
             peak_energy: 0.0,
+            fft_size: 0,
+            window_buf: Vec::new(),
+            signal_buf: Vec::new(),
+            psq: Vec::new(),
+            cc_buf: Vec::new(),
+            window_spectrum: None,
+            signal_spectrum: None,
+            corr_spectrum: None,
         }
     }
 
@@ -879,18 +905,92 @@ impl YinPitchDetector {
         Some(frequency)
     }
 
-    fn cumulative_mean_normalized_difference(&mut self, buffer: &[f32], half_len: usize) {
-        self.cmnd[0] = 1.0;
+    /// Ensure the FFT scratch is sized for an `n`-point transform. Reallocates
+    /// only when `n` changes, so a steady frame size is alloc-free after warmup.
+    fn ensure_fft_scratch(&mut self, n: usize) {
+        if self.fft_size == n {
+            return;
+        }
+        self.window_buf = vec![0.0; n];
+        self.signal_buf = vec![0.0; n];
+        self.psq = vec![0.0; n + 1];
+        self.cc_buf = vec![0.0; n];
+        self.window_spectrum = Some(DynRealDft::new(0.0, &vec![Complex::default(); n / 2], n));
+        self.signal_spectrum = Some(DynRealDft::new(0.0, &vec![Complex::default(); n / 2], n));
+        self.corr_spectrum = Some(DynRealDft::new(0.0, &vec![Complex::default(); n / 2], n));
+        self.fft_size = n;
+    }
 
-        let mut running_sum = 0.0;
-        for tau in 1..half_len {
-            let mut diff = 0.0;
-            for i in 0..half_len {
-                let delta = buffer[i] - buffer[i + tau];
-                diff += delta * delta;
+    /// Cumulative mean normalized difference function (YIN eq. 6-8).
+    ///
+    /// The difference function `d(τ) = Σ_{i<W} (x[i] - x[i+τ])²` (W = `half_len`)
+    /// expands to `A + B(τ) - 2·C(τ)` where `A = Σ_{i<W} x[i]²` is constant,
+    /// `B(τ) = Σ_{i<W} x[i+τ]²` is a sliding window energy (prefix sums), and
+    /// `C(τ) = Σ_{i<W} x[i]·x[i+τ]` is a cross-correlation. Computing `C` via
+    /// FFT (Wiener–Khinchin) turns the naive O(n²) double loop into O(n log n)
+    /// while producing the same difference function.
+    fn cumulative_mean_normalized_difference(&mut self, buffer: &[f32], half_len: usize) {
+        let n = 2 * half_len;
+        self.ensure_fft_scratch(n);
+
+        // a = first-half window zero-padded to n; b = the full n-sample frame.
+        // Zero-padding a to length n means the circular correlation at lag τ<W
+        // never wraps (max index (W-1)+(W-1) = 2W-2 < n), so it equals the
+        // linear cross-correlation C(τ) our direct loop computes.
+        self.window_buf[..half_len].copy_from_slice(&buffer[..half_len]);
+        self.window_buf[half_len..].fill(0.0);
+        self.signal_buf.copy_from_slice(&buffer[..n]);
+
+        // Prefix sums of squares for A and the sliding energy B(τ).
+        self.psq[0] = 0.0;
+        for i in 0..n {
+            self.psq[i + 1] = self.psq[i] + self.signal_buf[i] * self.signal_buf[i];
+        }
+
+        // C(τ) = real_ifft(conj(FFT(a)) · FFT(b)) / n. easyfft's inverse is
+        // unnormalized (like the phase vocoder, which divides by BUFFER_SIZE),
+        // hence the 1/n below.
+        self.window_buf
+            .real_fft_using(self.window_spectrum.as_mut().unwrap());
+        self.signal_buf
+            .real_fft_using(self.signal_spectrum.as_mut().unwrap());
+        {
+            let a_spec = self.window_spectrum.as_ref().unwrap();
+            let b_spec = self.signal_spectrum.as_ref().unwrap();
+            let dc = a_spec.get_offset() * b_spec.get_offset();
+            let corr = self.corr_spectrum.as_mut().unwrap();
+            *corr.get_offset_mut() = dc;
+            for (p, (av, bv)) in corr.get_frequency_bins_mut().iter_mut().zip(
+                a_spec
+                    .get_frequency_bins()
+                    .iter()
+                    .zip(b_spec.get_frequency_bins()),
+            ) {
+                *p = av.conj() * bv;
             }
+        }
+        self.corr_spectrum
+            .as_mut()
+            .unwrap()
+            .real_ifft_using(&mut self.cc_buf);
+
+        // d(τ) = A + B(τ) - 2·C(τ), then the cumulative mean normalization.
+        self.cmnd[0] = 1.0;
+        let a_energy = self.psq[half_len];
+        let inv_n = 1.0 / n as f32;
+        let mut running_sum = 0.0f32;
+        for tau in 1..half_len {
+            let b_energy = self.psq[tau + half_len] - self.psq[tau];
+            let c = self.cc_buf[tau] * inv_n;
+            // True d is ≥ 0; clamp tiny negatives from FFT round-off so the
+            // running sum and CMND stay well-defined at periodic dips.
+            let diff = (a_energy + b_energy - 2.0 * c).max(0.0);
             running_sum += diff;
-            self.cmnd[tau] = diff * tau as f32 / running_sum;
+            self.cmnd[tau] = if running_sum > 0.0 {
+                diff * tau as f32 / running_sum
+            } else {
+                1.0
+            };
         }
     }
 
@@ -1311,6 +1411,56 @@ mod tests {
         (0..num_samples)
             .map(|i| (std::f32::consts::TAU * freq * i as f32 / SAMPLE_RATE as f32).sin())
             .collect()
+    }
+
+    #[test]
+    fn yin_fft_difference_matches_direct_loop() {
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+
+        // A voiced-like signal: a couple of harmonics plus noise, so the
+        // difference function has real structure (dips) to compare.
+        let mut rng = StdRng::seed_from_u64(0xF17_9E);
+        let half_len = BUFFER_SIZE / 2;
+        let n = 2 * half_len;
+        let tau_hz = std::f32::consts::TAU;
+        let buffer: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / SAMPLE_RATE as f32;
+                0.5 * (tau_hz * 220.0 * t).sin()
+                    + 0.25 * (tau_hz * 440.0 * t).sin()
+                    + 0.05 * (rng.random::<f32>() * 2.0 - 1.0)
+            })
+            .collect();
+
+        // Reference: the naive O(n^2) difference + CMND this replaced.
+        let mut direct = vec![0.0f32; half_len];
+        direct[0] = 1.0;
+        let mut running = 0.0f32;
+        for tau in 1..half_len {
+            let mut diff = 0.0f32;
+            for i in 0..half_len {
+                let delta = buffer[i] - buffer[i + tau];
+                diff += delta * delta;
+            }
+            running += diff;
+            direct[tau] = diff * tau as f32 / running;
+        }
+
+        // FFT-based path under test.
+        let mut detector = YinPitchDetector::new();
+        detector.cmnd.resize(half_len, 0.0);
+        detector.cumulative_mean_normalized_difference(&buffer, half_len);
+
+        let max_abs = (1..half_len)
+            .map(|tau| (detector.cmnd[tau] - direct[tau]).abs())
+            .fold(0.0f32, f32::max);
+        // f32 FFT round-off (difference of large energies) gives ~1e-3 on the
+        // O(1) CMND values; a wrong formula or normalization would diverge by
+        // orders of magnitude, which this still catches.
+        assert!(
+            max_abs < 5e-3,
+            "FFT CMND diverges from the direct loop: max abs diff {max_abs}"
+        );
     }
 
     #[test]
