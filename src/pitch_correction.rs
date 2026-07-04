@@ -1,5 +1,6 @@
 use crate::music::{Interval, Note, Pitch, Scale};
 use crate::signal_processing::{PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector};
+use crossbeam_queue::ArrayQueue;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -52,7 +53,11 @@ type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 pub struct PitchCorrectorControls {
     shift: Mutex<Interval>,
     scale: Mutex<Scale>,
-    target_pitch_contour: Mutex<Vec<Option<Pitch>>>,
+    /// Per-hop target-pitch log, written from the real-time audio thread.
+    /// A lock-free bounded queue keeps that write allocation- and lock-free;
+    /// it is drained from the UI thread on stop/clear. Entries are dropped if
+    /// the log fills (bounded memory) rather than growing unboundedly.
+    target_pitch_contour: ArrayQueue<Option<Pitch>>,
     contour: Mutex<Vec<Option<Pitch>>>,
     contour_hop: AtomicUsize,
 }
@@ -85,11 +90,15 @@ impl PitchCorrectorControls {
     }
 
     pub fn take_target_pitch_contour(&self) -> Vec<Option<Pitch>> {
-        std::mem::take(&mut *self.target_pitch_contour.lock().unwrap())
+        let mut out = Vec::with_capacity(self.target_pitch_contour.len());
+        while let Some(p) = self.target_pitch_contour.pop() {
+            out.push(p);
+        }
+        out
     }
 
     pub fn clear_target_pitch_contour(&self) {
-        self.target_pitch_contour.lock().unwrap().clear();
+        while self.target_pitch_contour.pop().is_some() {}
     }
 }
 
@@ -125,10 +134,13 @@ impl PitchCorrector {
     }
 
     fn assemble(scale: Scale, yin: YinPitchDetector) -> Self {
+        // ~94 hops/sec (hop=BUFFER_SIZE/4 at 44.1-48kHz); this bounds the
+        // target-pitch log to a few minutes of recording.
+        const TARGET_CONTOUR_CAPACITY: usize = 32768;
         let controls = Arc::new(PitchCorrectorControls {
             shift: Mutex::new(Interval::UNISON),
             scale: Mutex::new(scale),
-            target_pitch_contour: Mutex::new(Vec::new()),
+            target_pitch_contour: ArrayQueue::new(TARGET_CONTOUR_CAPACITY),
             contour: Mutex::new(Vec::new()),
             contour_hop: AtomicUsize::new(0),
         });
@@ -154,11 +166,9 @@ impl PitchCorrector {
                 }
             };
 
-            controls_clone
-                .target_pitch_contour
-                .lock()
-                .unwrap()
-                .push(target_pitch);
+            // Lock-free, alloc-free log on the real-time audio thread. Drops
+            // the entry if the bounded queue is full rather than allocating.
+            let _ = controls_clone.target_pitch_contour.push(target_pitch);
 
             let target_ratio = match (target_pitch, detected) {
                 (Some(pitch), Some(freq)) => pitch.to_freq() / freq,
@@ -236,6 +246,32 @@ mod tests {
         let controls = corrector.controls();
         controls.set_scale(Scale::major(Note::C));
         assert_eq!(controls.get_scale(), Scale::major(Note::C));
+    }
+
+    #[test]
+    fn perf_pitch_corrector_no_alloc_after_warmup() {
+        // The audio callback runs the corrector's ratio_fn every hop. It must
+        // not allocate on the real-time thread, or long voiced passages cause
+        // heap growth and glitches. A steady G3 keeps detection (and the
+        // target-pitch contour path) active during the measured window.
+        let corrector = PitchCorrector::new();
+        let freq = 196.0; // G3
+
+        let warmup = BUFFER_SIZE * 16;
+        for i in 0..warmup {
+            let s = (TAU * freq * i as f32 / SAMPLE_RATE as f32).sin();
+            corrector.push_sample(s);
+        }
+        while corrector.pop_sample().is_some() {}
+
+        assert_no_alloc::assert_no_alloc(|| {
+            for i in 0..BUFFER_SIZE * 4 {
+                let s = (TAU * freq * (warmup + i) as f32 / SAMPLE_RATE as f32).sin();
+                corrector.push_sample(s);
+            }
+            while corrector.pop_sample().is_some() {}
+        });
+        eprintln!("[PERF] pitch_corrector_no_alloc: pass (threshold: zero allocations)");
     }
 
     #[test]
