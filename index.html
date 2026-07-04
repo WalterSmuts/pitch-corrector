@@ -19,6 +19,12 @@
         h1 { font-size: 1.4em; margin: 5px 0; }
         h3 { font-size: 1em; margin: 5px 0; }
         canvas { border: 1px solid #444; margin: 5px 0; width: 100%; max-width: 1200px; cursor: pointer; }
+        /* Wrapper + transparent overlay canvas for the playhead. Drawing the
+           moving cursor on a separate layer avoids per-frame getImageData/
+           putImageData readbacks on the heavy spectrogram/contour canvases. */
+        .canvas-wrap { position: relative; display: block; width: 100%; max-width: 1200px; margin: 5px auto; line-height: 0; }
+        .canvas-wrap > canvas { margin: 0; display: block; }
+        .playhead-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; margin: 0; border: 1px solid transparent; box-sizing: border-box; pointer-events: none; cursor: default; }
         .controls { display: flex; gap: 8px; align-items: center; margin: 5px 0; flex-wrap: wrap; justify-content: center; }
         button {
             background: #16213e;
@@ -166,18 +172,37 @@
         const allCanvasIds = ['input-spectrogram','input-contour','input-waveform','output-spectrogram','output-contour','output-waveform'];
         const canvases = Object.fromEntries(allCanvasIds.map(id => [id, document.getElementById(id)]));
 
-        // Draw a synced playhead on all visible canvases, saving pixels underneath
+        // Wrap each canvas and lay a transparent overlay canvas on top for the
+        // playhead. This replaces per-frame getImageData/putImageData (an
+        // expensive GPU->CPU readback) with a cheap clear + fillRect on a
+        // dedicated layer, leaving the heavy spectrogram/contour canvases
+        // untouched by the moving cursor.
+        const overlays = {};
+        allCanvasIds.forEach(id => {
+            const c = canvases[id];
+            const wrap = document.createElement('div');
+            wrap.className = 'canvas-wrap';
+            c.parentNode.insertBefore(wrap, c);
+            wrap.appendChild(c);
+            const ov = document.createElement('canvas');
+            ov.width = c.width;
+            ov.height = c.height;
+            ov.className = 'playhead-overlay';
+            wrap.appendChild(ov);
+            overlays[id] = ov;
+        });
+        let lastPlayheadX = -1;
+
+        // Draw the playhead on each visible canvas's overlay layer.
         function drawSyncedPlayhead(x) {
-            allCanvasIds.forEach(id => {
-                const c = canvases[id];
-                if (c.style.display === 'none') return;
-                savedColumns[id] = c.getContext('2d').getImageData(x, 0, 4, c.height);
-            });
             lastPlayheadX = x;
             allCanvasIds.forEach(id => {
-                const c = canvases[id];
-                if (c.style.display === 'none') return;
-                drawPlayhead(c, x);
+                const ov = overlays[id];
+                const octx = ov.getContext('2d');
+                octx.clearRect(0, 0, ov.width, ov.height);
+                if (canvases[id].style.display === 'none') return;
+                octx.fillStyle = 'rgba(255,255,255,0.8)';
+                octx.fillRect(x, 0, 4, ov.height);
             });
         }
 
@@ -255,22 +280,12 @@
             });
         }
 
-        function drawPlayhead(canvas, x) {
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = 'rgba(255,255,255,0.8)';
-            ctx.fillRect(x, 0, 4, canvas.height);
-        }
-
-        // --- Playhead save/restore ---
-        const savedColumns = {};
-        let lastPlayheadX = -1;
-
+        // --- Playhead clear ---
         function restorePlayhead() {
             if (lastPlayheadX < 0) return;
             allCanvasIds.forEach(id => {
-                if (savedColumns[id]) {
-                    canvases[id].getContext('2d').putImageData(savedColumns[id], lastPlayheadX, 0);
-                }
+                const ov = overlays[id];
+                ov.getContext('2d').clearRect(0, 0, ov.width, ov.height);
             });
             lastPlayheadX = -1;
         }
