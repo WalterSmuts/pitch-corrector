@@ -111,28 +111,28 @@ fn main() {
     tui_logger::init_logger(log::LevelFilter::Trace).unwrap();
     tui_logger::set_default_level(log::LevelFilter::Trace);
     let opts: Opts = Opts::parse();
-    let mut user_inferface = UserInterface::new();
+    let mut user_interface = UserInterface::new();
 
-    // Don't drop streams otherwize we drop the threads doing the data processing
+    // Don't drop streams otherwise we drop the threads doing the data processing
     let _streams = match opts.subcmd {
-        SubCommand::Passthrough => passthrough(&mut user_inferface),
-        SubCommand::NaivePitchShifter => naive_pitch_shifter(&mut user_inferface),
-        SubCommand::HighPassFilter => high_pass_filter(&mut user_inferface),
-        SubCommand::LowPassFilter => low_pass_filter(&mut user_inferface),
+        SubCommand::Passthrough => passthrough(&mut user_interface),
+        SubCommand::NaivePitchShifter => naive_pitch_shifter(&mut user_interface),
+        SubCommand::HighPassFilter => high_pass_filter(&mut user_interface),
+        SubCommand::LowPassFilter => low_pass_filter(&mut user_interface),
         SubCommand::FrequencyDomainPitchShifter { ratio } => {
-            frequency_domain_pitch_shifter(&mut user_inferface, ratio)
+            frequency_domain_pitch_shifter(&mut user_interface, ratio)
         }
-        SubCommand::PhaseVocoder { ratio } => phase_vocoder(&mut user_inferface, ratio),
+        SubCommand::PhaseVocoder { ratio } => phase_vocoder(&mut user_interface, ratio),
         SubCommand::PitchCorrector => {
             use pitch_corrector::music::{Note, Scale};
 
             let corrector = pitch_correction::PitchCorrector::new();
             let controls = corrector.controls();
-            let status = user_inferface.status_handle();
+            let status = user_interface.status_handle();
             let _streams = hardware::setup_passthrough_processor(pipeline!(
-                user_inferface.create_display_processor(),
+                user_interface.create_display_processor(),
                 corrector,
-                user_inferface.create_display_processor(),
+                user_interface.create_display_processor(),
             ));
 
             let scale_presets: Vec<(&str, Scale)> = vec![
@@ -158,7 +158,7 @@ fn main() {
             update_status(scale_presets[scale_idx].0, Interval::UNISON);
 
             log_panics::init();
-            user_inferface.run_with_key_handler(move |key| {
+            user_interface.run_with_key_handler(move |key| {
                 use crossterm::event::KeyCode;
 
                 match key {
@@ -194,5 +194,5 @@ fn main() {
         }
     };
     log_panics::init();
-    user_inferface.run();
+    user_interface.run();
 }
