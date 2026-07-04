@@ -74,11 +74,12 @@ this way — a normal `wasm-pack` build will not link the threads runtime.
 wasm threads are notoriously toolchain-version-sensitive (see the wasm-bindgen
 threads docs and StackBlitz's "Destroyer of Threads" post). Known failure modes:
 
-- **`wasm-bindgen: failed to find __wasm_init_tls`** — the nightly rustc/lld
-  and `wasm-bindgen-cli` disagree on the wasm-threads TLS ABI. Pin a matched
-  pair (align the nightly toolchain to the `wasm-bindgen` version in
-  `Cargo.lock`, e.g. `rustup override set <nightly>`); a very new nightly with
-  an older `wasm-bindgen-cli` (or vice-versa) is the usual cause.
+- **`wasm-bindgen: failed to find __wasm_init_tls`** — lld emits the wasm
+  threads TLS symbols (`__wasm_init_tls`, `__tls_size`, `__tls_align`,
+  `__tls_base`) but does not export them by default, and wasm-bindgen's threads
+  transform needs them exported. `build-worklet.sh` passes
+  `-C link-arg=--export=__wasm_init_tls` (and the other three) to fix this; it
+  works on current nightlies without pinning.
 - **`Atomics.waitAsync: invalid array type`** at runtime — the wasm memory is
   not shared (a plain `ArrayBuffer`). Ensure the build passes
   `--shared-memory --import-memory --max-memory` (build-worklet.sh does) and

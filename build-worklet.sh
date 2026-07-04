@@ -19,20 +19,24 @@ OUT_DIR="pkg"
 CRATE="pitch_corrector"
 
 # Atomics + shared memory for the AudioWorklet host (it shares the wasm
-# module+memory with the render thread). wasm-bindgen 0.2.x does NOT share the
-# memory itself, so lld must: `--shared-memory` (+ `--import-memory` and
-# `--max-memory`). `+atomics` enables the atomic instructions.
-#
-# TROUBLESHOOTING: if wasm-bindgen fails with "failed to find __wasm_init_tls",
-# your rustc/lld and wasm-bindgen-cli versions disagree on the wasm-threads TLS
-# ABI. Use a matched pair known-good for wasm threads (align the nightly to the
-# wasm-bindgen-cli version in Cargo.lock, e.g. via `rustup override`). Without
-# `--shared-memory` the build links but Atomics.* fail at runtime with
-# "invalid array type for the operation" (memory is a plain ArrayBuffer).
+# module+memory with the render thread). Required pieces:
+#   * +atomics,+bulk-memory,+mutable-globals  -> atomic instructions
+#   * --shared-memory --import-memory --max-memory -> the wasm memory is a
+#     shared, imported SharedArrayBuffer (else Atomics.* throw "invalid array
+#     type" at runtime).
+#   * --export=__wasm_init_tls,__tls_size,__tls_align,__tls_base -> lld emits
+#     these TLS symbols but does not export them by default; wasm-bindgen's
+#     threads transform needs them exported (else "failed to find
+#     __wasm_init_tls"). Exporting them works on both current nightlies, so no
+#     specific nightly pin is required.
 export RUSTFLAGS="-C target-feature=+atomics,+bulk-memory,+mutable-globals \
 -C link-arg=--shared-memory \
 -C link-arg=--import-memory \
--C link-arg=--max-memory=1073741824"
+-C link-arg=--max-memory=1073741824 \
+-C link-arg=--export=__wasm_init_tls \
+-C link-arg=--export=__tls_size \
+-C link-arg=--export=__tls_align \
+-C link-arg=--export=__tls_base"
 
 FLAG=""
 [ "$PROFILE" = "release" ] && FLAG="--release"
