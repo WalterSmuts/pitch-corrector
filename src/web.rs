@@ -44,12 +44,13 @@ pub struct Pipeline {
 
 impl Default for Pipeline {
     fn default() -> Self {
-        Self::new()
+        // Native default rate; headless callers (tests) use this.
+        Self::new(44_100.0)
     }
 }
 
 impl Pipeline {
-    pub fn new() -> Self {
+    pub fn new(sample_rate: f32) -> Self {
         let spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
         let spectrogram_buffer = spectrogram_display.clone_display_buffer();
 
@@ -62,7 +63,7 @@ impl Pipeline {
         let input_spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
         let input_spectrogram_buffer = input_spectrogram_display.clone_display_buffer();
 
-        let corrector = PitchCorrector::new();
+        let corrector = PitchCorrector::with_sample_rate(sample_rate);
         let controls = corrector.controls();
 
         let processor: Arc<dyn StreamProcessor + Send + Sync> = Arc::new(compose(
@@ -87,8 +88,8 @@ impl Pipeline {
                 spec_scratch,
                 spec_spectrum,
                 contour_scratch: vec![0.0f32; BUFFER_SIZE],
-                output_detector: YinPitchDetector::new(),
-                input_detector: YinPitchDetector::new(),
+                output_detector: YinPitchDetector::with_sample_rate(sample_rate),
+                input_detector: YinPitchDetector::with_sample_rate(sample_rate),
             }),
         }
     }
@@ -133,10 +134,6 @@ impl WebPitchCorrector {
     pub fn new() -> Result<WebPitchCorrector, JsValue> {
         console_log::init_with_level(log::Level::Info).ok();
 
-        let pipeline = Pipeline::new();
-        let input_processor = pipeline.processor().clone();
-        let output_processor = pipeline.processor().clone();
-
         let host = cpal::default_host();
 
         let input_device = host
@@ -152,6 +149,13 @@ impl WebPitchCorrector {
         let output_config = output_device
             .default_output_config()
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+
+        // Detection must use the real device rate, not the native default.
+        let sample_rate = input_config.sample_rate() as f32;
+
+        let pipeline = Pipeline::new(sample_rate);
+        let input_processor = pipeline.processor().clone();
+        let output_processor = pipeline.processor().clone();
 
         let playback = Arc::new(PlaybackState {
             sweep_active: AtomicBool::new(false),
@@ -185,7 +189,7 @@ impl WebPitchCorrector {
                             let t = counter / 960000.0;
                             let sine = 0.5 - 0.5 * (std::f32::consts::TAU * t).cos();
                             let freq = 50.0 * (200.0f32 / 50.0).powf(sine);
-                            phase += freq / 48000.0;
+                            phase += freq / sample_rate;
                             phase -= phase.floor();
                             let sample = (phase * std::f32::consts::TAU).sin() * 0.5;
                             input_processor.push_sample(sample);

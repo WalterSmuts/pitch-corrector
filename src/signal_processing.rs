@@ -15,14 +15,12 @@ use std::sync::Mutex;
 
 pub const BUFFER_SIZE: usize = 2048;
 pub const SPECTROGRAM_SIZE: usize = 8192;
-// KNOWN BUG (web): this fixed rate is used by YinPitchDetector::detect to
-// convert a detected period (in samples) into Hz. The native path forces
-// the device to 44100 (see hardware.rs), so it is correct there. The web
-// path, however, runs cpal at the browser AudioContext rate — typically
-// 48000 (see the hardcoded 48000 in web.rs's sweep generator) — so YIN
-// under-reports pitch by 44100/48000 (~1.5 semitones) on web.
-// Fix: thread the real stream sample rate (input_config.sample_rate) into
-// YinPitchDetector and the PitchCorrector/Pipeline instead of this const.
+// Native default sampling rate. The native path forces the device to this
+// rate (see hardware.rs). YIN converts a detected period to Hz using a
+// runtime rate (YinPitchDetector::with_sample_rate); this const is only the
+// default for `new()` plus the spectrogram Nyquist and test signals. The web
+// build runs at the browser AudioContext rate (often 48kHz) and threads that
+// real rate through, so it must NOT rely on this const for detection.
 const SAMPLE_RATE: usize = 44100;
 
 pub trait StreamProcessor {
@@ -804,6 +802,8 @@ const DEFAULT_YIN_THRESHOLD: f32 = 0.15;
 pub struct YinPitchDetector {
     threshold: f32,
     cmnd: Vec<f32>,
+    /// Sampling rate used to convert a detected period (in samples) to Hz.
+    sample_rate: f32,
 }
 
 impl Default for YinPitchDetector {
@@ -813,10 +813,19 @@ impl Default for YinPitchDetector {
 }
 
 impl YinPitchDetector {
+    /// Create a detector assuming the native `SAMPLE_RATE` (44.1kHz).
     pub fn new() -> Self {
+        Self::with_sample_rate(SAMPLE_RATE as f32)
+    }
+
+    /// Create a detector for a specific sampling rate. The web build runs
+    /// at the browser AudioContext rate (often 48kHz), so it must pass the
+    /// real device rate here or detected pitch is skewed.
+    pub fn with_sample_rate(sample_rate: f32) -> Self {
         Self {
             threshold: DEFAULT_YIN_THRESHOLD,
             cmnd: vec![0.0; BUFFER_SIZE / 2],
+            sample_rate,
         }
     }
 
@@ -836,7 +845,7 @@ impl YinPitchDetector {
         self.cumulative_mean_normalized_difference(buffer, half_len);
         let tau = self.absolute_threshold()?;
         let refined_tau = parabolic_interpolation(&self.cmnd, tau);
-        let frequency = SAMPLE_RATE as f32 / refined_tau;
+        let frequency = self.sample_rate / refined_tau;
 
         if !(50.0..=4000.0).contains(&frequency) {
             return None;
@@ -1295,6 +1304,34 @@ mod tests {
         let buffer = generate_sine(100.0, 2048);
         let freq = detector.detect(&buffer).unwrap();
         approx::assert_abs_diff_eq!(freq, 100.0, epsilon = 2.0);
+    }
+
+    #[test]
+    fn yin_uses_configured_sample_rate() {
+        // A 440Hz tone sampled at 48kHz (the typical web AudioContext rate)
+        // is only detected correctly if the detector knows that rate.
+        let freq = 440.0_f32;
+        let buf: Vec<f32> = (0..BUFFER_SIZE)
+            .map(|i| (std::f32::consts::TAU * freq * i as f32 / 48_000.0).sin())
+            .collect();
+
+        // Rate-aware detector recovers the true pitch.
+        let mut det48 = YinPitchDetector::with_sample_rate(48_000.0);
+        let detected = det48.detect(&buf).expect("should detect the tone");
+        approx::assert_abs_diff_eq!(detected, freq, epsilon = 2.0);
+
+        // The native-default (44.1kHz) detector misreads the same buffer by
+        // the rate ratio (~404Hz) — this is the web pitch-skew bug.
+        let mut det44 = YinPitchDetector::new();
+        let wrong = det44.detect(&buf).expect("still detects a pitch");
+        let expected_wrong = freq * 44_100.0 / 48_000.0;
+        approx::assert_abs_diff_eq!(wrong, expected_wrong, epsilon = 2.0);
+        assert!(
+            (detected - wrong).abs() > 30.0,
+            "fixed-rate detection should be skewed by >30Hz, got {:.1}Hz vs {:.1}Hz",
+            detected,
+            wrong
+        );
     }
 
     #[test]

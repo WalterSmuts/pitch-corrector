@@ -110,6 +110,21 @@ impl PitchCorrector {
     }
 
     pub fn with_scale(scale: Scale) -> Self {
+        Self::assemble(scale, YinPitchDetector::new())
+    }
+
+    /// Build a corrector whose pitch detector uses `sample_rate` (Hz). The
+    /// web build must pass its real device rate here so detection is not
+    /// skewed by the native-default rate.
+    pub fn with_sample_rate(sample_rate: f32) -> Self {
+        Self::with_scale_and_sample_rate(Scale::pentatonic(Note::C), sample_rate)
+    }
+
+    pub fn with_scale_and_sample_rate(scale: Scale, sample_rate: f32) -> Self {
+        Self::assemble(scale, YinPitchDetector::with_sample_rate(sample_rate))
+    }
+
+    fn assemble(scale: Scale, yin: YinPitchDetector) -> Self {
         let controls = Arc::new(PitchCorrectorControls {
             shift: Mutex::new(Interval::UNISON),
             scale: Mutex::new(scale),
@@ -119,7 +134,7 @@ impl PitchCorrector {
         });
 
         let controls_clone = controls.clone();
-        let detector = Mutex::new(YinPitchDetector::new());
+        let detector = Mutex::new(yin);
         let snapper = Mutex::new(NoteSnapper::new());
         let smoothed_ratio = Mutex::new(1.0f32);
         let gap_hops = Mutex::new(0usize);
