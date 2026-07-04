@@ -466,8 +466,10 @@ mod tests {
         let center = (g3.ln() + a3.ln()) / 2.0;
         let swing = (a3.ln() - g3.ln()) / 2.0;
 
-        // Noise levels as fraction of signal amplitude: 0.0, 0.1, ..., 1.0
-        let levels: Vec<f32> = (0..=10).map(|i| i as f32 * 0.1).collect();
+        // Noise levels as fraction of signal amplitude: 0.0..0.5. Levels above
+        // ~0.5 fail detection entirely (YIN energy/CMND floor) and never affect
+        // the pass check, so testing them was pure wasted work.
+        let levels: Vec<f32> = (0..=5).map(|i| i as f32 * 0.1).collect();
         let samples_per_level = BUFFER_SIZE * 40;
 
         let mut best_noise = 0.0f32;
@@ -531,6 +533,10 @@ mod tests {
             );
             if accuracy >= PERF_NOISE_PASS {
                 best_noise = noise_amp;
+            } else if best_noise >= PERF_MIN_NOISE_TOLERANCE {
+                // Tolerance already proven and accuracy is now falling with
+                // more noise; higher levels won't pass, so stop early.
+                break;
             }
         }
 
