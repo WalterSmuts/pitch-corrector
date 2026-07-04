@@ -909,7 +909,13 @@ fn parabolic_interpolation(cmnd: &[f32], tau: usize) -> f32 {
     let alpha = cmnd[tau - 1];
     let beta = cmnd[tau];
     let gamma = cmnd[tau + 1];
-    let peak = 0.5 * (alpha - gamma) / (alpha - 2.0 * beta + gamma);
+    // Guard the degenerate (flat/collinear) case: a zero denominator would
+    // produce NaN/inf and silently discard an otherwise valid detection.
+    let denom = alpha - 2.0 * beta + gamma;
+    if denom.abs() < f32::EPSILON {
+        return tau as f32;
+    }
+    let peak = 0.5 * (alpha - gamma) / denom;
     tau as f32 + peak
 }
 #[cfg(test)]
@@ -1350,6 +1356,18 @@ mod tests {
             detected,
             wrong
         );
+    }
+
+    #[test]
+    fn parabolic_interpolation_handles_flat_input() {
+        // Collinear/flat neighbours give a zero denominator; result must be
+        // finite (fall back to the integer tau) rather than NaN/inf.
+        let flat = vec![0.5f32; 8];
+        let r = parabolic_interpolation(&flat, 3);
+        assert!(r.is_finite(), "flat input produced non-finite tau: {r}");
+        let linear = vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7];
+        let r2 = parabolic_interpolation(&linear, 3);
+        assert!(r2.is_finite(), "linear input produced non-finite tau: {r2}");
     }
 
     #[test]
