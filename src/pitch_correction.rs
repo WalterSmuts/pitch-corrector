@@ -1,5 +1,7 @@
 use crate::music::{Interval, Note, Pitch, Scale};
-use crate::signal_processing::{PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector};
+use crate::signal_processing::{
+    PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, BUFFER_SIZE,
+};
 use crossbeam_queue::ArrayQueue;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -114,12 +116,20 @@ impl Default for PitchCorrector {
 }
 
 impl PitchCorrector {
+    /// Native default sampling rate (Hz), matching hardware.rs.
+    const DEFAULT_SAMPLE_RATE: f32 = 44_100.0;
+    /// Time constant of the correction-ratio smoothing filter. The per-hop
+    /// one-pole coefficient is derived from this and the actual sample rate,
+    /// so the smoothing speed is independent of rate and hop size. ~12.7ms
+    /// reproduces the previous fixed alpha=0.6 at 44.1kHz / 512-sample hop.
+    const SMOOTHING_TAU_SECONDS: f32 = 0.0127;
+
     pub fn new() -> Self {
         Self::with_scale(Scale::pentatonic(Note::C))
     }
 
     pub fn with_scale(scale: Scale) -> Self {
-        Self::assemble(scale, YinPitchDetector::new())
+        Self::assemble(scale, Self::DEFAULT_SAMPLE_RATE)
     }
 
     /// Build a corrector whose pitch detector uses `sample_rate` (Hz). The
@@ -130,10 +140,17 @@ impl PitchCorrector {
     }
 
     pub fn with_scale_and_sample_rate(scale: Scale, sample_rate: f32) -> Self {
-        Self::assemble(scale, YinPitchDetector::with_sample_rate(sample_rate))
+        Self::assemble(scale, sample_rate)
     }
 
-    fn assemble(scale: Scale, yin: YinPitchDetector) -> Self {
+    fn assemble(scale: Scale, sample_rate: f32) -> Self {
+        let yin = YinPitchDetector::with_sample_rate(sample_rate);
+        // Per-hop one-pole coefficient from the time constant: the ratio_fn
+        // runs once per hop (BUFFER_SIZE/4 samples), so alpha adapts to the
+        // real hop period and keeps a constant smoothing time.
+        let hop_period = (BUFFER_SIZE / 4) as f32 / sample_rate;
+        let smoothing_alpha = 1.0 - (-hop_period / Self::SMOOTHING_TAU_SECONDS).exp();
+
         // ~94 hops/sec (hop=BUFFER_SIZE/4 at 44.1-48kHz); this bounds the
         // target-pitch log to a few minutes of recording.
         const TARGET_CONTOUR_CAPACITY: usize = 32768;
@@ -175,22 +192,25 @@ impl PitchCorrector {
                 _ => 1.0,
             };
 
-            // Smooth the correction ratio to avoid abrupt changes.
-            // Only update when we have a valid detection; hold the
-            // previous ratio during detection gaps (see f837ae5: decaying
-            // toward 1.0 every gap-hop caused a systematic downward bias).
+            // Smooth the correction ratio to avoid abrupt changes. The
+            // one-pole coefficient (smoothing_alpha) is derived from a fixed
+            // time constant and the real sample rate/hop, so tracking speed
+            // does not drift with the device rate.
+            //
+            // Only update when we have a valid detection; hold the previous
+            // ratio during detection gaps (see f837ae5: decaying toward 1.0
+            // every gap-hop caused a systematic downward bias).
             //
             // However, a *sustained* gap means the current note has ended,
             // so after GAP_RESET_HOPS of no detection we forget the held
             // ratio and return to neutral. This prevents the first hops of
             // an unrelated later note from being mis-corrected by a stale
             // ratio, without reintroducing the per-hop downward bias.
-            const SMOOTHING: f32 = 0.6;
             const GAP_RESET_HOPS: usize = 43; // ~0.5s at 44.1kHz, hop=512
             let mut prev = smoothed_ratio.lock().unwrap();
             let mut gaps = gap_hops.lock().unwrap();
             if target_pitch.is_some() && detected.is_some() {
-                *prev += SMOOTHING * (target_ratio - *prev);
+                *prev += smoothing_alpha * (target_ratio - *prev);
                 *gaps = 0;
             } else {
                 *gaps = gaps.saturating_add(1);
