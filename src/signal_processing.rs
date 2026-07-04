@@ -1394,8 +1394,9 @@ mod tests {
         let expected_freq = input_freq * scaling_ratio;
         let processor = PhaseVocoderPitchShifter::new(scaling_ratio);
 
-        // Feed plenty of signal for steady-state
-        let num_samples = BUFFER_SIZE * 80;
+        // Feed enough signal to reach steady state; skip=len/2 leaves ~8
+        // buffers of warmup before the single analysis block.
+        let num_samples = BUFFER_SIZE * 16;
         let mut output = Vec::new();
         for i in 0..num_samples {
             let sample = (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
@@ -1511,7 +1512,7 @@ mod tests {
             f32::from_bits(ratio_clone.load(Ordering::Relaxed))
         });
 
-        let total_samples = BUFFER_SIZE * 80;
+        let total_samples = BUFFER_SIZE * 32;
         let switch_at = total_samples / 2;
 
         let mut output = Vec::new();
