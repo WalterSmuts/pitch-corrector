@@ -538,7 +538,6 @@ fn draw_spectrogram_from(
         ctx.set_fill_style_str(&HEATMAP_LUT[intensity as usize]);
         ctx.fill_rect(column_x as f64, y_pixel as f64, 1.0, 1.0);
     }
-
 }
 
 fn draw_contour(
@@ -617,7 +616,6 @@ fn draw_contour(
         );
         ctx.fill();
     }
-
 }
 
 fn draw_waveform_from(
@@ -671,7 +669,6 @@ fn draw_waveform_from(
         1.0,
         (rms_h * 2.0) as f64,
     );
-
 }
 
 fn heatmap(v: u8) -> (u8, u8, u8) {

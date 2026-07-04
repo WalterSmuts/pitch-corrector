@@ -291,9 +291,14 @@ impl Interval {
     }
 
     pub fn negate(self) -> Self {
+        // Negate the total semitone span, then re-decompose into a
+        // canonical (simple in 0..12, signed octaves) pair. The previous
+        // implementation only borrowed the octave and left `simple`
+        // unchanged, so e.g. a major third (+4) negated to -8 instead of -4.
+        let total = -self.semitones();
         Self {
-            simple: self.simple,
-            octaves: -self.octaves - if self.simple as u8 > 0 { 1 } else { 0 },
+            simple: SimpleInterval::ALL[total.rem_euclid(12) as usize],
+            octaves: total.div_euclid(12) as i8,
         }
     }
 }
@@ -394,5 +399,44 @@ mod tests {
     fn octave_interval() {
         assert_eq!(Interval::OCTAVE.semitones(), 12);
         approx::assert_abs_diff_eq!(Interval::OCTAVE.to_ratio(), 2.0, epsilon = 0.001);
+    }
+
+    #[test]
+    fn negate_simple_intervals() {
+        // A downward interval spans the negative of the upward semitones.
+        assert_eq!(Interval::UNISON.negate().semitones(), 0);
+        assert_eq!(Interval::MAJOR_THIRD.negate().semitones(), -4);
+        assert_eq!(Interval::PERFECT_FIFTH.negate().semitones(), -7);
+        assert_eq!(Interval::MAJOR_SEVENTH.negate().semitones(), -11);
+        assert_eq!(Interval::OCTAVE.negate().semitones(), -12);
+    }
+
+    #[test]
+    fn negate_is_an_involution() {
+        for simple in SimpleInterval::ALL {
+            for octaves in -2..=2 {
+                let iv = Interval::compound(simple, octaves);
+                assert_eq!(
+                    iv.negate().semitones(),
+                    -iv.semitones(),
+                    "negate({iv:?}) had wrong span",
+                );
+                assert_eq!(
+                    iv.negate().negate().semitones(),
+                    iv.semitones(),
+                    "double negate({iv:?}) did not round-trip",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn negate_down_fifth_ratio() {
+        // A perfect fifth down is the 2:3 ratio (~0.667), not 3:4 (~0.749).
+        approx::assert_abs_diff_eq!(
+            Interval::PERFECT_FIFTH.negate().to_ratio(),
+            2.0 / 3.0,
+            epsilon = 0.001
+        );
     }
 }

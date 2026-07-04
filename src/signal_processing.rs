@@ -601,7 +601,9 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
         // Seed with previous frame bins (candidates for time propagation)
         for k in 0..num_bins {
             if state.synthesis.magnitudes[k] > 1e-10 {
-                state.pghi_heap.push((state.synthesis.magnitudes[k].to_bits(), k, true));
+                state
+                    .pghi_heap
+                    .push((state.synthesis.magnitudes[k].to_bits(), k, true));
             }
         }
 
@@ -620,17 +622,23 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
                 let phase_up = state.pghi_new_phase[k]
                     + (state.synthesis.freq_deriv[k] + state.synthesis.freq_deriv[k + 1]) / 2.0;
                 state.pghi_new_phase[k + 1] = phase_up;
-                state.pghi_heap.push((state.synthesis.magnitudes[k + 1].to_bits(), k + 1, false));
+                state
+                    .pghi_heap
+                    .push((state.synthesis.magnitudes[k + 1].to_bits(), k + 1, false));
             }
             if k > 0 && !state.pghi_computed[k - 1] {
                 let phase_down = state.pghi_new_phase[k]
                     - (state.synthesis.freq_deriv[k] + state.synthesis.freq_deriv[k - 1]) / 2.0;
                 state.pghi_new_phase[k - 1] = phase_down;
-                state.pghi_heap.push((state.synthesis.magnitudes[k - 1].to_bits(), k - 1, false));
+                state
+                    .pghi_heap
+                    .push((state.synthesis.magnitudes[k - 1].to_bits(), k - 1, false));
             }
         }
 
-        state.prev_output_phase.copy_from_slice(&state.pghi_new_phase);
+        state
+            .prev_output_phase
+            .copy_from_slice(&state.pghi_new_phase);
 
         // Build synthesis bins
         for (k, phase) in state.pghi_new_phase.iter().enumerate().take(num_bins) {
