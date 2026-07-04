@@ -358,6 +358,9 @@
             try {
                 if (corrector) corrector.stop();
                 corrector = new WebPitchCorrector();
+                // E2E test hook: expose the corrector so Playwright can read
+                // the captured input/output buffers. Only when ?e2e is set.
+                if (new URLSearchParams(location.search).has('e2e')) window.__pc = corrector;
                 SAMPLE_RATE = corrector.sample_rate();
                 applyScale();
                 corrector.set_shift(parseFloat(slider.value));
@@ -620,6 +623,9 @@
             await init();
             if (!corrector) {
                 corrector = new WebPitchCorrector();
+                // E2E test hook: expose the corrector so Playwright can read
+                // the captured input/output buffers. Only when ?e2e is set.
+                if (new URLSearchParams(location.search).has('e2e')) window.__pc = corrector;
                 SAMPLE_RATE = corrector.sample_rate();
                 applyScale();
                 corrector.set_shift(parseFloat(slider.value));

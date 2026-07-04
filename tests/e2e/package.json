@@ -1,0 +1,13 @@
+{
+  "name": "pitch-corrector-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "gen": "node gen-tone.mjs",
+    "test": "node gen-tone.mjs && node run.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.61.1"
+  }
+}

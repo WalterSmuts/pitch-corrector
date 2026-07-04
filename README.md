@@ -94,6 +94,23 @@ threads docs and StackBlitz's "Destroyer of Threads" post). Known failure modes:
 cargo test --lib
 ```
 
+### Headless UX test (Playwright)
+
+`tests/e2e/` drives the **worklet** build in headless Chromium end-to-end:
+it serves the app with COOP/COEP (`serve.py`), feeds `tone.wav` as the
+microphone (Chromium `--use-file-for-fake-audio-capture`), clicks Record,
+and asserts cross-origin isolation, that the pipeline goes live, that the
+captured input/output are non-silent (audio actually flows in→DSP→out),
+that there are no long main-thread tasks during recording (no stutter),
+and that there are no `TextDecoder`/`Atomics`/shared-memory console errors.
+
+```bash
+./build-worklet.sh                 # produce the worklet pkg/ first
+cd tests/e2e && npm install        # reuses a cached/system Chrome
+npm test                           # generates tone.wav, runs the checks
+# PW_CHROME=/path/to/chrome npm test   # to point at a specific browser
+```
+
 ### Performance tuning
 
 Tests prefixed with `perf_` measure system quality with hard thresholds.
