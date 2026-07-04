@@ -1400,6 +1400,68 @@ mod tests {
     }
 
     #[test]
+    fn yin_detects_fundamental_of_harmonic_tone() {
+        // Sawtooth-like tone: fundamental plus decaying harmonics. YIN must
+        // lock onto the fundamental, not an overtone (octave-error guard on a
+        // realistic, harmonically-rich signal rather than a pure sine).
+        for &f in &[110.0_f32, 196.0, 261.63] {
+            let buf: Vec<f32> = (0..BUFFER_SIZE)
+                .map(|i| {
+                    let t = i as f32 / SAMPLE_RATE as f32;
+                    let mut s = 0.0;
+                    for k in 1..=6 {
+                        s += (1.0 / k as f32) * (std::f32::consts::TAU * f * k as f32 * t).sin();
+                    }
+                    s * 0.3
+                })
+                .collect();
+            let mut det = YinPitchDetector::new();
+            let d = det.detect(&buf).expect("harmonic tone should detect");
+            approx::assert_abs_diff_eq!(d, f, epsilon = f * 0.03);
+        }
+    }
+
+    #[test]
+    fn yin_tracks_vibrato() {
+        // 5Hz vibrato, +/-1 semitone around A3 (220Hz). Each windowed
+        // detection should stay within the vibrato bounds (with a small
+        // margin), i.e. no octave jumps or dropouts under modulation.
+        use std::f32::consts::TAU;
+        let center = 220.0_f32;
+        let rate = 5.0;
+        let depth = 1.0; // semitones
+        let total = BUFFER_SIZE * 20;
+        let mut phase = 0.0f32;
+        let mut sig = Vec::with_capacity(total);
+        for i in 0..total {
+            let t = i as f32 / SAMPLE_RATE as f32;
+            let f = center * 2f32.powf(depth * (TAU * rate * t).sin() / 12.0);
+            phase += f / SAMPLE_RATE as f32;
+            phase -= phase.floor();
+            sig.push((phase * TAU).sin());
+        }
+        let lo = center * 2f32.powf(-1.5 / 12.0);
+        let hi = center * 2f32.powf(1.5 / 12.0);
+        let mut det = YinPitchDetector::new();
+        let (mut n, mut ok) = (0u32, 0u32);
+        let mut start = 0;
+        while start + BUFFER_SIZE <= sig.len() {
+            if let Some(f) = det.detect(&sig[start..start + BUFFER_SIZE]) {
+                n += 1;
+                if f >= lo && f <= hi {
+                    ok += 1;
+                }
+            }
+            start += BUFFER_SIZE / 2;
+        }
+        assert!(n > 0, "no detections across vibrato signal");
+        assert!(
+            ok as f32 / n as f32 >= 0.8,
+            "vibrato tracking only {ok}/{n} within bounds"
+        );
+    }
+
+    #[test]
     fn yin_returns_none_for_silence() {
         let mut detector = YinPitchDetector::new();
         let buffer = vec![0.0; 1024];
