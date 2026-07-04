@@ -69,6 +69,24 @@ Then open http://localhost:8888. Requires a browser with `AudioWorklet` and
 SharedArrayBuffer (cross-origin isolated). The `worklet` feature must be built
 this way — a normal `wasm-pack` build will not link the threads runtime.
 
+#### Worklet troubleshooting
+
+wasm threads are notoriously toolchain-version-sensitive (see the wasm-bindgen
+threads docs and StackBlitz's "Destroyer of Threads" post). Known failure modes:
+
+- **`wasm-bindgen: failed to find __wasm_init_tls`** — the nightly rustc/lld
+  and `wasm-bindgen-cli` disagree on the wasm-threads TLS ABI. Pin a matched
+  pair (align the nightly toolchain to the `wasm-bindgen` version in
+  `Cargo.lock`, e.g. `rustup override set <nightly>`); a very new nightly with
+  an older `wasm-bindgen-cli` (or vice-versa) is the usual cause.
+- **`Atomics.waitAsync: invalid array type`** at runtime — the wasm memory is
+  not shared (a plain `ArrayBuffer`). Ensure the build passes
+  `--shared-memory --import-memory --max-memory` (build-worklet.sh does) and
+  that the page is served cross-origin isolated (serve.py, `crossOriginIsolated
+  === true`).
+- **`TextDecoder is not defined`** — fixed in the cpal fork by polyfilling
+  TextEncoder/TextDecoder in the worklet scope.
+
 ### Tests
 
 ```bash
