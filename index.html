@@ -290,6 +290,7 @@
             try {
                 if (corrector) corrector.stop();
                 corrector = new WebPitchCorrector();
+                SAMPLE_RATE = corrector.sample_rate();
                 applyScale();
                 corrector.set_shift(parseFloat(slider.value));
 
@@ -455,7 +456,10 @@
         });
 
         // --- WAV download/upload ---
-        const SAMPLE_RATE = 48000;
+        // Fallback only; the real device rate is read from the WASM module
+        // (corrector.sample_rate()) once the corrector is created, so WAV
+        // export and the debug dump always match the actual audio rate.
+        let SAMPLE_RATE = 48000;
 
         function encodeWav(samples) {
             const numSamples = samples.length;
@@ -542,6 +546,7 @@
             await init();
             if (!corrector) {
                 corrector = new WebPitchCorrector();
+                SAMPLE_RATE = corrector.sample_rate();
                 applyScale();
                 corrector.set_shift(parseFloat(slider.value));
             }
@@ -671,6 +676,8 @@
 
         function freqToContourY(freq, height) {
             if (freq <= 0) return -1;
+            // Mirrors draw_contour_dot in src/web.rs: 57 = A4 semitones from C0,
+            // 440 = A4 Hz, 24 = two-octave wrap. Keep the two in sync.
             const semitones = 57.0 + 12.0 * Math.log2(freq / 440.0);
             const inTwoOctaves = ((semitones % 24) + 24) % 24;
             return height * (1.0 - inTwoOctaves / 24.0);

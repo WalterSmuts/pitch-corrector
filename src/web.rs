@@ -126,6 +126,7 @@ pub struct WebPitchCorrector {
     output_stream: cpal::Stream,
     pipeline: Pipeline,
     playback: Arc<PlaybackState>,
+    sample_rate: f32,
 }
 
 #[wasm_bindgen]
@@ -272,7 +273,15 @@ impl WebPitchCorrector {
             output_stream,
             pipeline,
             playback,
+            sample_rate,
         })
+    }
+
+    /// The actual device sample rate (Hz) the streams run at. JS reads this
+    /// as the single source of truth (e.g. for WAV export) instead of
+    /// hardcoding a rate that may not match the browser AudioContext.
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
     }
 
     pub fn set_shift(&self, semitones: f32) {
@@ -614,7 +623,8 @@ fn draw_contour(
         let _ = ctx.arc(
             (column_x + 1.0) as f64,
             y as f64,
-            2.0,
+            // Keep in sync with the JS edited-contour dot radius in index.html.
+            1.5,
             0.0,
             std::f64::consts::TAU,
         );
