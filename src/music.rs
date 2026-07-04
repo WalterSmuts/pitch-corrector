@@ -40,6 +40,21 @@ impl Note {
     fn bit(self) -> u16 {
         1 << (self as u16)
     }
+
+    /// Conventional name using sharps (e.g. A#).
+    pub fn name_sharp(self) -> &'static str {
+        [
+            "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+        ][self as usize]
+    }
+
+    /// Conventional name using flats (e.g. Bb). Preferred when spelling
+    /// flat keys, where "A#" would more correctly read "Bb".
+    pub fn name_flat(self) -> &'static str {
+        [
+            "C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B",
+        ][self as usize]
+    }
 }
 
 /// An absolute pitch: a note class plus an octave.
@@ -144,6 +159,142 @@ impl Scale {
                 Interval::MAJOR_THIRD,
                 Interval::PERFECT_FIFTH,
                 Interval::MAJOR_SIXTH,
+            ],
+            root,
+        )
+    }
+
+    /// Minor pentatonic (1 b3 4 5 b7).
+    pub fn minor_pentatonic(root: Note) -> Self {
+        Self::from_intervals(
+            &[
+                Interval::UNISON,
+                Interval::MINOR_THIRD,
+                Interval::PERFECT_FOURTH,
+                Interval::PERFECT_FIFTH,
+                Interval::MINOR_SEVENTH,
+            ],
+            root,
+        )
+    }
+
+    /// Blues scale: minor pentatonic plus the b5 "blue" note.
+    pub fn blues(root: Note) -> Self {
+        Self::from_intervals(
+            &[
+                Interval::UNISON,
+                Interval::MINOR_THIRD,
+                Interval::PERFECT_FOURTH,
+                Interval::TRITONE,
+                Interval::PERFECT_FIFTH,
+                Interval::MINOR_SEVENTH,
+            ],
+            root,
+        )
+    }
+
+    /// Harmonic minor (natural minor with a raised 7th).
+    pub fn harmonic_minor(root: Note) -> Self {
+        Self::from_intervals(
+            &[
+                Interval::UNISON,
+                Interval::MAJOR_SECOND,
+                Interval::MINOR_THIRD,
+                Interval::PERFECT_FOURTH,
+                Interval::PERFECT_FIFTH,
+                Interval::MINOR_SIXTH,
+                Interval::MAJOR_SEVENTH,
+            ],
+            root,
+        )
+    }
+
+    /// Ascending melodic minor (raised 6th and 7th).
+    pub fn melodic_minor(root: Note) -> Self {
+        Self::from_intervals(
+            &[
+                Interval::UNISON,
+                Interval::MAJOR_SECOND,
+                Interval::MINOR_THIRD,
+                Interval::PERFECT_FOURTH,
+                Interval::PERFECT_FIFTH,
+                Interval::MAJOR_SIXTH,
+                Interval::MAJOR_SEVENTH,
+            ],
+            root,
+        )
+    }
+
+    pub fn dorian(root: Note) -> Self {
+        Self::from_intervals(
+            &[
+                Interval::UNISON,
+                Interval::MAJOR_SECOND,
+                Interval::MINOR_THIRD,
+                Interval::PERFECT_FOURTH,
+                Interval::PERFECT_FIFTH,
+                Interval::MAJOR_SIXTH,
+                Interval::MINOR_SEVENTH,
+            ],
+            root,
+        )
+    }
+
+    pub fn phrygian(root: Note) -> Self {
+        Self::from_intervals(
+            &[
+                Interval::UNISON,
+                Interval::MINOR_SECOND,
+                Interval::MINOR_THIRD,
+                Interval::PERFECT_FOURTH,
+                Interval::PERFECT_FIFTH,
+                Interval::MINOR_SIXTH,
+                Interval::MINOR_SEVENTH,
+            ],
+            root,
+        )
+    }
+
+    pub fn lydian(root: Note) -> Self {
+        Self::from_intervals(
+            &[
+                Interval::UNISON,
+                Interval::MAJOR_SECOND,
+                Interval::MAJOR_THIRD,
+                Interval::TRITONE,
+                Interval::PERFECT_FIFTH,
+                Interval::MAJOR_SIXTH,
+                Interval::MAJOR_SEVENTH,
+            ],
+            root,
+        )
+    }
+
+    pub fn mixolydian(root: Note) -> Self {
+        Self::from_intervals(
+            &[
+                Interval::UNISON,
+                Interval::MAJOR_SECOND,
+                Interval::MAJOR_THIRD,
+                Interval::PERFECT_FOURTH,
+                Interval::PERFECT_FIFTH,
+                Interval::MAJOR_SIXTH,
+                Interval::MINOR_SEVENTH,
+            ],
+            root,
+        )
+    }
+
+    pub fn locrian(root: Note) -> Self {
+        Self::from_intervals(
+            &[
+                Interval::UNISON,
+                Interval::MINOR_SECOND,
+                Interval::MINOR_THIRD,
+                Interval::PERFECT_FOURTH,
+                Interval::TRITONE,
+                Interval::MINOR_SIXTH,
+                Interval::MINOR_SEVENTH,
             ],
             root,
         )
@@ -430,8 +581,52 @@ mod tests {
     }
 
     #[test]
+    fn new_scales_have_expected_notes() {
+        // A minor pentatonic: A C D E G
+        let am = Scale::minor_pentatonic(Note::A);
+        for n in [Note::A, Note::C, Note::D, Note::E, Note::G] {
+            assert!(am.contains(n), "A minor pentatonic missing {n:?}");
+        }
+        assert!(!am.contains(Note::B));
+
+        // A blues adds the b5 (Eb/DS).
+        assert!(Scale::blues(Note::A).contains(Note::DS));
+
+        // C harmonic minor: C D Eb F G Ab B (raised 7th).
+        let chm = Scale::harmonic_minor(Note::C);
+        assert!(chm.contains(Note::B));
+        assert!(chm.contains(Note::DS)); // Eb
+        assert!(chm.contains(Note::GS)); // Ab
+
+        // Modes of C should all contain the tonic and have 7 notes.
+        for s in [
+            Scale::dorian(Note::C),
+            Scale::phrygian(Note::C),
+            Scale::lydian(Note::C),
+            Scale::mixolydian(Note::C),
+            Scale::locrian(Note::C),
+            Scale::melodic_minor(Note::C),
+        ] {
+            assert!(s.contains(Note::C));
+            assert_eq!(s.bits().count_ones(), 7);
+        }
+
+        // C lydian raises the 4th (F#), C mixolydian lowers the 7th (Bb/AS).
+        assert!(Scale::lydian(Note::C).contains(Note::FS));
+        assert!(Scale::mixolydian(Note::C).contains(Note::AS));
+    }
+
+    #[test]
+    fn note_flat_and_sharp_names() {
+        assert_eq!(Note::AS.name_sharp(), "A#");
+        assert_eq!(Note::AS.name_flat(), "Bb");
+        assert_eq!(Note::DS.name_flat(), "Eb");
+        assert_eq!(Note::C.name_flat(), "C");
+        assert_eq!(Note::C.name_sharp(), "C");
+    }
+
+    #[test]
     fn negate_simple_intervals() {
-        // A downward interval spans the negative of the upward semitones.
         assert_eq!(Interval::UNISON.negate().semitones(), 0);
         assert_eq!(Interval::MAJOR_THIRD.negate().semitones(), -4);
         assert_eq!(Interval::PERFECT_FIFTH.negate().semitones(), -7);
