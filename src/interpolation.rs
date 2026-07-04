@@ -75,6 +75,7 @@ fn sinc(x: f32) -> f32 {
 mod test {
     use super::Interpolate;
     use super::InterpolationMethod;
+    use rand::{rngs::StdRng, Rng, SeedableRng};
     use std::f32::consts::TAU;
 
     const BUFFER_SIZE: usize = 1024;
@@ -93,8 +94,9 @@ mod test {
         }
 
         // Interpolate at random samples and assert signal is equal to interpolation
+        let mut rng = StdRng::seed_from_u64(0x1);
         for _ in 0..TEST_SAMPLE_SIZE {
-            let x = rand::random::<f32>() * (BUFFER_SIZE as f32 - 1.0);
+            let x = rng.random::<f32>() * (BUFFER_SIZE as f32 - 1.0);
             assert_eq!(
                 signal(x),
                 buffer.interpolate_sample(x, InterpolationMethod::Linear)
@@ -114,8 +116,9 @@ mod test {
         }
 
         // Interpolate at random samples and assert signal is equal to interpolation
+        let mut rng = StdRng::seed_from_u64(0x2);
         for _ in 0..TEST_SAMPLE_SIZE {
-            let x = rand::random::<f32>() * BUFFER_SIZE as f32;
+            let x = rng.random::<f32>() * BUFFER_SIZE as f32;
             approx::assert_abs_diff_eq!(
                 signal(x),
                 buffer.interpolate_sample(x, InterpolationMethod::WhittakerShannon),

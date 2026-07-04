@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn perf_pitch_corrector_noise_tolerance() {
         use crate::signal_processing::YinPitchDetector;
-        use rand::Rng;
+        use rand::{rngs::StdRng, Rng, SeedableRng};
 
         let pentatonic_c = Scale::pentatonic(Note::C);
 
@@ -543,7 +543,9 @@ mod tests {
         let samples_per_level = BUFFER_SIZE * 40;
 
         let mut best_noise = 0.0f32;
-        let mut rng = rand::rng();
+        // Fixed seed: keep the noise deterministic so the pass/fail threshold
+        // is reproducible across runs and CI.
+        let mut rng = StdRng::seed_from_u64(0x51173);
 
         for &noise_amp in &levels {
             let corrector = PitchCorrector::with_scale(pentatonic_c);
