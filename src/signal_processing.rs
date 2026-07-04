@@ -804,6 +804,10 @@ pub struct YinPitchDetector {
     cmnd: Vec<f32>,
     /// Sampling rate used to convert a detected period (in samples) to Hz.
     sample_rate: f32,
+    /// Slowly-decaying estimate of recent peak frame energy, used by the
+    /// adaptive gate so quiet-but-clear input is kept while inter-note
+    /// silence is rejected relative to the current program level.
+    peak_energy: f32,
 }
 
 impl Default for YinPitchDetector {
@@ -826,6 +830,7 @@ impl YinPitchDetector {
             threshold: DEFAULT_YIN_THRESHOLD,
             cmnd: vec![0.0; BUFFER_SIZE / 2],
             sample_rate,
+            peak_energy: 0.0,
         }
     }
 
@@ -835,9 +840,22 @@ impl YinPitchDetector {
             return None;
         }
 
-        // Reject silence / noise floor
+        // Adaptive energy gate. A fixed absolute threshold is tied to input
+        // gain: it rejects quiet singing outright and cliffs hard in noise.
+        // Instead, track a slowly-decaying peak energy and reject a frame
+        // only when it is either true silence (denormal/DC floor) or far
+        // below the recent program level (inter-note silence).
         let energy: f32 = buffer.iter().map(|s| s * s).sum::<f32>() / buffer.len() as f32;
-        if energy < 1e-4 {
+
+        // Absolute floor for genuine silence, independent of program level.
+        const SILENCE_FLOOR: f32 = 1e-6;
+        // Relative floor: ~30 dB (energy 1e-3) below the recent peak.
+        const RELATIVE_FLOOR: f32 = 1e-3;
+        // Decay per call so the peak reflects the last ~second of audio.
+        const PEAK_DECAY: f32 = 0.995;
+
+        self.peak_energy = (self.peak_energy * PEAK_DECAY).max(energy);
+        if energy < SILENCE_FLOOR || energy < self.peak_energy * RELATIVE_FLOOR {
             return None;
         }
 
@@ -1332,6 +1350,28 @@ mod tests {
             detected,
             wrong
         );
+    }
+
+    #[test]
+    fn yin_detects_quiet_tone_below_old_fixed_gate() {
+        // Amplitude 0.01 => frame energy ~5e-5, below the old fixed 1e-4 gate
+        // that would have rejected it. The adaptive gate keeps it.
+        let amp = 0.01_f32;
+        let freq = 440.0_f32;
+        let buf: Vec<f32> = (0..BUFFER_SIZE)
+            .map(|i| amp * (std::f32::consts::TAU * freq * i as f32 / SAMPLE_RATE as f32).sin())
+            .collect();
+        let energy: f32 = buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32;
+        assert!(
+            energy < 1e-4,
+            "test setup: energy {energy} should be below old gate"
+        );
+
+        let mut detector = YinPitchDetector::new();
+        let detected = detector
+            .detect(&buf)
+            .expect("quiet clear tone should detect");
+        approx::assert_abs_diff_eq!(detected, freq, epsilon = 2.0);
     }
 
     #[test]
