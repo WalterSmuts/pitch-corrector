@@ -285,8 +285,46 @@
         }
 
         // --- Recording ---
+        // Returns a list of required browser features that are missing.
+        function checkBrowserSupport() {
+            const missing = [];
+            if (typeof WebAssembly === 'undefined') missing.push('WebAssembly');
+            if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia))
+                missing.push('microphone access (getUserMedia)');
+            if (!(window.AudioContext || window.webkitAudioContext))
+                missing.push('Web Audio');
+            return missing;
+        }
+
+        // Map a start-up error (DOMException or cpal string) to a clear message.
+        function describeStartError(e) {
+            const s = ((e && (e.name || '')) + ' ' + (e && (e.message || ''))).trim() || String(e);
+            const hay = s.toLowerCase();
+            if (hay.includes('notallowed') || hay.includes('permission') || hay.includes('denied'))
+                return 'Microphone permission denied. Allow mic access in your browser, then click Record again.';
+            if (hay.includes('notfound') || hay.includes('no input device') || hay.includes('devicesnotfound'))
+                return 'No microphone found. Connect a microphone and click Record again.';
+            if (hay.includes('notreadable') || hay.includes('in use'))
+                return 'Microphone is in use by another application. Close it and retry.';
+            return 'Could not start audio: ' + s;
+        }
+
         async function startRecording() {
-            await init();
+            const missing = checkBrowserSupport();
+            if (missing.length) {
+                els.status.textContent =
+                    'Unsupported browser — missing ' + missing.join(', ') +
+                    '. Try a recent Chrome, Edge, or Firefox over HTTPS.';
+                return;
+            }
+            try {
+                await init();
+            } catch (e) {
+                els.status.textContent =
+                    'Failed to load the audio engine (WASM). Check your connection and reload. (' + e + ')';
+                setState('idle');
+                return;
+            }
             try {
                 if (corrector) corrector.stop();
                 corrector = new WebPitchCorrector();
@@ -326,7 +364,7 @@
                 }
                 draw();
             } catch (e) {
-                els.status.textContent = 'Error: ' + e;
+                els.status.textContent = describeStartError(e);
                 setState('idle');
             }
         }
@@ -587,6 +625,17 @@
 
         // --- Button wiring ---
         els.recordBtn.addEventListener('click', startRecording);
+
+        // At load, warn and disable recording if the browser can't support it.
+        (function gateOnBrowserSupport() {
+            const missing = checkBrowserSupport();
+            if (missing.length) {
+                els.status.textContent =
+                    'This browser is missing ' + missing.join(', ') +
+                    '. Use a recent Chrome, Edge, or Firefox over HTTPS.';
+                els.recordBtn.disabled = true;
+            }
+        })();
 
         els.downloadBtn.addEventListener('click', downloadRecording);
         els.debugBtn.addEventListener('click', downloadDebugDump);
