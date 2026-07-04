@@ -136,6 +136,11 @@ struct PlaybackState {
     output_recording: Mutex<Vec<f32>>,
     playback_pos: AtomicU32,
     playing: AtomicBool,
+    /// Set true the first time each worklet's audio callback runs, so the UI
+    /// can wait until the whole pipeline (both render threads) is live before
+    /// it starts drawing — avoids the async worklet setup janking mid-draw.
+    input_started: AtomicBool,
+    output_started: AtomicBool,
 }
 
 #[wasm_bindgen]
@@ -191,6 +196,8 @@ impl WebPitchCorrector {
             output_recording: Mutex::new(Vec::new()),
             playback_pos: AtomicU32::new(0),
             playing: AtomicBool::new(false),
+            input_started: AtomicBool::new(false),
+            output_started: AtomicBool::new(false),
         });
 
         // Pack two f32s: [sample_counter, accumulated_phase]
@@ -204,6 +211,7 @@ impl WebPitchCorrector {
             .build_input_stream(
                 input_config.into(),
                 move |data: &[f32], _| {
+                    input_playback.input_started.store(true, Ordering::Relaxed);
                     if !input_playback.input_active.load(Ordering::Relaxed) {
                         return;
                     }
@@ -246,6 +254,9 @@ impl WebPitchCorrector {
             .build_output_stream(
                 output_config.into(),
                 move |data: &mut [f32], _| {
+                    output_playback
+                        .output_started
+                        .store(true, Ordering::Relaxed);
                     if output_playback.playing.load(Ordering::Relaxed) {
                         if let Ok(rec) = output_playback.recording.try_lock() {
                             let mut p =
@@ -308,6 +319,15 @@ impl WebPitchCorrector {
     /// hardcoding a rate that may not match the browser AudioContext.
     pub fn sample_rate(&self) -> f32 {
         self.sample_rate
+    }
+
+    /// True once both the input and output worklets have run their first
+    /// callback, i.e. the whole audio pipeline is live. The UI waits for this
+    /// before it starts drawing so the async worklet setup can't jank the
+    /// draw loop (and audio is already flowing).
+    pub fn is_audio_ready(&self) -> bool {
+        self.playback.input_started.load(Ordering::Relaxed)
+            && self.playback.output_started.load(Ordering::Relaxed)
     }
 
     pub fn set_shift(&self, semitones: f32) {

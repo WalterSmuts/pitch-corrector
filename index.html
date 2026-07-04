@@ -324,6 +324,21 @@
             return 'Could not start audio: ' + s;
         }
 
+        // Resolve once the whole audio pipeline (both worklets) is live, or
+        // after a timeout (e.g. mic denied) so we never hang.
+        function waitForAudioReady(c, timeoutMs = 6000) {
+            return new Promise((resolve) => {
+                const t0 = performance.now();
+                (function poll() {
+                    if (c.is_audio_ready() || performance.now() - t0 > timeoutMs) {
+                        resolve();
+                    } else {
+                        setTimeout(poll, 30);
+                    }
+                })();
+            });
+        }
+
         async function startRecording() {
             const missing = checkBrowserSupport();
             if (missing.length) {
@@ -359,6 +374,12 @@
                 document.getElementById('post-correction-cb').checked = false;
                 contourSnapshot = null;
                 corrector.clear_target_pitch_contour();
+
+                // Wait for the entire audio pipeline (input + output worklets)
+                // to be live before we start drawing, so the async worklet
+                // setup can't jank the draw loop mid-animation.
+                els.status.textContent = 'Initializing audio…';
+                await waitForAudioReady(corrector);
 
                 setState('recording');
 
