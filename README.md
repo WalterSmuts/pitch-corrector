@@ -46,6 +46,29 @@ python3 -m http.server 8888
 
 Then open http://localhost:8888
 
+### Web (off-main-thread AudioWorklet, experimental)
+
+The default web build runs the audio callback (and therefore the pitch
+correction DSP) on the main thread via `ScriptProcessorNode`, which competes
+with canvas drawing and causes stutter during voiced audio. The optional
+`worklet` feature runs the DSP on the audio render thread instead, using
+cpal's AudioWorklet host.
+
+This needs a wasm atomics/threads build and cross-origin isolation:
+
+```bash
+rustup toolchain install nightly
+rustup component add rust-src --toolchain nightly
+cargo install wasm-bindgen-cli --version 0.2.106   # match Cargo.lock
+
+./build-worklet.sh          # nightly + -Zbuild-std + atomics, then wasm-bindgen
+python3 serve.py 8888       # serves with COOP/COEP so crossOriginIsolated=true
+```
+
+Then open http://localhost:8888. Requires a browser with `AudioWorklet` and
+SharedArrayBuffer (cross-origin isolated). The `worklet` feature must be built
+this way — a normal `wasm-pack` build will not link the threads runtime.
+
 ### Tests
 
 ```bash

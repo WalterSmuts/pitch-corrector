@@ -8,6 +8,10 @@ edition = "2021"
 default = ["native"]
 native = ["clap", "ansi-escapes", "termion", "ctrlc", "ratatui", "crossterm", "tui-logger", "log-panics"]
 web = ["wasm-bindgen", "web-sys", "js-sys", "console_log", "wasm-bindgen-futures"]
+# Off-main-thread audio via cpal's AudioWorklet host (runs the DSP on the
+# audio render thread). Requires a wasm atomics/threads build and COOP/COEP
+# cross-origin isolation. Enable together with `web`. See README.
+worklet = ["cpal/audioworklet"]
 
 [dependencies]
 cpal = { path = "../cpal", features = ["wasm-bindgen"] }

@@ -135,6 +135,14 @@ impl WebPitchCorrector {
     pub fn new() -> Result<WebPitchCorrector, JsValue> {
         console_log::init_with_level(log::Level::Info).ok();
 
+        // With the `worklet` feature, run audio on the AudioWorklet host so the
+        // DSP executes on the audio render thread instead of the main thread
+        // (see the web performance notes). Otherwise use the default host
+        // (ScriptProcessorNode on the main thread).
+        #[cfg(feature = "worklet")]
+        let host = cpal::host_from_id(cpal::HostId::AudioWorklet)
+            .map_err(|e| JsValue::from_str(&format!("AudioWorklet host unavailable: {e:?}")))?;
+        #[cfg(not(feature = "worklet"))]
         let host = cpal::default_host();
 
         let input_device = host
