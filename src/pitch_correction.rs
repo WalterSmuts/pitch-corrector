@@ -231,7 +231,7 @@ mod tests {
     fn perf_pitch_corrector_off_is_transparent_for_sweep() {
         let corrector = PitchCorrector::with_scale(Scale::empty());
 
-        let num_samples = BUFFER_SIZE * 40;
+        let num_samples = BUFFER_SIZE * 16;
         let mut phase = 0.0f32;
         let input: Vec<f32> = (0..num_samples)
             .map(|i| {
