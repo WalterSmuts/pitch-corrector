@@ -62,6 +62,11 @@ pub struct PitchCorrectorControls {
     /// it is drained from the UI thread on stop/clear. Entries are dropped if
     /// the log fills (bounded memory) rather than growing unboundedly.
     target_pitch_contour: ArrayQueue<Option<Pitch>>,
+    /// Edited target contour (post-correction playback). Written wholesale by
+    /// the UI and read by index on the audio thread. It is only populated
+    /// during post-correction playback and swapped rarely, so the lock is
+    /// low-contention; making a variable-length buffer fully lock-free would
+    /// need an arc-swap-style atomic pointer swap (extra dependency).
     contour: Mutex<Vec<Option<Pitch>>>,
     contour_hop: AtomicUsize,
 }
