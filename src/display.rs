@@ -101,11 +101,11 @@ impl UserInterface {
         }
     }
 
-    fn draw_logger_frame(&self, frame: &mut Frame) {
+    fn draw_logger_frame(&self, frame: &mut Frame<'_>) {
         frame.render_widget(TuiLoggerSmartWidget::default(), frame.area());
     }
 
-    fn draw_frame(&self, frame: &mut Frame) {
+    fn draw_frame(&self, frame: &mut Frame<'_>) {
         let status_text = self.status.lock().unwrap().clone();
 
         // Split: status bar at top, rest for waveforms

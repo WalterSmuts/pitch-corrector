@@ -83,7 +83,7 @@ impl Pitch {
         // would yield NaN/-inf semitones and a garbage pitch. Detected
         // frequencies are always positive, so treat anything else as the
         // lowest representable pitch rather than propagating nonsense.
-        if !(freq > 0.0) {
+        if !freq.is_finite() || freq <= 0.0 {
             return Self::new(Note::C, 0);
         }
         let semitones = A4_SEMITONES + 12.0 * (freq / A4_FREQ).log2();
@@ -321,7 +321,7 @@ impl Scale {
     pub fn nearest_pitch(self, freq: f32) -> Pitch {
         // See Pitch::from_freq: guard the log2 domain against
         // non-positive / non-finite input.
-        if !(freq > 0.0) {
+        if !freq.is_finite() || freq <= 0.0 {
             return Pitch::new(Note::C, 0);
         }
         let semitones_from_c0 = A4_SEMITONES + 12.0 * (freq / A4_FREQ).log2();

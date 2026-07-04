@@ -58,3 +58,12 @@ path = "src/lib.rs"
 name = "pitch-corrector"
 path = "src/main.rs"
 required-features = ["native"]
+
+# Lint policy. The tree is clean under these today; CI runs
+# `cargo clippy -- -D warnings` to turn them into a hard gate.
+[lints.rust]
+rust_2018_idioms = "warn"
+
+[lints.clippy]
+all = "warn"
+
