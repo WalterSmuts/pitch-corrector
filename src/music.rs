@@ -64,6 +64,13 @@ impl Pitch {
     }
 
     pub fn from_freq(freq: f32) -> Self {
+        // Guard the log2 domain: a non-positive or non-finite frequency
+        // would yield NaN/-inf semitones and a garbage pitch. Detected
+        // frequencies are always positive, so treat anything else as the
+        // lowest representable pitch rather than propagating nonsense.
+        if !(freq > 0.0) {
+            return Self::new(Note::C, 0);
+        }
         let semitones = A4_SEMITONES + 12.0 * (freq / A4_FREQ).log2();
         let rounded = semitones.round() as i32;
         let octave = rounded.div_euclid(12) as i8;
@@ -161,6 +168,11 @@ impl Scale {
     /// Snap a frequency to the nearest note in this scale.
     /// Returns the nearest chromatic pitch if the scale is empty.
     pub fn nearest_pitch(self, freq: f32) -> Pitch {
+        // See Pitch::from_freq: guard the log2 domain against
+        // non-positive / non-finite input.
+        if !(freq > 0.0) {
+            return Pitch::new(Note::C, 0);
+        }
         let semitones_from_c0 = A4_SEMITONES + 12.0 * (freq / A4_FREQ).log2();
         let octave = (semitones_from_c0 / 12.0).floor();
         let semitone_in_octave = semitones_from_c0 - octave * 12.0;
@@ -399,6 +411,22 @@ mod tests {
     fn octave_interval() {
         assert_eq!(Interval::OCTAVE.semitones(), 12);
         approx::assert_abs_diff_eq!(Interval::OCTAVE.to_ratio(), 2.0, epsilon = 0.001);
+    }
+
+    #[test]
+    fn non_positive_freq_is_guarded() {
+        // These must not panic nor produce NaN/inf frequencies.
+        for bad in [0.0f32, -100.0, f32::NAN, f32::NEG_INFINITY, f32::INFINITY] {
+            let p = Pitch::from_freq(bad);
+            assert!(p.to_freq().is_finite(), "from_freq({bad}) -> non-finite");
+            let q = Scale::chromatic().nearest_pitch(bad);
+            assert!(
+                q.to_freq().is_finite(),
+                "nearest_pitch({bad}) -> non-finite"
+            );
+            let r = Scale::major(Note::C).nearest_pitch(bad);
+            assert!(r.to_freq().is_finite());
+        }
     }
 
     #[test]
