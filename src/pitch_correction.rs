@@ -1,9 +1,9 @@
-use crate::music::{Interval, Note, Pitch, Scale};
+use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::signal_processing::{
     PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, BUFFER_SIZE,
 };
 use crossbeam_queue::ArrayQueue;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -53,8 +53,10 @@ type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 
 /// Remote control for a `PitchCorrector` that has been moved into a pipeline.
 pub struct PitchCorrectorControls {
-    shift: Mutex<Interval>,
-    scale: Mutex<Scale>,
+    /// Pitch shift as total semitones, read lock-free on the audio thread.
+    shift_semitones: AtomicI32,
+    /// Scale note-set bitmask (12 bits), read lock-free on the audio thread.
+    scale_bits: AtomicU32,
     /// Per-hop target-pitch log, written from the real-time audio thread.
     /// A lock-free bounded queue keeps that write allocation- and lock-free;
     /// it is drained from the UI thread on stop/clear. Entries are dropped if
@@ -66,19 +68,25 @@ pub struct PitchCorrectorControls {
 
 impl PitchCorrectorControls {
     pub fn set_shift(&self, interval: Interval) {
-        *self.shift.lock().unwrap() = interval;
+        self.shift_semitones
+            .store(interval.semitones(), Ordering::Relaxed);
     }
 
     pub fn get_shift(&self) -> Interval {
-        *self.shift.lock().unwrap()
+        let s = self.shift_semitones.load(Ordering::Relaxed);
+        Interval::compound(
+            SimpleInterval::ALL[s.rem_euclid(12) as usize],
+            s.div_euclid(12) as i8,
+        )
     }
 
     pub fn set_scale(&self, scale: Scale) {
-        *self.scale.lock().unwrap() = scale;
+        self.scale_bits
+            .store(scale.bits() as u32, Ordering::Relaxed);
     }
 
     pub fn get_scale(&self) -> Scale {
-        *self.scale.lock().unwrap()
+        Scale::from_bits(self.scale_bits.load(Ordering::Relaxed) as u16)
     }
 
     pub fn set_contour(&self, contour: Vec<Option<Pitch>>) {
@@ -155,8 +163,8 @@ impl PitchCorrector {
         // target-pitch log to a few minutes of recording.
         const TARGET_CONTOUR_CAPACITY: usize = 32768;
         let controls = Arc::new(PitchCorrectorControls {
-            shift: Mutex::new(Interval::UNISON),
-            scale: Mutex::new(scale),
+            shift_semitones: AtomicI32::new(Interval::UNISON.semitones()),
+            scale_bits: AtomicU32::new(scale.bits() as u32),
             target_pitch_contour: ArrayQueue::new(TARGET_CONTOUR_CAPACITY),
             contour: Mutex::new(Vec::new()),
             contour_hop: AtomicUsize::new(0),
@@ -168,7 +176,8 @@ impl PitchCorrector {
         let smoothed_ratio = Mutex::new(1.0f32);
         let gap_hops = Mutex::new(0usize);
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
-            let shift_ratio = controls_clone.shift.lock().unwrap().to_ratio();
+            let shift_semitones = controls_clone.shift_semitones.load(Ordering::Relaxed);
+            let shift_ratio = 2f32.powf(shift_semitones as f32 / 12.0);
             let detected = detector.lock().unwrap().detect(frame);
 
             // Check for active contour, otherwise snap to scale
@@ -178,7 +187,8 @@ impl PitchCorrector {
                     let hop = controls_clone.contour_hop.fetch_add(1, Ordering::Relaxed);
                     contour[hop.min(contour.len() - 1)]
                 } else {
-                    let scale = *controls_clone.scale.lock().unwrap();
+                    let scale =
+                        Scale::from_bits(controls_clone.scale_bits.load(Ordering::Relaxed) as u16);
                     detected.and_then(|freq| snapper.lock().unwrap().snap(freq, scale))
                 }
             };
@@ -266,6 +276,31 @@ mod tests {
         let controls = corrector.controls();
         controls.set_scale(Scale::major(Note::C));
         assert_eq!(controls.get_scale(), Scale::major(Note::C));
+    }
+
+    #[test]
+    fn shift_and_scale_roundtrip_through_atomics() {
+        let corrector = PitchCorrector::new();
+        let c = corrector.controls();
+        for iv in [
+            Interval::UNISON,
+            Interval::PERFECT_FIFTH,
+            Interval::PERFECT_FIFTH.negate(),
+            Interval::OCTAVE,
+            Interval::compound(SimpleInterval::MinorThird, -1),
+        ] {
+            c.set_shift(iv);
+            assert_eq!(c.get_shift().semitones(), iv.semitones());
+        }
+        for s in [
+            Scale::major(Note::C),
+            Scale::minor_pentatonic(Note::A),
+            Scale::chromatic(),
+            Scale::empty(),
+        ] {
+            c.set_scale(s);
+            assert_eq!(c.get_scale(), s);
+        }
     }
 
     #[test]
