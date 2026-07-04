@@ -122,6 +122,7 @@ impl PitchCorrector {
         let detector = Mutex::new(YinPitchDetector::new());
         let snapper = Mutex::new(NoteSnapper::new());
         let smoothed_ratio = Mutex::new(1.0f32);
+        let gap_hops = Mutex::new(0usize);
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
             let shift_ratio = controls_clone.shift.lock().unwrap().to_ratio();
             let detected = detector.lock().unwrap().detect(frame);
@@ -151,11 +152,26 @@ impl PitchCorrector {
 
             // Smooth the correction ratio to avoid abrupt changes.
             // Only update when we have a valid detection; hold the
-            // previous ratio during detection gaps.
+            // previous ratio during detection gaps (see f837ae5: decaying
+            // toward 1.0 every gap-hop caused a systematic downward bias).
+            //
+            // However, a *sustained* gap means the current note has ended,
+            // so after GAP_RESET_HOPS of no detection we forget the held
+            // ratio and return to neutral. This prevents the first hops of
+            // an unrelated later note from being mis-corrected by a stale
+            // ratio, without reintroducing the per-hop downward bias.
             const SMOOTHING: f32 = 0.6;
+            const GAP_RESET_HOPS: usize = 43; // ~0.5s at 44.1kHz, hop=512
             let mut prev = smoothed_ratio.lock().unwrap();
+            let mut gaps = gap_hops.lock().unwrap();
             if target_pitch.is_some() && detected.is_some() {
                 *prev += SMOOTHING * (target_ratio - *prev);
+                *gaps = 0;
+            } else {
+                *gaps = gaps.saturating_add(1);
+                if *gaps >= GAP_RESET_HOPS {
+                    *prev = 1.0;
+                }
             }
             *prev * shift_ratio
         });
