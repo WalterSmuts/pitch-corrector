@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [mainline, master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      # Check the project out into a subdirectory so the cpal fork can be
+      # cloned as a sibling (`../cpal`), matching the path dependency in
+      # Cargo.toml.
+      - name: Checkout pitch-corrector
+        uses: actions/checkout@v4
+        with:
+          path: pitch-corrector
+
+      # cpal is a path dependency on a fork with WASM/WebAudio additions
+      # (build_input_stream_raw, input enumeration, ScriptProcessorNode
+      # output). It is NOT on crates.io, so we clone it next to the project.
+      # NOTE: the WebAudio commits the web build needs must be present on the
+      # cloned branch below.
+      - name: Checkout cpal fork
+        uses: actions/checkout@v4
+        with:
+          repository: WalterSmuts/cpal
+          path: cpal
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: pitch-corrector
+
+      - name: Format check
+        working-directory: pitch-corrector
+        run: cargo fmt --check
+
+      - name: Clippy (native)
+        working-directory: pitch-corrector
+        run: cargo clippy --all-targets
+
+      - name: Clippy (web/wasm)
+        working-directory: pitch-corrector
+        run: cargo clippy --no-default-features --features web --target wasm32-unknown-unknown
+
+      - name: Unit tests
+        working-directory: pitch-corrector
+        run: cargo test --lib
+
+      - name: Web build (wasm32)
+        working-directory: pitch-corrector
+        run: cargo build --no-default-features --features web --target wasm32-unknown-unknown
