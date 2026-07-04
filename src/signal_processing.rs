@@ -13,6 +13,13 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+// Analysis window AND phase-vocoder frame size. This sets algorithmic
+// latency (~one window: 2048/44.1kHz ≈ 46ms). It is deliberately large:
+// YIN needs a full period in the window, so 2048 is what enables detection
+// down to ~43Hz, and b84f0ba unified detection and synthesis onto this size
+// so the input and target contours agree. Lowering it for latency would
+// regress low-frequency detection; truly decoupling the two would require a
+// separate, longer detection buffer feeding a shorter synthesis window.
 pub const BUFFER_SIZE: usize = 2048;
 pub const SPECTROGRAM_SIZE: usize = 8192;
 // Native default sampling rate. The native path forces the device to this
