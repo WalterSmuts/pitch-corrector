@@ -15,6 +15,14 @@ use std::sync::Mutex;
 
 pub const BUFFER_SIZE: usize = 2048;
 pub const SPECTROGRAM_SIZE: usize = 8192;
+// KNOWN BUG (web): this fixed rate is used by YinPitchDetector::detect to
+// convert a detected period (in samples) into Hz. The native path forces
+// the device to 44100 (see hardware.rs), so it is correct there. The web
+// path, however, runs cpal at the browser AudioContext rate — typically
+// 48000 (see the hardcoded 48000 in web.rs's sweep generator) — so YIN
+// under-reports pitch by 44100/48000 (~1.5 semitones) on web.
+// Fix: thread the real stream sample rate (input_config.sample_rate) into
+// YinPitchDetector and the PitchCorrector/Pipeline instead of this const.
 const SAMPLE_RATE: usize = 44100;
 
 pub trait StreamProcessor {
