@@ -11,6 +11,24 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+/// Prime the expensive, one-time initialization that would otherwise run on
+/// the first `Record` click and jank the main thread (~0.3s): the FFT planner
+/// caches (built lazily on first `real_fft`) and the phase-vocoder DSP buffers.
+/// Call this once at page load, after `init()`, before the user records.
+#[wasm_bindgen]
+pub fn warmup() {
+    // Prime the real-FFT planner caches for both sizes the app uses.
+    let _ = vec![0.0f32; BUFFER_SIZE].real_fft();
+    let _ = vec![0.0f32; SPECTROGRAM_SIZE].real_fft();
+    // Run a few silent hops through a throwaway corrector so the phase
+    // vocoder's plans/scratch and the OLA buffers are all allocated/primed.
+    let corrector = PitchCorrector::new();
+    for _ in 0..(BUFFER_SIZE * 4) {
+        corrector.push_sample(0.0);
+        while corrector.pop_sample().is_some() {}
+    }
+}
+
 // Pre-computed RGB strings for heatmap: avoids format!() per pixel
 static HEATMAP_LUT: std::sync::LazyLock<[String; 256]> = std::sync::LazyLock::new(|| {
     std::array::from_fn(|i| {

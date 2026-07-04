@@ -140,7 +140,7 @@
     <canvas id="output-waveform" width="1200" height="200" style="display:none"></canvas>
 
     <script type="module">
-        import init, { WebPitchCorrector } from './pkg/pitch_corrector.js';
+        import init, { WebPitchCorrector, warmup } from './pkg/pitch_corrector.js';
 
         // --- State machine ---
         // States: idle, recording, stopped, playing, paused
@@ -641,15 +641,31 @@
         // --- Button wiring ---
         els.recordBtn.addEventListener('click', startRecording);
 
-        // At load, warn and disable recording if the browser can't support it.
-        (function gateOnBrowserSupport() {
+        // At load: gate on browser support, then pre-warm the audio engine
+        // (WASM compile + FFT planner caches + DSP buffers) so the first Record
+        // click doesn't jank the main thread for ~0.3s. Record is disabled
+        // until warm-up finishes.
+        (async function prewarm() {
             const missing = checkBrowserSupport();
             if (missing.length) {
                 els.status.textContent =
                     'This browser is missing ' + missing.join(', ') +
                     '. Use a recent Chrome, Edge, or Firefox over HTTPS.';
                 els.recordBtn.disabled = true;
+                return;
             }
+            els.recordBtn.disabled = true;
+            els.status.textContent = 'Loading audio engine…';
+            try {
+                await init();
+                warmup();
+            } catch (e) {
+                els.status.textContent =
+                    'Failed to load the audio engine (WASM). Check your connection and reload. (' + e + ')';
+                return;
+            }
+            els.recordBtn.disabled = false;
+            if (state === 'idle') els.status.textContent = 'Click Record to begin';
         })();
 
         els.downloadBtn.addEventListener('click', downloadRecording);
