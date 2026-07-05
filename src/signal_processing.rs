@@ -1778,6 +1778,86 @@ mod tests {
         );
     }
 
+    /// Worst-quartile spectral concentration of the fundamental when a
+    /// *gliding* pitch is shifted down an octave. Drives an exponential
+    /// 100->200 Hz glide through a 0.5x shifter and, per steady-state STFT
+    /// block, measures the fraction of output energy within +/-2 bins (~22 Hz)
+    /// of that block's peak, then averages the worst quarter of blocks. 1.0 is
+    /// a clean fundamental; smearing spreads energy out and lowers it.
+    fn downshift_glide_concentration() -> f32 {
+        const ANALYSIS: usize = 4096;
+        let processor = PhaseVocoderPitchShifter::new(0.5);
+
+        // ~1.5 s exponential glide across 100 -> 200 Hz. The fast rate drives
+        // strong FM sidebands, so each analysis frame has many low-level peaks.
+        let num_samples = BUFFER_SIZE * 32;
+        let mut phase = 0.0f32;
+        let mut output = Vec::new();
+        for i in 0..num_samples {
+            let frac = i as f32 / num_samples as f32;
+            let freq = 100.0 * 2.0f32.powf(frac);
+            phase += freq / SAMPLE_RATE as f32;
+            phase -= phase.floor();
+            processor.push_sample((phase * std::f32::consts::TAU).sin());
+            while let Some(o) = processor.pop_sample() {
+                output.push(o);
+            }
+        }
+
+        let window: Vec<f32> = apodize::hanning_iter(ANALYSIS).map(|w| w as f32).collect();
+        let start = output.len() / 4;
+        let end = output.len() * 3 / 4;
+        let hop = ANALYSIS / 2;
+        let mut concs = Vec::new();
+        let mut pos = start;
+        while pos + ANALYSIS <= end {
+            let windowed: Vec<f32> = output[pos..pos + ANALYSIS]
+                .iter()
+                .zip(&window)
+                .map(|(s, w)| s * w)
+                .collect();
+            let mags: Vec<f32> = windowed
+                .real_fft()
+                .get_frequency_bins()
+                .iter()
+                .map(|b| b.norm_sqr())
+                .collect();
+            let (pk, _) = mags
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .unwrap();
+            let total: f32 = mags.iter().sum();
+            let lo = pk.saturating_sub(2);
+            let hi = (pk + 2).min(mags.len() - 1);
+            let near: f32 = mags[lo..=hi].iter().sum();
+            concs.push(near / total);
+            pos += hop;
+        }
+        // Worst-quartile mean: the smear comes in bursts (when the gliding
+        // peak crosses bin boundaries), so the worst blocks separate a smeared
+        // shift from a clean one far better than the overall mean.
+        concs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let q = (concs.len() / 4).max(1);
+        concs[..q].iter().sum::<f32>() / q as f32
+    }
+
+    /// A steady tone shifts down an octave cleanly, but a *gliding* pitch
+    /// smears across a wide band. Each analysis frame's low-level leakage /
+    /// FM-sideband ripples register as spectral peaks and get translated with
+    /// their own downshift-dependent offset, overwriting the main lobe's
+    /// region and jittering the output pitch. This documents the bug; the
+    /// assertion is inverted once peak translation ignores negligible peaks.
+    #[test]
+    fn phase_vocoder_downshift_glide_smears() {
+        let conc = downshift_glide_concentration();
+        eprintln!("[GLIDE] down-octave glide fundamental concentration: {conc:.4}");
+        assert!(
+            conc < 0.97,
+            "expected gliding-pitch smearing (worst-quartile concentration < 0.97), got {conc:.4}"
+        );
+    }
+
     fn measure_spectral_purity(scaling_ratio: f32) -> (f32, usize, usize) {
         const ANALYSIS_SIZE: usize = 4096;
         let input_freq = 440.0;
