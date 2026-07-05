@@ -7,7 +7,6 @@ use easyfft::dyn_size::realfft::DynRealFft;
 use easyfft::dyn_size::realfft::DynRealIfft;
 use easyfft::num_complex::Complex;
 use log::info;
-use std::collections::BinaryHeap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -70,20 +69,17 @@ pub struct PhaseVocoderPitchShifter<F: Fn(&[f32]) -> f32 + Send + Sync> {
 struct BinData {
     magnitudes: Vec<f32>,
     true_freq: Vec<f32>,
-    freq_deriv: Vec<f32>,
 }
 
 impl BinData {
     fn resize(&mut self, len: usize) {
         self.magnitudes.resize(len, 0.0);
         self.true_freq.resize(len, 0.0);
-        self.freq_deriv.resize(len, 0.0);
     }
 
     fn clear(&mut self) {
         self.magnitudes.iter_mut().for_each(|v| *v = 0.0);
         self.true_freq.iter_mut().for_each(|v| *v = 0.0);
-        self.freq_deriv.iter_mut().for_each(|v| *v = 0.0);
     }
 }
 
@@ -101,10 +97,9 @@ struct PhaseVocoderState {
     analysis_spectrum: Option<DynRealDft<f32>>,
     synthesis_spectrum: Option<DynRealDft<f32>>,
     ifft_output: Vec<f32>,
-    // Pre-allocated PGHI scratch buffers
-    pghi_computed: Vec<bool>,
-    pghi_new_phase: Vec<f32>,
-    pghi_heap: BinaryHeap<(u32, usize, bool)>,
+    // Pre-allocated phase-locking / peak-translation scratch
+    new_output_phase: Vec<f32>,
+    peaks: Vec<usize>,
 }
 
 pub struct DisplayProcessor<const I: usize = BUFFER_SIZE> {
@@ -487,12 +482,10 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
                 analysis: BinData {
                     magnitudes: vec![],
                     true_freq: vec![],
-                    freq_deriv: vec![],
                 },
                 synthesis: BinData {
                     magnitudes: vec![],
                     true_freq: vec![],
-                    freq_deriv: vec![],
                 },
                 synthesis_bins: vec![],
                 windowed: vec![0.0; BUFFER_SIZE],
@@ -508,9 +501,8 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
                     BUFFER_SIZE,
                 )),
                 ifft_output: vec![0.0; BUFFER_SIZE],
-                pghi_computed: vec![false; BUFFER_SIZE / 2],
-                pghi_new_phase: vec![0.0; BUFFER_SIZE / 2],
-                pghi_heap: BinaryHeap::with_capacity(BUFFER_SIZE / 2),
+                new_output_phase: vec![0.0; BUFFER_SIZE / 2],
+                peaks: Vec::with_capacity(BUFFER_SIZE / 2),
             }),
         }
     }
@@ -542,6 +534,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
         if state.prev_input_phase.len() != num_bins {
             state.prev_input_phase.resize(num_bins, 0.0);
             state.prev_output_phase.resize(num_bins, 0.0);
+            state.new_output_phase.resize(num_bins, 0.0);
             state.analysis.resize(num_bins);
             state.synthesis.resize(num_bins);
             state
@@ -549,10 +542,10 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
                 .resize(BUFFER_SIZE / 2, Complex::default());
         }
 
-        // Analysis: compute magnitude, time derivative, and frequency derivative
-        for k in 0..num_bins {
-            state.analysis.magnitudes[k] = bins[k].norm();
-            let phase = bins[k].arg();
+        // Analysis: compute magnitude and time derivative (instantaneous freq)
+        for (k, bin) in bins.iter().enumerate().take(num_bins) {
+            state.analysis.magnitudes[k] = bin.norm();
+            let phase = bin.arg();
 
             // Time derivative (backward difference)
             let mut phase_diff = phase - state.prev_input_phase[k];
@@ -563,18 +556,6 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
                 phase_diff -= std::f32::consts::TAU;
             }
             state.analysis.true_freq[k] = expected_phase_advance(k + 1) + phase_diff;
-
-            // Frequency derivative (centered difference)
-            if k > 0 && k < num_bins - 1 {
-                let mut fd = bins[k + 1].arg() - bins[k - 1].arg();
-                fd = fd.rem_euclid(std::f32::consts::TAU);
-                if fd > std::f32::consts::PI {
-                    fd -= std::f32::consts::TAU;
-                }
-                state.analysis.freq_deriv[k] = fd / 2.0;
-            } else {
-                state.analysis.freq_deriv[k] = 0.0;
-            }
         }
 
         // Synthesis: shift bins
@@ -583,79 +564,80 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             *b = Complex::default();
         }
 
-        for k in 0..num_bins {
-            let src = k as f32 / scaling_ratio;
-            let lo = src as usize;
-            let hi = lo + 1;
-            if hi < num_bins {
-                let frac = src - lo as f32;
-                state.synthesis.magnitudes[k] = state.analysis.magnitudes[lo] * (1.0 - frac)
-                    + state.analysis.magnitudes[hi] * frac;
-                state.synthesis.true_freq[k] = (state.analysis.true_freq[lo] * (1.0 - frac)
-                    + state.analysis.true_freq[hi] * frac)
-                    * scaling_ratio;
-                state.synthesis.freq_deriv[k] = state.analysis.freq_deriv[lo] * (1.0 - frac)
-                    + state.analysis.freq_deriv[hi] * frac;
-            } else if lo < num_bins {
-                state.synthesis.magnitudes[k] = state.analysis.magnitudes[lo];
-                state.synthesis.true_freq[k] = state.analysis.true_freq[lo] * scaling_ratio;
-                state.synthesis.freq_deriv[k] = state.analysis.freq_deriv[lo];
+        // Pitch shift by peak translation (Laroche & Dolson, 1999). Resampling
+        // the whole magnitude envelope (synthesis[k] = analysis[k/ratio])
+        // stretches every spectral peak's main lobe by `scaling_ratio`, so a
+        // shifted pure tone is no longer a single narrow lobe and radiates a
+        // comb of hop-rate sidebands. Instead, translate each analysis peak's
+        // region of influence *rigidly* to its shifted location, preserving the
+        // lobe shape. Phase uses identity phase locking: the peak advances in
+        // time at the shifted frequency and its region locks to it, keeping the
+        // analysis inter-bin phase structure. `prev_input_phase` holds this
+        // frame's analysis phase after the analysis loop above.
+
+        // 1) Analysis-domain peaks: local maxima over ±2 bins.
+        state.peaks.clear();
+        for a in 0..num_bins {
+            let s = state.analysis.magnitudes[a];
+            let is_peak = s > 1e-9
+                && (a < 1 || s > state.analysis.magnitudes[a - 1])
+                && (a < 2 || s > state.analysis.magnitudes[a - 2])
+                && (a + 1 >= num_bins || s > state.analysis.magnitudes[a + 1])
+                && (a + 2 >= num_bins || s > state.analysis.magnitudes[a + 2]);
+            if is_peak {
+                state.peaks.push(a);
             }
         }
 
-        // Phase Gradient Heap Integration (PGHI)
-        // Propagate phase from loudest bin outward in both time and frequency
-        state.pghi_computed.resize(num_bins, false);
-        state.pghi_computed.iter_mut().for_each(|v| *v = false);
-        state.pghi_new_phase.resize(num_bins, 0.0);
-        state.pghi_new_phase.iter_mut().for_each(|v| *v = 0.0);
-        state.pghi_heap.clear();
+        // Keep uncovered (silent) bins phase-continuous; covered bins are
+        // overwritten below.
+        state
+            .new_output_phase
+            .copy_from_slice(&state.prev_output_phase);
 
-        // Seed with previous frame bins (candidates for time propagation)
-        for k in 0..num_bins {
-            if state.synthesis.magnitudes[k] > 1e-10 {
-                state
-                    .pghi_heap
-                    .push((state.synthesis.magnitudes[k].to_bits(), k, true));
+        // 2) Translate each peak's region of influence to its shifted location.
+        let mut region_start = 0usize;
+        for i in 0..state.peaks.len() {
+            let a = state.peaks[i];
+            let region_end = if i + 1 < state.peaks.len() {
+                (a + state.peaks[i + 1]) / 2
+            } else {
+                num_bins - 1
+            };
+
+            // Shifted peak bin and its time-advanced synthesis phase. The phase
+            // advances at the shifted instantaneous frequency (ratio * analysis
+            // rate), so pitch is set by the phase even though the magnitude lobe
+            // lands on the nearest integer bin.
+            let s = (a as f32 * scaling_ratio).round() as isize;
+            let peak_advance = state.analysis.true_freq[a] * scaling_ratio;
+            let peak_phase = if s >= 0 && (s as usize) < num_bins {
+                state.prev_output_phase[s as usize] + peak_advance
+            } else {
+                peak_advance
+            };
+            let peak_ana = state.prev_input_phase[a];
+
+            // Rigidly copy the region, offset by (s - a); lock phases to peak.
+            for b in region_start..=region_end {
+                let t = s + (b as isize - a as isize);
+                if t < 0 || t as usize >= num_bins {
+                    continue;
+                }
+                let t = t as usize;
+                state.synthesis.magnitudes[t] = state.analysis.magnitudes[b];
+                state.new_output_phase[t] = peak_phase + (state.prev_input_phase[b] - peak_ana);
             }
+            region_start = region_end + 1;
         }
 
-        while let Some((_, k, from_prev)) = state.pghi_heap.pop() {
-            if state.pghi_computed[k] {
-                continue;
-            }
-            if from_prev {
-                // Time direction: classical phase accumulation
-                state.pghi_new_phase[k] = state.prev_output_phase[k] + state.synthesis.true_freq[k];
-            }
-            state.pghi_computed[k] = true;
-
-            // Propagate in frequency direction to neighbors
-            if k + 1 < num_bins && !state.pghi_computed[k + 1] {
-                let phase_up = state.pghi_new_phase[k]
-                    + (state.synthesis.freq_deriv[k] + state.synthesis.freq_deriv[k + 1]) / 2.0;
-                state.pghi_new_phase[k + 1] = phase_up;
-                state
-                    .pghi_heap
-                    .push((state.synthesis.magnitudes[k + 1].to_bits(), k + 1, false));
-            }
-            if k > 0 && !state.pghi_computed[k - 1] {
-                let phase_down = state.pghi_new_phase[k]
-                    - (state.synthesis.freq_deriv[k] + state.synthesis.freq_deriv[k - 1]) / 2.0;
-                state.pghi_new_phase[k - 1] = phase_down;
-                state
-                    .pghi_heap
-                    .push((state.synthesis.magnitudes[k - 1].to_bits(), k - 1, false));
-            }
-        }
-
+        // Carry phase forward, then build the synthesis spectrum.
         state
             .prev_output_phase
-            .copy_from_slice(&state.pghi_new_phase);
-
-        // Build synthesis bins
-        for (k, phase) in state.pghi_new_phase.iter().enumerate().take(num_bins) {
-            state.synthesis_bins[k] = Complex::from_polar(state.synthesis.magnitudes[k], *phase);
+            .copy_from_slice(&state.new_output_phase);
+        for k in 0..num_bins {
+            state.synthesis_bins[k] =
+                Complex::from_polar(state.synthesis.magnitudes[k], state.new_output_phase[k]);
         }
 
         // IFFT
@@ -1721,13 +1703,11 @@ mod tests {
     /// Octave-shift a pure tone and measure the loudest spurious sideband
     /// relative to the shifted fundamental.
     ///
-    /// The phase vocoder injects amplitude/phase modulation at the STFT hop
-    /// rate (~86 Hz = 44100/512), producing a comb of sidebands around the
-    /// shifted tone. This test quantifies the worst one.
-    ///
-    /// NOTE: the assertion currently documents the *bug* — a strong sideband is
-    /// present. Once the sidebands are fixed, this assertion is inverted to
-    /// assert the artifact is suppressed.
+    /// Resample-based pitch shifting stretched each peak's main lobe and
+    /// radiated a comb of sidebands at the STFT hop rate (~86 Hz), the worst
+    /// only ~13 dB down. Peak-translation shifting with identity phase locking
+    /// keeps the lobe narrow and each region phase-coherent, pushing the worst
+    /// sideband well below that. This test guards the suppression.
     #[test]
     fn phase_vocoder_octave_shift_sidebands() {
         const ANALYSIS_SIZE: usize = 8192;
@@ -1788,11 +1768,13 @@ mod tests {
             "[SIDEBAND] fundamental {main_freq:.1}Hz  worst sideband {worst_freq:.1}Hz at {worst_db:.1} dB"
         );
 
-        // BUG (pre-fix): a strong hop-rate sideband is present. This assertion
-        // is inverted to `worst_db < SIDEBAND_FLOOR` once the vocoder is fixed.
+        // Peak translation should keep the worst sideband well below the
+        // fundamental. Baseline (resample shifting) was ~-13 dB; we require a
+        // clear suppression here (measured ~-22 dB) with margin for f32/FFT
+        // variation across platforms.
         assert!(
-            worst_db > -20.0,
-            "expected a strong sideband artifact (> -20 dB); got {worst_db:.1} dB at {worst_freq:.1}Hz"
+            worst_db < -18.0,
+            "octave-shift sideband not suppressed: worst {worst_db:.1} dB at {worst_freq:.1}Hz (want < -18 dB)"
         );
     }
 
