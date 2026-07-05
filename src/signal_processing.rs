@@ -1037,6 +1037,8 @@ mod tests {
     const PERF_YIN_MEAN_CENTS: f32 = 1.0; // max mean pitch error
     const PERF_YIN_WORST_CENTS: f32 = 3.0; // max worst pitch error
     const PERF_FINE_SHIFT_CENTS: f32 = 2.0; // max realized error for sub-semitone shifts (measured ~0.7)
+    const PERF_VOICE_RPA: f32 = 0.95; // min raw pitch accuracy on synthetic voice (measured 100%)
+    const PERF_VOICE_FPE_CENTS: f32 = 10.0; // max fine pitch error on synthetic voice (measured ~4-5)
     const TEST_EQUALITY_EPISLON: f32 = 0.002;
 
     struct PassthroughBlockProcessor;
@@ -1946,6 +1948,113 @@ mod tests {
         assert!(
             worst < PERF_FINE_SHIFT_CENTS,
             "shifter cannot resolve fine pitch moves: worst error {worst:.2} cents (want < {PERF_FINE_SHIFT_CENTS})"
+        );
+    }
+
+    /// Synthesize a voiced tone the way pitch-tracker benchmarks do: a
+    /// harmonic complex (`n_harm` harmonics, 1/k amplitude — a sawtooth-ish
+    /// glottal source) with sinusoidal vibrato (`vib_rate_hz`, +/- `vib_cents`)
+    /// and additive white noise at `snr_db`. Returns the signal and the
+    /// per-sample true f0.
+    fn synth_voice(
+        f0_hz: f32,
+        n_harm: usize,
+        vib_rate_hz: f32,
+        vib_cents: f32,
+        snr_db: f32,
+        num: usize,
+        seed: u64,
+    ) -> (Vec<f32>, Vec<f32>) {
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+        let mut rng = StdRng::seed_from_u64(seed);
+        let sr = SAMPLE_RATE as f32;
+        let a_sum: f32 = (1..=n_harm).map(|k| 1.0 / k as f32).sum();
+        let mut phase = 0.0f32; // fundamental phase in cycles
+        let mut sig = vec![0.0f32; num];
+        let mut truth = vec![0.0f32; num];
+        for i in 0..num {
+            let t = i as f32 / sr;
+            let inst =
+                f0_hz * 2f32.powf(vib_cents / 1200.0 * (std::f32::consts::TAU * vib_rate_hz * t).sin());
+            truth[i] = inst;
+            phase += inst / sr;
+            let mut s = 0.0;
+            for k in 1..=n_harm {
+                s += (std::f32::consts::TAU * k as f32 * phase).sin() / k as f32;
+            }
+            sig[i] = s / a_sum;
+        }
+        let sig_rms = (sig.iter().map(|v| v * v).sum::<f32>() / num as f32).sqrt();
+        let noise_rms = sig_rms * 10f32.powf(-snr_db / 20.0);
+        for v in sig.iter_mut() {
+            *v += (rng.random::<f32>() * 2.0 - 1.0) * noise_rms * 1.732; // uniform -> matched RMS
+        }
+        (sig, truth)
+    }
+
+    /// Standard pitch-tracker metrics (MIREX-style) over a synthetic voice:
+    /// Raw Pitch Accuracy (fraction within 50 cents of the window-mean truth),
+    /// Gross Pitch Error fraction (>50 cents off), and Fine Pitch Error (mean
+    /// |cents| on the non-gross frames).
+    fn yin_voice_metrics(
+        f0_hz: f32,
+        vib_cents: f32,
+        snr_db: f32,
+    ) -> (f32, f32, f32) {
+        let (sig, truth) = synth_voice(f0_hz, 12, 5.5, vib_cents, snr_db, SAMPLE_RATE * 2, 0xF00D_1CE);
+        let mut det = YinPitchDetector::new();
+        let w = BUFFER_SIZE;
+        let hop = 512;
+        let (mut total, mut within, mut gross) = (0usize, 0usize, 0usize);
+        let mut fine = Vec::new();
+        let mut i = 0;
+        while i + w <= sig.len() {
+            if let Some(f) = det.detect(&sig[i..i + w]) {
+                let gt = truth[i..i + w].iter().sum::<f32>() / w as f32;
+                let c = 1200.0 * (f / gt).log2();
+                total += 1;
+                if c.abs() < 50.0 {
+                    within += 1;
+                    fine.push(c.abs());
+                } else {
+                    gross += 1;
+                }
+            }
+            i += hop;
+        }
+        let fpe = fine.iter().sum::<f32>() / fine.len().max(1) as f32;
+        (within as f32 / total as f32, gross as f32 / total as f32, fpe)
+    }
+
+    #[test]
+    fn perf_yin_voice_accuracy() {
+        // Realistic sung note: strong harmonics, gentle +/-25 cent 5.5 Hz
+        // vibrato, mild noise. This is far harder than a pure tone and is what
+        // actually limits the pitch corrector on real singing.
+        for (f0, snr) in [(120.0, 40.0), (220.0, 40.0), (120.0, 25.0)] {
+            let (rpa, gpe, fpe) = yin_voice_metrics(f0, 25.0, snr);
+            eprintln!(
+                "[PERF]   voice {f0:.0}Hz SNR{snr:.0}dB: RPA {:.1}%  GPE {:.1}%  FPE {fpe:.1}c",
+                rpa * 100.0,
+                gpe * 100.0
+            );
+        }
+        let (rpa, _gpe, fpe) = yin_voice_metrics(150.0, 25.0, 40.0);
+        eprintln!(
+            "[PERF] yin_voice_accuracy: RPA {:.1}% (threshold: >{:.0}%)  FPE {fpe:.1}c (threshold: <{})",
+            rpa * 100.0,
+            PERF_VOICE_RPA * 100.0,
+            PERF_VOICE_FPE_CENTS
+        );
+        assert!(
+            rpa > PERF_VOICE_RPA,
+            "voice raw pitch accuracy {:.1}% below {:.0}%",
+            rpa * 100.0,
+            PERF_VOICE_RPA * 100.0
+        );
+        assert!(
+            fpe < PERF_VOICE_FPE_CENTS,
+            "voice fine pitch error {fpe:.1}c exceeds {PERF_VOICE_FPE_CENTS}c"
         );
     }
 
