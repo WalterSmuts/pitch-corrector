@@ -1718,6 +1718,84 @@ mod tests {
     /// within ±3 bins (~32Hz) of the target frequency. With known bugs
     /// (e.g. off-by-one in expected_phase_advance) this will drop
     /// significantly.
+    /// Octave-shift a pure tone and measure the loudest spurious sideband
+    /// relative to the shifted fundamental.
+    ///
+    /// The phase vocoder injects amplitude/phase modulation at the STFT hop
+    /// rate (~86 Hz = 44100/512), producing a comb of sidebands around the
+    /// shifted tone. This test quantifies the worst one.
+    ///
+    /// NOTE: the assertion currently documents the *bug* — a strong sideband is
+    /// present. Once the sidebands are fixed, this assertion is inverted to
+    /// assert the artifact is suppressed.
+    #[test]
+    fn phase_vocoder_octave_shift_sidebands() {
+        const ANALYSIS_SIZE: usize = 8192;
+        let input_freq = 440.0;
+        let ratio = 2.0; // octave up -> a single tone at 880 Hz is ideal
+        let processor = PhaseVocoderPitchShifter::new(ratio);
+
+        let num_samples = BUFFER_SIZE * 32;
+        let mut output = Vec::new();
+        for i in 0..num_samples {
+            let s = (std::f32::consts::TAU * input_freq * i as f32 / SAMPLE_RATE as f32).sin();
+            processor.push_sample(s);
+            while let Some(o) = processor.pop_sample() {
+                output.push(o);
+            }
+        }
+
+        let skip = output.len() / 2;
+        let block = &output[skip..skip + ANALYSIS_SIZE];
+        let window: Vec<f32> = apodize::hanning_iter(ANALYSIS_SIZE).map(|w| w as f32).collect();
+        let windowed: Vec<f32> = block.iter().zip(&window).map(|(s, w)| s * w).collect();
+        let mags: Vec<f32> = windowed
+            .real_fft()
+            .get_frequency_bins()
+            .iter()
+            .map(|b| b.norm())
+            .collect();
+        let bin_hz = SAMPLE_RATE as f32 / ANALYSIS_SIZE as f32;
+        let freq_of = |k: usize| (k + 1) as f32 * bin_hz;
+
+        // Fundamental = global peak (~880 Hz).
+        let (main_k, &main_mag) = mags
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap();
+        let main_freq = freq_of(main_k);
+
+        // Loudest local-max peak outside a guard band around the fundamental.
+        const GUARD_HZ: f32 = 40.0;
+        let mut worst_db = f32::NEG_INFINITY;
+        let mut worst_freq = 0.0f32;
+        for k in 1..mags.len() - 1 {
+            let f = freq_of(k);
+            if f < 100.0 || (f - main_freq).abs() < GUARD_HZ {
+                continue;
+            }
+            if mags[k] > mags[k - 1] && mags[k] >= mags[k + 1] {
+                let db = 20.0 * (mags[k] / main_mag).log10();
+                if db > worst_db {
+                    worst_db = db;
+                    worst_freq = f;
+                }
+            }
+        }
+
+        eprintln!(
+            "[SIDEBAND] fundamental {main_freq:.1}Hz  worst sideband {worst_freq:.1}Hz at {worst_db:.1} dB"
+        );
+
+        // BUG (pre-fix): a strong hop-rate sideband is present. This assertion
+        // is inverted to `worst_db < SIDEBAND_FLOOR` once the vocoder is fixed.
+        assert!(
+            worst_db > -20.0,
+            "expected a strong sideband artifact (> -20 dB); got {worst_db:.1} dB at {worst_freq:.1}Hz"
+        );
+    }
+
     fn measure_spectral_purity(scaling_ratio: f32) -> (f32, usize, usize) {
         const ANALYSIS_SIZE: usize = 4096;
         let input_freq = 440.0;
