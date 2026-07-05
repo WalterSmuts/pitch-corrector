@@ -609,7 +609,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
             // advances at the shifted instantaneous frequency (ratio * analysis
             // rate), so pitch is set by the phase even though the magnitude lobe
             // lands on the nearest integer bin.
-            let s = (a as f32 * scaling_ratio).round() as isize;
+            let s = ((a + 1) as f32 * scaling_ratio).round() as isize - 1;
             let peak_advance = state.analysis.true_freq[a] * scaling_ratio;
             let peak_phase = if s >= 0 && (s as usize) < num_bins {
                 state.prev_output_phase[s as usize] + peak_advance
