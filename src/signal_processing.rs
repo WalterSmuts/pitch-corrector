@@ -1036,6 +1036,7 @@ mod tests {
     const PERF_TRANSITION_AVG: f32 = 0.99; // min avg purity at transition
     const PERF_YIN_MEAN_CENTS: f32 = 1.0; // max mean pitch error
     const PERF_YIN_WORST_CENTS: f32 = 3.0; // max worst pitch error
+    const PERF_FINE_SHIFT_CENTS: f32 = 2.0; // max realized error for sub-semitone shifts (measured ~0.7)
     const TEST_EQUALITY_EPISLON: f32 = 0.002;
 
     struct PassthroughBlockProcessor;
@@ -1871,6 +1872,80 @@ mod tests {
         assert!(
             conc >= 0.97,
             "gliding-pitch fundamental smeared (worst-quartile concentration >= 0.97 expected), got {conc:.4}"
+        );
+    }
+
+    /// Realized pitch-shift error, in cents, when the shifter is commanded to
+    /// move `base_freq` by `cents`. Measures the output fundamental by
+    /// autocorrelation with parabolic interpolation on the steady-state tail,
+    /// which resolves the period to well under a cent at these frequencies.
+    fn shift_error_cents(base_freq: f32, cents: f32) -> f32 {
+        let ratio = 2f32.powf(cents / 1200.0);
+        let processor = PhaseVocoderPitchShifter::new(ratio);
+        let num_samples = BUFFER_SIZE * 48;
+        let mut output = Vec::new();
+        for i in 0..num_samples {
+            let s = (std::f32::consts::TAU * base_freq * i as f32 / SAMPLE_RATE as f32).sin();
+            processor.push_sample(s);
+            while let Some(o) = processor.pop_sample() {
+                output.push(o);
+            }
+        }
+
+        // Steady-state tail, mean-removed.
+        let tail = &output[output.len() / 2..];
+        let mean = tail.iter().sum::<f32>() / tail.len() as f32;
+        let x: Vec<f32> = tail.iter().map(|v| v - mean).collect();
+        let ac = |lag: usize| -> f32 { x[..x.len() - lag].iter().zip(&x[lag..]).map(|(a, b)| a * b).sum() };
+
+        let expected_period = SAMPLE_RATE as f32 / (base_freq * ratio);
+        let lo = (expected_period * 0.8) as usize;
+        let hi = (expected_period * 1.25) as usize + 1;
+        let mut best = lo;
+        let mut best_v = ac(lo);
+        for lag in lo..=hi {
+            let v = ac(lag);
+            if v > best_v {
+                best_v = v;
+                best = lag;
+            }
+        }
+        let (a, b, c) = (ac(best - 1), ac(best), ac(best + 1));
+        let denom = a - 2.0 * b + c;
+        let peak = if denom.abs() > 0.0 { 0.5 * (a - c) / denom } else { 0.0 };
+        let out_freq = SAMPLE_RATE as f32 / (best as f32 + peak);
+        let realized = 1200.0 * (out_freq / base_freq).log2();
+        (realized - cents).abs()
+    }
+
+    /// The phase-vocoder shifter carries pitch in the per-bin phase advance,
+    /// not the (coarse) integer bin the magnitude lobe lands on, so it should
+    /// resolve very small pitch moves even at low frequency where bins are
+    /// ~21 Hz wide. Command a spread of sub-semitone shifts at 100/200 Hz and
+    /// require the realized shift to match within a small cent tolerance.
+    #[test]
+    fn perf_phase_vocoder_fine_shift_resolution() {
+        let cases = [
+            (100.0, 5.0),
+            (100.0, 10.0),
+            (100.0, 25.0),
+            (100.0, -10.0),
+            (100.0, -25.0),
+            (200.0, 5.0),
+            (200.0, -20.0),
+        ];
+        let mut worst = 0.0f32;
+        for (f, c) in cases {
+            let e = shift_error_cents(f, c);
+            eprintln!("[PERF]   fine_shift {f:.0}Hz {c:+.0}c -> error {e:.2}c");
+            worst = worst.max(e);
+        }
+        eprintln!(
+            "[PERF] phase_vocoder_fine_shift_worst_error: {worst:.2} cents (threshold: <{PERF_FINE_SHIFT_CENTS})"
+        );
+        assert!(
+            worst < PERF_FINE_SHIFT_CENTS,
+            "shifter cannot resolve fine pitch moves: worst error {worst:.2} cents (want < {PERF_FINE_SHIFT_CENTS})"
         );
     }
 
