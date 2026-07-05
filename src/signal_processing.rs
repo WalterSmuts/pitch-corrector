@@ -29,6 +29,14 @@ pub const SPECTROGRAM_SIZE: usize = 8192;
 // real rate through, so it must NOT rely on this const for detection.
 const SAMPLE_RATE: usize = 44100;
 
+// Peak-translation only tracks spectral peaks at or above this fraction of the
+// frame's strongest peak. A tiny absolute floor let a moving tone's leakage /
+// FM-sideband ripples register as peaks; each got translated with its own
+// downshift-dependent offset and overwrote the main lobe's region, jittering
+// and smearing a gliding pitch. Ignoring negligible peaks keeps the main lobe
+// intact while leaving genuine harmonics (well above this floor) untouched.
+const PEAK_REL_THRESHOLD: f32 = 1e-3;
+
 pub trait StreamProcessor {
     fn push_sample(&self, sample: f32);
     fn pop_sample(&self) -> Option<f32>;
@@ -577,9 +585,17 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
 
         // 1) Analysis-domain peaks: local maxima over ±2 bins.
         state.peaks.clear();
+        let max_mag = state
+            .analysis
+            .magnitudes
+            .iter()
+            .take(num_bins)
+            .cloned()
+            .fold(0.0f32, f32::max);
+        let peak_floor = max_mag * PEAK_REL_THRESHOLD;
         for a in 0..num_bins {
             let s = state.analysis.magnitudes[a];
-            let is_peak = s > 1e-9
+            let is_peak = s > peak_floor
                 && (a < 1 || s > state.analysis.magnitudes[a - 1])
                 && (a < 2 || s > state.analysis.magnitudes[a - 2])
                 && (a + 1 >= num_bins || s > state.analysis.magnitudes[a + 1])
@@ -1842,19 +1858,19 @@ mod tests {
         concs[..q].iter().sum::<f32>() / q as f32
     }
 
-    /// A steady tone shifts down an octave cleanly, but a *gliding* pitch
-    /// smears across a wide band. Each analysis frame's low-level leakage /
-    /// FM-sideband ripples register as spectral peaks and get translated with
-    /// their own downshift-dependent offset, overwriting the main lobe's
-    /// region and jittering the output pitch. This documents the bug; the
-    /// assertion is inverted once peak translation ignores negligible peaks.
+    /// A steady tone shifts down an octave cleanly, and now a *gliding* pitch
+    /// does too. Previously each analysis frame's low-level leakage /
+    /// FM-sideband ripples registered as spectral peaks and were translated
+    /// with their own downshift-dependent offset, overwriting the main lobe's
+    /// region and jittering the output pitch. Ignoring negligible peaks
+    /// (PEAK_REL_THRESHOLD) keeps the gliding fundamental intact.
     #[test]
     fn phase_vocoder_downshift_glide_smears() {
         let conc = downshift_glide_concentration();
         eprintln!("[GLIDE] down-octave glide fundamental concentration: {conc:.4}");
         assert!(
-            conc < 0.97,
-            "expected gliding-pitch smearing (worst-quartile concentration < 0.97), got {conc:.4}"
+            conc >= 0.97,
+            "gliding-pitch fundamental smeared (worst-quartile concentration >= 0.97 expected), got {conc:.4}"
         );
     }
 
