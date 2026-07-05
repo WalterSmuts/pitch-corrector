@@ -1034,8 +1034,8 @@ mod tests {
     const PERF_SPECTRAL_PURITY: f32 = 0.99; // min energy concentration
     const PERF_TRANSITION_WORST: f32 = 0.98; // min purity at transition
     const PERF_TRANSITION_AVG: f32 = 0.99; // min avg purity at transition
-    const PERF_YIN_MEAN_CENTS: f32 = 5.0; // max mean pitch error
-    const PERF_YIN_WORST_CENTS: f32 = 15.0; // max worst pitch error
+    const PERF_YIN_MEAN_CENTS: f32 = 1.0; // max mean pitch error
+    const PERF_YIN_WORST_CENTS: f32 = 3.0; // max worst pitch error
     const TEST_EQUALITY_EPISLON: f32 = 0.002;
 
     struct PassthroughBlockProcessor;
@@ -1785,12 +1785,12 @@ mod tests {
         );
 
         // Peak translation should keep the worst sideband well below the
-        // fundamental. Baseline (resample shifting) was ~-13 dB; we require a
-        // clear suppression here (measured ~-22 dB) with margin for f32/FFT
-        // variation across platforms.
+        // fundamental. Baseline (resample shifting) was ~-13 dB; the off-by-one
+        // bin fix pushed it to ~-48 dB. Require < -40 dB, leaving ~8 dB for
+        // f32/FFT variation across platforms.
         assert!(
-            worst_db < -18.0,
-            "octave-shift sideband not suppressed: worst {worst_db:.1} dB at {worst_freq:.1}Hz (want < -18 dB)"
+            worst_db < -40.0,
+            "octave-shift sideband not suppressed: worst {worst_db:.1} dB at {worst_freq:.1}Hz (want < -40 dB)"
         );
     }
 
