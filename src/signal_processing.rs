@@ -1746,7 +1746,9 @@ mod tests {
 
         let skip = output.len() / 2;
         let block = &output[skip..skip + ANALYSIS_SIZE];
-        let window: Vec<f32> = apodize::hanning_iter(ANALYSIS_SIZE).map(|w| w as f32).collect();
+        let window: Vec<f32> = apodize::hanning_iter(ANALYSIS_SIZE)
+            .map(|w| w as f32)
+            .collect();
         let windowed: Vec<f32> = block.iter().zip(&window).map(|(s, w)| s * w).collect();
         let mags: Vec<f32> = windowed
             .real_fft()
@@ -1898,7 +1900,13 @@ mod tests {
         let tail = &output[output.len() / 2..];
         let mean = tail.iter().sum::<f32>() / tail.len() as f32;
         let x: Vec<f32> = tail.iter().map(|v| v - mean).collect();
-        let ac = |lag: usize| -> f32 { x[..x.len() - lag].iter().zip(&x[lag..]).map(|(a, b)| a * b).sum() };
+        let ac = |lag: usize| -> f32 {
+            x[..x.len() - lag]
+                .iter()
+                .zip(&x[lag..])
+                .map(|(a, b)| a * b)
+                .sum()
+        };
 
         let expected_period = SAMPLE_RATE as f32 / (base_freq * ratio);
         let lo = (expected_period * 0.8) as usize;
@@ -1914,7 +1922,11 @@ mod tests {
         }
         let (a, b, c) = (ac(best - 1), ac(best), ac(best + 1));
         let denom = a - 2.0 * b + c;
-        let peak = if denom.abs() > 0.0 { 0.5 * (a - c) / denom } else { 0.0 };
+        let peak = if denom.abs() > 0.0 {
+            0.5 * (a - c) / denom
+        } else {
+            0.0
+        };
         let out_freq = SAMPLE_RATE as f32 / (best as f32 + peak);
         let realized = 1200.0 * (out_freq / base_freq).log2();
         (realized - cents).abs()
@@ -1974,8 +1986,8 @@ mod tests {
         let mut truth = vec![0.0f32; num];
         for i in 0..num {
             let t = i as f32 / sr;
-            let inst =
-                f0_hz * 2f32.powf(vib_cents / 1200.0 * (std::f32::consts::TAU * vib_rate_hz * t).sin());
+            let inst = f0_hz
+                * 2f32.powf(vib_cents / 1200.0 * (std::f32::consts::TAU * vib_rate_hz * t).sin());
             truth[i] = inst;
             phase += inst / sr;
             let mut s = 0.0;
@@ -1996,12 +2008,16 @@ mod tests {
     /// Raw Pitch Accuracy (fraction within 50 cents of the window-mean truth),
     /// Gross Pitch Error fraction (>50 cents off), and Fine Pitch Error (mean
     /// |cents| on the non-gross frames).
-    fn yin_voice_metrics(
-        f0_hz: f32,
-        vib_cents: f32,
-        snr_db: f32,
-    ) -> (f32, f32, f32) {
-        let (sig, truth) = synth_voice(f0_hz, 12, 5.5, vib_cents, snr_db, SAMPLE_RATE * 2, 0x0F00_D1CE);
+    fn yin_voice_metrics(f0_hz: f32, vib_cents: f32, snr_db: f32) -> (f32, f32, f32) {
+        let (sig, truth) = synth_voice(
+            f0_hz,
+            12,
+            5.5,
+            vib_cents,
+            snr_db,
+            SAMPLE_RATE * 2,
+            0x0F00_D1CE,
+        );
         let mut det = YinPitchDetector::new();
         let w = BUFFER_SIZE;
         let hop = 512;
@@ -2023,7 +2039,11 @@ mod tests {
             i += hop;
         }
         let fpe = fine.iter().sum::<f32>() / fine.len().max(1) as f32;
-        (within as f32 / total as f32, gross as f32 / total as f32, fpe)
+        (
+            within as f32 / total as f32,
+            gross as f32 / total as f32,
+            fpe,
+        )
     }
 
     #[test]
