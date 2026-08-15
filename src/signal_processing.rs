@@ -1420,7 +1420,7 @@ mod tests {
 
         // A voiced-like signal: a couple of harmonics plus noise, so the
         // difference function has real structure (dips) to compare.
-        let mut rng = StdRng::seed_from_u64(0xF17_9E);
+        let mut rng = StdRng::seed_from_u64(0x000F_179E);
         let half_len = BUFFER_SIZE / 2;
         let n = 2 * half_len;
         let tau_hz = std::f32::consts::TAU;
@@ -2001,7 +2001,7 @@ mod tests {
         vib_cents: f32,
         snr_db: f32,
     ) -> (f32, f32, f32) {
-        let (sig, truth) = synth_voice(f0_hz, 12, 5.5, vib_cents, snr_db, SAMPLE_RATE * 2, 0xF00D_1CE);
+        let (sig, truth) = synth_voice(f0_hz, 12, 5.5, vib_cents, snr_db, SAMPLE_RATE * 2, 0x0F00_D1CE);
         let mut det = YinPitchDetector::new();
         let w = BUFFER_SIZE;
         let hop = 512;
