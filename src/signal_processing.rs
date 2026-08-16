@@ -813,6 +813,11 @@ pub struct YinPitchDetector {
     /// adaptive gate so quiet-but-clear input is kept while inter-note
     /// silence is rejected relative to the current program level.
     peak_energy: f32,
+    // --- Temporal state for voicing/pitch continuity ---
+    /// Last detected frequency (0.0 if no recent detection).
+    prev_frequency: f32,
+    /// Number of consecutive voiced frames (saturates at 255).
+    voiced_streak: u8,
     // --- FFT difference-function scratch (alloc-free after warmup) ---
     /// FFT length the scratch below is sized for (`2 * half_len`); 0 = unsized.
     fft_size: usize,
@@ -854,6 +859,8 @@ impl YinPitchDetector {
             cmnd: vec![0.0; BUFFER_SIZE / 2],
             sample_rate,
             peak_energy: 0.0,
+            prev_frequency: 0.0,
+            voiced_streak: 0,
             fft_size: 0,
             window_buf: Vec::new(),
             signal_buf: Vec::new(),
@@ -887,18 +894,43 @@ impl YinPitchDetector {
 
         self.peak_energy = (self.peak_energy * PEAK_DECAY).max(energy);
         if energy < SILENCE_FLOOR || energy < self.peak_energy * RELATIVE_FLOOR {
+            self.voiced_streak = 0;
             return None;
         }
 
         self.cmnd.resize(half_len, 0.0);
         self.cumulative_mean_normalized_difference(buffer, half_len);
-        let tau = self.absolute_threshold()?;
+
+        // Try standard threshold first.
+        let mut tau = self.absolute_threshold();
+
+        // Voicing continuity: if no dip below the standard threshold but
+        // we've been voiced for several frames, try a relaxed threshold.
+        // This bridges brief gaps where CMND doesn't quite dip below 0.15
+        // but the signal is clearly still voiced.
+        if tau.is_none() && self.voiced_streak >= 2 {
+            tau = self.absolute_threshold_relaxed();
+        }
+
+        let tau = match tau {
+            Some(t) => t,
+            None => {
+                self.voiced_streak = 0;
+                return None;
+            }
+        };
+
         let refined_tau = parabolic_interpolation(&self.cmnd, tau);
         let frequency = self.sample_rate / refined_tau;
 
         if !(50.0..=4000.0).contains(&frequency) {
+            self.voiced_streak = 0;
             return None;
         }
+
+        // Update state.
+        self.prev_frequency = frequency;
+        self.voiced_streak = self.voiced_streak.saturating_add(1);
 
         Some(frequency)
     }
@@ -1008,6 +1040,41 @@ impl YinPitchDetector {
             if self.cmnd[tau] < self.threshold {
                 let mut best = tau;
                 while best + 1 < max_tau && self.cmnd[best + 1] < self.cmnd[best] {
+                    best += 1;
+                }
+                return Some(best);
+            }
+        }
+        None
+    }
+
+    /// Relaxed threshold search for voicing continuity.
+    /// Uses a higher threshold (more permissive) to bridge brief CMND
+    /// dips that don't quite reach the standard threshold. Only called
+    /// when we have recent voicing history (voiced_streak >= 3).
+    fn absolute_threshold_relaxed(&self) -> Option<usize> {
+        const RELAXED_THRESHOLD: f32 = 0.35;
+        let fmin = 50.0_f32;
+        let fmax = 4000.0_f32;
+        let min_tau = (self.sample_rate / fmax).floor() as usize;
+        let max_tau = ((self.sample_rate / fmin).ceil() as usize).min(self.cmnd.len() - 1);
+
+        // If we have pitch history, narrow the search to ±1 octave of
+        // the previous frequency to avoid jumping to a wrong candidate.
+        let (search_min, search_max) = if self.prev_frequency > 0.0 {
+            let prev_tau = self.sample_rate / self.prev_frequency;
+            // ±1 octave = tau * 0.5 to tau * 2.0
+            let lo = (prev_tau * 0.5) as usize;
+            let hi = (prev_tau * 2.0) as usize;
+            (lo.max(min_tau), hi.min(max_tau))
+        } else {
+            (min_tau, max_tau)
+        };
+
+        for tau in search_min.max(2)..search_max {
+            if self.cmnd[tau] < RELAXED_THRESHOLD {
+                let mut best = tau;
+                while best + 1 < search_max && self.cmnd[best + 1] < self.cmnd[best] {
                     best += 1;
                 }
                 return Some(best);
