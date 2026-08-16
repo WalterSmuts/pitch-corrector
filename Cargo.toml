@@ -6,7 +6,7 @@ edition = "2021"
 
 [features]
 default = ["native"]
-native = ["clap", "ansi-escapes", "termion", "ctrlc", "ratatui", "crossterm", "tui-logger", "log-panics"]
+native = ["clap", "ansi-escapes", "termion", "ctrlc", "ratatui", "crossterm", "tui-logger", "log-panics", "pyin", "hound"]
 web = ["wasm-bindgen", "web-sys", "js-sys", "console_log", "wasm-bindgen-futures"]
 # Off-main-thread audio via cpal's AudioWorklet host (runs the DSP on the
 # audio render thread). Requires a wasm atomics/threads build and COOP/COEP
@@ -16,14 +16,14 @@ worklet = ["cpal/audioworklet"]
 [dependencies]
 cpal = { path = "../cpal", features = ["wasm-bindgen"] }
 crossbeam-queue = "0.3"
-pyin = "1.2.0"
-hound = "3"
 apodize = "1.0.0"
 bitflags = "2"
 log = "0.4"
 easyfft = "0.4.2"
 
 # Native-only
+pyin = { version = "1.2.0", optional = true }
+hound = { version = "3", optional = true }
 clap = { version = "4.5", features = ["derive"], optional = true }
 ansi-escapes = { version = "0.2", optional = true }
 termion = { version = "4.0", optional = true }
@@ -63,6 +63,16 @@ path = "src/lib.rs"
 [[bin]]
 name = "pitch-corrector"
 path = "src/main.rs"
+required-features = ["native"]
+
+[[bin]]
+name = "pitch_contour"
+path = "src/bin/pitch_contour.rs"
+required-features = ["native"]
+
+[[bin]]
+name = "pitch_compare"
+path = "src/bin/pitch_compare.rs"
 required-features = ["native"]
 
 # Lint policy. The tree is clean under these today; CI runs
