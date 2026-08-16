@@ -993,83 +993,29 @@ impl YinPitchDetector {
     }
 
     fn absolute_threshold(&self) -> Option<usize> {
-        let min_tau = 2;
-        // Standard YIN: find first tau below threshold, then walk to local min.
-        let mut first_tau = None;
-        for tau in min_tau..self.cmnd.len() {
+        // Restrict tau search to a valid frequency range.
+        // min_tau = sr/fmax (highest freq), max_tau = sr/fmin (lowest freq).
+        // These match the post-detection range check in detect().
+        let fmin = 50.0_f32;
+        let fmax = 4000.0_f32;
+        let min_tau = (self.sample_rate / fmax).floor() as usize;
+        let max_tau = ((self.sample_rate / fmin).ceil() as usize).min(self.cmnd.len() - 1);
+
+        // Standard YIN: find first tau below threshold, walk to local min.
+        // By starting at min_tau (not tau=2), we avoid spurious dips at
+        // very high frequencies that don't correspond to real fundamentals.
+        for tau in min_tau.max(2)..max_tau {
             if self.cmnd[tau] < self.threshold {
                 let mut best = tau;
-                while best + 1 < self.cmnd.len() && self.cmnd[best + 1] < self.cmnd[best] {
+                while best + 1 < max_tau && self.cmnd[best + 1] < self.cmnd[best] {
                     best += 1;
                 }
-                first_tau = Some(best);
-                break;
+                return Some(best);
             }
         }
-        let tau = first_tau?;
-
-        // Octave-error guard: iteratively check sub-harmonics (2*tau, 4*tau, ...)
-        // to find the true fundamental. Voice signals often have harmonics that
-        // cross threshold before the fundamental. Only prefer the sub-harmonic
-        // when the original dip was marginal (close to threshold).
-        Some(self.find_best_subharmonic(tau))
+        None
     }
 
-    /// Iteratively check sub-harmonic periods to find the true fundamental.
-    /// Walks down octaves as long as valid sub-harmonic dips are found.
-    fn find_best_subharmonic(&self, initial_tau: usize) -> usize {
-        let mut tau = initial_tau;
-
-        // Only prefer a sub-harmonic if its CMND dip is SIGNIFICANTLY
-        // deeper than the current tau's dip. For real fundamentals being
-        // mistaken as harmonics, the sub-harmonic dip is much deeper.
-        // For correct detections, the sub-harmonic dip is similar or worse.
-        const DIP_RATIO_THRESHOLD: f32 = 0.2;
-
-        // If the current dip is already very low, it's a confident
-        // detection (pure tones, strong voiced frames). Don't override.
-        const CONFIDENT_FLOOR: f32 = 0.05;
-
-        // Check up to 2 octaves down (2*tau, then 2*that = 4*original).
-        for _ in 0..2 {
-            // Confident detection — stop looking for sub-harmonics.
-            if self.cmnd[tau] < CONFIDENT_FLOOR {
-                break;
-            }
-
-            let center = 2 * tau;
-            let search_lo = (center as f32 * 0.9) as usize;
-            let search_hi = ((center as f32 * 1.1) as usize).min(self.cmnd.len() - 1);
-
-            if search_lo >= self.cmnd.len() {
-                break;
-            }
-
-            // Find the local minimum in the search window.
-            let mut best_sub = search_lo;
-            for i in search_lo..=search_hi {
-                if self.cmnd[i] < self.cmnd[best_sub] {
-                    best_sub = i;
-                }
-            }
-
-            // Accept the sub-harmonic only if:
-            // 1. It's below threshold
-            // 2. It's significantly deeper than the current dip
-            // 3. The resulting frequency is reasonable
-            let sub_freq = self.sample_rate / best_sub as f32;
-            if self.cmnd[best_sub] < self.threshold
-                && self.cmnd[best_sub] < self.cmnd[tau] * DIP_RATIO_THRESHOLD
-                && sub_freq >= 50.0
-            {
-                tau = best_sub;
-            } else {
-                break;
-            }
-        }
-
-        tau
-    }
 }
 
 fn parabolic_interpolation(cmnd: &[f32], tau: usize) -> f32 {
