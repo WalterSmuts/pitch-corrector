@@ -1020,16 +1020,20 @@ impl YinPitchDetector {
     fn find_best_subharmonic(&self, initial_tau: usize) -> usize {
         let mut tau = initial_tau;
 
-        // If the initial dip is very deep (near zero), this is a high-
-        // confidence detection — almost certainly correct. Don't override.
-        // Pure sines have CMND ~0 at the true period. Real voice with
-        // octave errors has CMND values that are below threshold but not
-        // extremely close to zero.
-        const CONFIDENT_DIP: f32 = 0.02;
+        // Only prefer a sub-harmonic if its CMND dip is SIGNIFICANTLY
+        // deeper than the current tau's dip. For real fundamentals being
+        // mistaken as harmonics, the sub-harmonic dip is much deeper.
+        // For correct detections, the sub-harmonic dip is similar or worse.
+        const DIP_RATIO_THRESHOLD: f32 = 0.2;
+
+        // If the current dip is already very low, it's a confident
+        // detection (pure tones, strong voiced frames). Don't override.
+        const CONFIDENT_FLOOR: f32 = 0.05;
 
         // Check up to 2 octaves down (2*tau, then 2*that = 4*original).
         for _ in 0..2 {
-            if self.cmnd[tau] < CONFIDENT_DIP {
+            // Confident detection — stop looking for sub-harmonics.
+            if self.cmnd[tau] < CONFIDENT_FLOOR {
                 break;
             }
 
@@ -1049,9 +1053,15 @@ impl YinPitchDetector {
                 }
             }
 
-            // Accept the sub-harmonic if it's below threshold.
+            // Accept the sub-harmonic only if:
+            // 1. It's below threshold
+            // 2. It's significantly deeper than the current dip
+            // 3. The resulting frequency is reasonable
             let sub_freq = self.sample_rate / best_sub as f32;
-            if self.cmnd[best_sub] < self.threshold && sub_freq >= 50.0 {
+            if self.cmnd[best_sub] < self.threshold
+                && self.cmnd[best_sub] < self.cmnd[tau] * DIP_RATIO_THRESHOLD
+                && sub_freq >= 50.0
+            {
                 tau = best_sub;
             } else {
                 break;
