@@ -16,6 +16,8 @@ worklet = ["cpal/audioworklet"]
 [dependencies]
 cpal = { path = "../cpal", features = ["wasm-bindgen"] }
 crossbeam-queue = "0.3"
+pyin = "1.2.0"
+hound = "3"
 apodize = "1.0.0"
 bitflags = "2"
 log = "0.4"
