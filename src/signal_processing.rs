@@ -1045,11 +1045,11 @@ mod tests {
     const PERF_SPECTRAL_PURITY: f32 = 0.99; // min energy concentration
     const PERF_TRANSITION_WORST: f32 = 0.98; // min purity at transition
     const PERF_TRANSITION_AVG: f32 = 0.99; // min avg purity at transition
-    const PERF_YIN_MEAN_CENTS: f32 = 1.0; // max mean pitch error
-    const PERF_YIN_WORST_CENTS: f32 = 3.0; // max worst pitch error
-    const PERF_FINE_SHIFT_CENTS: f32 = 2.0; // max realized error for sub-semitone shifts (measured ~0.7)
+    const PERF_YIN_MEAN_CENTS: f32 = 0.5; // max mean pitch error (measured 0.16)
+    const PERF_YIN_WORST_CENTS: f32 = 1.5; // max worst pitch error (measured 0.99)
+    const PERF_FINE_SHIFT_CENTS: f32 = 1.0; // max realized error for sub-semitone shifts (measured 0.67)
     const PERF_VOICE_RPA: f32 = 0.95; // min raw pitch accuracy on synthetic voice (measured 100%)
-    const PERF_VOICE_FPE_CENTS: f32 = 10.0; // max fine pitch error on synthetic voice (measured ~4-5)
+    const PERF_VOICE_FPE_CENTS: f32 = 6.0; // max fine pitch error on synthetic voice (measured ~4-5)
     const TEST_EQUALITY_EPISLON: f32 = 0.002;
 
     struct PassthroughBlockProcessor;

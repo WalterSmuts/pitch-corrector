@@ -271,7 +271,7 @@ mod tests {
     const PERF_CORRECTOR_TRANSPARENCY: f32 = 0.01; // max |similarity - 1.0|
     const PERF_SNAPPING_ACCURACY: f32 = 0.90; // min fraction on scale
     const PERF_TRACKING_PASS: f32 = 0.80; // min accuracy per rate
-    const PERF_MIN_TRACKING_RATE: f32 = 2.0; // Hz
+    const PERF_MIN_TRACKING_RATE: f32 = 3.0; // Hz (measured 4.0)
     const PERF_NOISE_PASS: f32 = 0.75; // min accuracy per noise level
     const PERF_MIN_NOISE_TOLERANCE: f32 = 0.3; // amplitude
 
