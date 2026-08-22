@@ -1,588 +1,318 @@
 import init, { WebPitchCorrector, warmup } from '../pkg/pitch_corrector.js';
+import { Timeline } from './timeline.js';
+import { drawPitchGrid, drawPitchTrack, drawWaveform, freqToY, yToFreq } from './views.js';
+import { encodeWav, decodeWav, downloadBlob } from './wav.js';
 
-// --- State machine ---
-// States: idle, recording, stopped, playing, paused
+// --- State ---
+// Transport: idle -> recording -> stopped <-> playing <-> paused
 let state = 'idle';
 let corrector = null;
-let animFrame = null;
-let columnX = 0;
-let recordedColumns = 0;
+let sampleRate = 48000;
+let totalSamples = 0;
+let pitchHop = 1024;
 
-// Post-correction state
-let targetContour = [];       // target freq per hop, fetched from Rust after recording
-let editedContour = null;     // user-edited copy (or null if not editing)
-let contourSnapshot = null;   // ImageData of contour canvas before overlay
+// Post-correction: target contour (one entry per phase-vocoder hop, spanning
+// the whole recording) captured at stop, plus the user-edited copy.
+let targetContour = [];
+let editedContour = null;
 let postCorrectionActive = false;
-let outputPitchView = false;  // whether output pitch contour is visible
 
+const INPUT_COLOR = 'rgb(255,150,50)';
+const OUTPUT_COLOR = 'rgb(50,255,120)';
+const EDIT_COLOR = 'rgb(255,80,200)';
+
+const $ = id => document.getElementById(id);
 const els = {
-    status: document.getElementById('status'),
-    recordBtn: document.getElementById('record-btn'),
-    stopBtn: document.getElementById('stop-btn'),
-    playBtn: document.getElementById('play-btn'),
-    sweepBtn: document.getElementById('sweep-btn'),
-    downloadBtn: document.getElementById('download-btn'),
-    debugBtn: document.getElementById('debug-btn'),
-    uploadBtn: document.getElementById('upload-btn'),
-    uploadInput: document.getElementById('upload-input'),
+    status: $('status'),
+    recordBtn: $('record-btn'),
+    stopBtn: $('stop-btn'),
+    playBtn: $('play-btn'),
+    sweepBtn: $('sweep-btn'),
+    downloadBtn: $('download-btn'),
+    debugBtn: $('debug-btn'),
+    uploadBtn: $('upload-btn'),
+    uploadInput: $('upload-input'),
+    postCorrectionLabel: $('post-correction-label'),
+    postCorrectionCb: $('post-correction-cb'),
 };
 
-const allCanvasIds = ['input-spectrogram','input-contour','input-waveform','output-spectrogram','output-contour','output-waveform'];
-const canvases = Object.fromEntries(allCanvasIds.map(id => [id, document.getElementById(id)]));
+// --- Timeline ---
 
-// Wrap each canvas and lay a transparent overlay canvas on top for the
-// playhead. This replaces per-frame getImageData/putImageData (an
-// expensive GPU->CPU readback) with a cheap clear + fillRect on a
-// dedicated layer, leaving the heavy spectrogram/contour canvases
-// untouched by the moving cursor.
-const overlays = {};
-allCanvasIds.forEach(id => {
-    const c = canvases[id];
-    const wrap = document.createElement('div');
-    wrap.className = 'canvas-wrap';
-    c.parentNode.insertBefore(wrap, c);
-    wrap.appendChild(c);
-    const ov = document.createElement('canvas');
-    ov.width = c.width;
-    ov.height = c.height;
-    ov.className = 'playhead-overlay';
-    wrap.appendChild(ov);
-    overlays[id] = ov;
+const timeline = new Timeline($('timeline'), {
+    tracks: [
+        { id: 'input', label: 'Input', views: ['spectrogram', 'pitch', 'waveform'], view: 'spectrogram' },
+        { id: 'output', label: 'Output', views: ['spectrogram', 'pitch', 'waveform'], view: 'spectrogram' },
+    ],
+    renderTrack,
+    onSeek: seekTo,
+    onViewChange: () => updatePostCorrectionVisibility(),
+    onTrackDrag: contourDrag,
 });
-let lastPlayheadX = -1;
 
-// Draw the playhead on each visible canvas's overlay layer.
-function drawSyncedPlayhead(x) {
-    lastPlayheadX = x;
-    allCanvasIds.forEach(id => {
-const ov = overlays[id];
-const octx = ov.getContext('2d');
-octx.clearRect(0, 0, ov.width, ov.height);
-if (canvases[id].style.display === 'none') return;
-octx.fillStyle = 'rgba(255,255,255,0.8)';
-octx.fillRect(x, 0, 4, ov.height);
-    });
+function renderTrack(track, canvas, vp, x0, x1) {
+    const isInput = track.id === 'input';
+    const ctx = canvas.getContext('2d');
+    if (!corrector || totalSamples === 0) {
+        ctx.fillStyle = 'rgb(10,10,20)';
+        ctx.fillRect(0, 0, vp.w, vp.h);
+        return;
+    }
+    switch (track.view) {
+        case 'spectrogram': {
+            const w = x1 - x0;
+            const start = vp.s0 + x0 * vp.spp;
+            if (isInput) corrector.draw_input_spectrogram_range(canvas, x0, w, start, vp.spp);
+            else corrector.draw_output_spectrogram_range(canvas, x0, w, start, vp.spp);
+            break;
+        }
+        case 'pitch': {
+            // Cheap enough to always repaint fully.
+            drawPitchGrid(ctx, vp.w, vp.h, vp.dpr);
+            const data = isInput ? corrector.input_pitch_track() : corrector.output_pitch_track();
+            drawPitchTrack(ctx, data, pitchHop, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR, vp.dpr);
+            if (!isInput && postCorrectionActive && editedContour) {
+                drawEditedContour(ctx, vp);
+            }
+            break;
+        }
+        case 'waveform': {
+            const bins = x1 - x0;
+            const start = vp.s0 + x0 * vp.spp;
+            const peaks = isInput
+                ? corrector.input_peaks(start, start + bins * vp.spp, bins)
+                : corrector.output_peaks(start, start + bins * vp.spp, bins);
+            drawWaveform(ctx, peaks, x0, bins, vp.h, isInput ? INPUT_COLOR : OUTPUT_COLOR);
+            break;
+        }
+    }
 }
 
+function drawEditedContour(ctx, vp) {
+    const n = editedContour.length;
+    if (n === 0 || totalSamples === 0) return;
+    ctx.fillStyle = EDIT_COLOR;
+    const first = Math.max(0, Math.floor(vp.s0 / totalSamples * n));
+    const last = Math.min(n - 1, Math.ceil((vp.s0 + vp.w * vp.spp) / totalSamples * n));
+    for (let i = first; i <= last; i++) {
+        const freq = editedContour[i];
+        if (freq <= 0) continue;
+        const y = freqToY(freq, vp.h);
+        if (y < 0 || y > vp.h) continue;
+        const x = (i / n * totalSamples - vp.s0) / vp.spp;
+        ctx.fillRect(x - vp.dpr, y - vp.dpr, 2 * vp.dpr, 2 * vp.dpr);
+    }
+}
+
+// Drag on the output pitch view edits the target contour.
+function contourDrag(track, pos, phase) {
+    if (track.id !== 'output' || track.view !== 'pitch') return false;
+    if (!postCorrectionActive || !editedContour || totalSamples === 0) return false;
+    if (state !== 'stopped' && state !== 'paused') return false;
+    if (phase === 'end') return true;
+
+    const n = editedContour.length;
+    const hop = Math.floor(pos.sample / totalSamples * n);
+    if (hop < 0 || hop >= n) return true;
+    const freq = yToFreq(pos.y, pos.h);
+    const noteBits = corrector.get_scale();
+    editedContour[hop] = noteBits > 0 ? WebPitchCorrector.snap_to_scale(freq, noteBits) : freq;
+    timeline.invalidate('output');
+    return true;
+}
+
+// --- Render loop ---
+// One always-on rAF loop; Timeline.render() early-outs when nothing changed.
+function loop() {
+    requestAnimationFrame(loop);
+    if (!corrector) return;
+    if (state === 'recording' || state === 'playing') {
+        totalSamples = corrector.analyze();
+        timeline.setTotal(totalSamples);
+        // The output lags the input by the pipeline latency (and regrows
+        // from the seek position during playback): repaint from its end.
+        timeline.setDataEnd('output', corrector.output_len());
+        if (state === 'recording') {
+            timeline.setPlayhead(totalSamples);
+        } else {
+            timeline.setPlayhead(corrector.playback_progress() * totalSamples);
+            if (!corrector.is_playing()) {
+                corrector.clear_contour();
+                setState('stopped');
+            }
+        }
+        timeline.render();
+    }
+}
+requestAnimationFrame(loop);
+
+// --- Transport state machine ---
+
 function setState(newState) {
-    const prev = state;
     state = newState;
-
-    // Exit actions
-    if (prev === 'recording') {
-cancelAnim();
-if (newState !== 'recording' && corrector) corrector.stop();
-    }
-    if (prev === 'playing') {
-cancelAnim();
-restorePlayhead();
-    }
-
-    // UI for each state
-    switch (state) {
-case 'idle':
-    els.status.textContent = 'Click Record to begin';
-    els.recordBtn.disabled = false;
-    els.stopBtn.disabled = true;
-    els.playBtn.style.display = 'none';
-    els.sweepBtn.disabled = true;
-    break;
-case 'recording':
-    els.status.textContent = '🔴 Recording...';
-    els.recordBtn.disabled = true;
-    els.stopBtn.disabled = false;
-    els.playBtn.style.display = 'none';
-    els.sweepBtn.disabled = false;
-    break;
-case 'stopped':
-    els.status.textContent = 'Recording saved. Click Play or click spectrogram to seek.';
-    els.recordBtn.disabled = false;
-    els.stopBtn.disabled = true;
-    els.playBtn.style.display = '';
-    els.playBtn.textContent = '▶ Play';
-    els.sweepBtn.disabled = true;
-    els.downloadBtn.style.display = '';
-    els.debugBtn.style.display = '';
-    break;
-case 'playing':
-    els.status.textContent = '▶ Playing...';
-    els.recordBtn.disabled = true;
-    els.stopBtn.disabled = true;
-    els.playBtn.style.display = '';
-    els.playBtn.textContent = '⏸ Pause';
-    els.sweepBtn.disabled = true;
-    break;
-case 'paused':
-    els.status.textContent = 'Paused. Click Play to resume or click spectrogram to seek.';
-    els.recordBtn.disabled = false;
-    els.stopBtn.disabled = true;
-    els.playBtn.style.display = '';
-    els.playBtn.textContent = '▶ Play';
-    els.sweepBtn.disabled = true;
-    break;
-    }
+    const s = {
+        idle: 'Click Record to begin',
+        recording: '🔴 Recording…',
+        stopped: 'Recording saved. Play it back, zoom with the mouse wheel, click to seek.',
+        playing: '▶ Playing…',
+        paused: 'Paused. Play to resume, click a track to seek.',
+    };
+    els.status.textContent = s[state];
+    els.recordBtn.disabled = state === 'recording' || state === 'playing';
+    els.stopBtn.disabled = state !== 'recording';
+    els.playBtn.disabled = !(state === 'stopped' || state === 'paused' || state === 'playing') || totalSamples === 0;
+    els.playBtn.textContent = state === 'playing' ? '⏸ Pause' : '▶ Play';
+    els.sweepBtn.disabled = state !== 'recording';
+    const hasRecording = totalSamples > 0 && (state === 'stopped' || state === 'paused');
+    els.downloadBtn.disabled = !hasRecording;
+    els.debugBtn.disabled = !hasRecording;
     updatePostCorrectionVisibility();
 }
 
-// --- Animation helpers ---
-function cancelAnim() {
-    if (animFrame) cancelAnimationFrame(animFrame);
-    animFrame = null;
-}
-
-const outputCanvasIds = ['output-spectrogram', 'output-contour', 'output-waveform'];
-function clearOutputCanvases() {
-    outputCanvasIds.forEach(id => {
-const c = canvases[id];
-c.getContext('2d').clearRect(0, 0, c.width, c.height);
-    });
-}
-
-// --- Playhead clear ---
-function restorePlayhead() {
-    if (lastPlayheadX < 0) return;
-    allCanvasIds.forEach(id => {
-const ov = overlays[id];
-ov.getContext('2d').clearRect(0, 0, ov.width, ov.height);
-    });
-    lastPlayheadX = -1;
-}
-
-function playbackX() {
-    if (!corrector) return 0;
-    const progress = corrector.playback_progress();
-    const totalCols = Math.min(recordedColumns, canvases['output-spectrogram'].width);
-    const col = Math.floor(progress * totalCols);
-    const startCol = columnX;
-    return (startCol - totalCols + col + canvases['output-spectrogram'].width) % canvases['output-spectrogram'].width;
-}
-
-// --- Recording ---
-// Returns a list of required browser features that are missing.
 function checkBrowserSupport() {
     const missing = [];
     if (typeof WebAssembly === 'undefined') missing.push('WebAssembly');
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia))
-missing.push('microphone access (getUserMedia)');
+        missing.push('microphone access (getUserMedia)');
     if (!(window.AudioContext || window.webkitAudioContext))
-missing.push('Web Audio');
+        missing.push('Web Audio');
     return missing;
 }
 
-// Map a start-up error (DOMException or cpal string) to a clear message.
 function describeStartError(e) {
     const s = ((e && (e.name || '')) + ' ' + (e && (e.message || ''))).trim() || String(e);
     const hay = s.toLowerCase();
     if (hay.includes('notallowed') || hay.includes('permission') || hay.includes('denied'))
-return 'Microphone permission denied. Allow mic access in your browser, then click Record again.';
+        return 'Microphone permission denied. Allow mic access in your browser, then click Record again.';
     if (hay.includes('notfound') || hay.includes('no input device') || hay.includes('devicesnotfound'))
-return 'No microphone found. Connect a microphone and click Record again.';
+        return 'No microphone found. Connect a microphone and click Record again.';
     if (hay.includes('notreadable') || hay.includes('in use'))
-return 'Microphone is in use by another application. Close it and retry.';
+        return 'Microphone is in use by another application. Close it and retry.';
     return 'Could not start audio: ' + s;
 }
 
-// Resolve once the whole audio pipeline (both worklets) is live, or
-// after a timeout (e.g. mic denied) so we never hang.
+// Resolve once the whole audio pipeline (both worklets) is live, or after a
+// timeout (e.g. mic denied) so we never hang.
 function waitForAudioReady(c, timeoutMs = 6000) {
     return new Promise((resolve) => {
-const t0 = performance.now();
-(function poll() {
-    if (c.is_audio_ready() || performance.now() - t0 > timeoutMs) {
-        resolve();
-    } else {
-        setTimeout(poll, 30);
-    }
-})();
+        const t0 = performance.now();
+        (function poll() {
+            if (c.is_audio_ready() || performance.now() - t0 > timeoutMs) resolve();
+            else setTimeout(poll, 30);
+        })();
     });
+}
+
+function newCorrector() {
+    if (corrector) corrector.stop();
+    corrector = new WebPitchCorrector();
+    // E2E test hook: expose the corrector so Playwright can inspect the
+    // captured buffers. Only when ?e2e is set.
+    if (new URLSearchParams(location.search).has('e2e')) window.__pc = corrector;
+    sampleRate = corrector.sample_rate();
+    pitchHop = corrector.pitch_hop();
+    timeline.setSampleRate(sampleRate);
+    applyScale();
+    corrector.set_shift(parseFloat(slider.value));
+}
+
+function resetSession() {
+    totalSamples = 0;
+    targetContour = [];
+    editedContour = null;
+    postCorrectionActive = false;
+    els.postCorrectionCb.checked = false;
+    timeline.reset();
 }
 
 async function startRecording() {
     const missing = checkBrowserSupport();
     if (missing.length) {
-els.status.textContent =
-    'Unsupported browser — missing ' + missing.join(', ') +
-    '. Try a recent Chrome, Edge, or Firefox over HTTPS.';
-return;
+        els.status.textContent =
+            'Unsupported browser — missing ' + missing.join(', ') +
+            '. Try a recent Chrome, Edge, or Firefox over HTTPS.';
+        return;
     }
     try {
-await init();
+        await init();
     } catch (e) {
-els.status.textContent =
-    'Failed to load the audio engine (WASM). Check your connection and reload. (' + e + ')';
-setState('idle');
-return;
+        els.status.textContent =
+            'Failed to load the audio engine (WASM). Check your connection and reload. (' + e + ')';
+        setState('idle');
+        return;
     }
     try {
-if (corrector) corrector.stop();
-corrector = new WebPitchCorrector();
-// E2E test hook: expose the corrector so Playwright can read
-// the captured input/output buffers. Only when ?e2e is set.
-if (new URLSearchParams(location.search).has('e2e')) window.__pc = corrector;
-SAMPLE_RATE = corrector.sample_rate();
-applyScale();
-corrector.set_shift(parseFloat(slider.value));
+        newCorrector();
+        resetSession();
+        corrector.clear_target_pitch_contour();
 
-allCanvasIds.forEach(id => {
-    const ctx = canvases[id].getContext('2d');
-    ctx.clearRect(0, 0, canvases[id].width, canvases[id].height);
-});
-columnX = 0;
-recordedColumns = 0;
-targetContour = [];
-editedContour = null;
-postCorrectionActive = false;
-document.getElementById('post-correction-cb').checked = false;
-contourSnapshot = null;
-corrector.clear_target_pitch_contour();
+        els.status.textContent = 'Initializing audio…';
+        await waitForAudioReady(corrector);
 
-// Wait for the entire audio pipeline (input + output worklets)
-// to be live before we start drawing, so the async worklet
-// setup can't jank the draw loop mid-animation.
-els.status.textContent = 'Initializing audio…';
-await waitForAudioReady(corrector);
+        timeline.follow(true);
+        setState('recording');
+    } catch (e) {
+        els.status.textContent = describeStartError(e);
+        setState('idle');
+    }
+}
 
-setState('recording');
-
-function draw() {
+function stopRecording() {
     if (state !== 'recording') return;
-    restorePlayhead();
-    corrector.draw_spectrogram(canvases['output-spectrogram'], columnX);
-    corrector.draw_input_spectrogram(canvases['input-spectrogram'], columnX);
-    corrector.draw_pitch_contour(canvases['output-contour'], columnX);
-    corrector.draw_input_contour(canvases['input-contour'], columnX);
-    corrector.draw_waveform(canvases['output-waveform'], columnX);
-    corrector.draw_input_waveform(canvases['input-waveform'], columnX);
-    const width = canvases['output-spectrogram'].width;
-    drawSyncedPlayhead((columnX + 1) % width);
-    columnX = (columnX + 1) % width;
-    recordedColumns++;
-    animFrame = requestAnimationFrame(draw);
-}
-draw();
-    } catch (e) {
-els.status.textContent = describeStartError(e);
-setState('idle');
+    corrector.stop();
+    totalSamples = corrector.analyze();
+    timeline.setTotal(totalSamples);
+    if (totalSamples === 0) {
+        setState('idle');
+        return;
     }
+    targetContour = Array.from(corrector.take_target_pitch_contour());
+    timeline.follow(false);
+    timeline.fit();
+    timeline.setPlayhead(0);
+    corrector.seek(0);
+    setState('stopped');
 }
 
-// --- Playback ---
 function startPlayback() {
-    if (!corrector || corrector.recording_len() === 0) return;
+    if (!corrector || totalSamples === 0) return;
     if (corrector.playback_progress() >= 1.0) corrector.seek(0);
-
-    // If post-correction is active, set the edited contour as the target
     if (postCorrectionActive && editedContour) {
-corrector.set_contour(new Float32Array(editedContour));
+        corrector.set_contour(new Float32Array(editedContour));
     } else {
-corrector.clear_contour();
+        corrector.clear_contour();
     }
-
-    clearOutputCanvases();
     corrector.play_recording();
+    // Rust truncated the output at the play position; roll the repaint
+    // watermark back so the re-processed audio gets drawn.
+    timeline.setDataEnd('output', corrector.output_len());
     setState('playing');
-
-    let playColumnX = 0;
-    function drawPlaybackFrame() {
-if (state !== 'playing') return;
-
-restorePlayhead();
-
-// Derive column from actual playback progress
-const width = canvases['output-spectrogram'].width;
-const progress = corrector.playback_progress();
-const totalCols = Math.min(recordedColumns, width);
-const newCol = Math.floor(progress * totalCols) % width;
-
-// Draw all columns we may have skipped
-while (playColumnX !== newCol) {
-    corrector.draw_spectrogram(canvases['output-spectrogram'], playColumnX);
-    corrector.draw_pitch_contour(canvases['output-contour'], playColumnX);
-    corrector.draw_waveform(canvases['output-waveform'], playColumnX);
-    playColumnX = (playColumnX + 1) % width;
-}
-drawSyncedPlayhead((playColumnX + 1) % width);
-
-if (corrector.is_playing()) {
-    animFrame = requestAnimationFrame(drawPlaybackFrame);
-} else {
-    // Restore default target after playback
-    corrector.clear_contour();
-    setState('stopped');
-}
-    }
-    drawPlaybackFrame();
 }
 
-// --- Seek ---
-function handleCanvasClick(e) {
-    if (!corrector || corrector.recording_len() === 0) return;
-    if (state !== 'stopped' && state !== 'playing' && state !== 'paused') return;
-
-    const canvas = e.target;
-    const rect = canvas.getBoundingClientRect();
-    const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const canvasWidth = canvas.width;
-    const totalCols = Math.min(recordedColumns, canvasWidth);
-
-    let offset = (clickX - (columnX - totalCols) + canvasWidth) % canvasWidth;
-    if (offset > totalCols) offset = totalCols;
-    corrector.seek(offset / totalCols);
-    restorePlayhead();
-    drawSyncedPlayhead(Math.floor(clickX));
-}
-
-// --- Scale / shift controls ---
-const noteNames = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-let currentScale = 'pentatonic';
-let customBits = 0xFFF;
-
-const noteGrid = document.getElementById('note-grid');
-noteNames.forEach((name, i) => {
-    const btn = document.createElement('button');
-    btn.textContent = name;
-    btn.dataset.note = i;
-    btn.classList.add('active');
-    btn.addEventListener('click', () => {
-btn.classList.toggle('active');
-customBits = 0;
-noteGrid.querySelectorAll('button.active').forEach(b => {
-    customBits |= (1 << parseInt(b.dataset.note));
-});
-if (corrector && currentScale === 'custom') {
-    corrector.set_scale(customBits);
-    if (state !== 'recording') clearOutputCanvases();
-}
-    });
-    noteGrid.appendChild(btn);
-});
-
-function applyScale() {
-    if (!corrector) return;
-    const root = parseInt(document.getElementById('root-select').value);
-    if (currentScale === 'custom') {
-corrector.set_scale(customBits);
-    } else {
-corrector.set_scale(WebPitchCorrector.scale_bits(currentScale, root));
-    }
-    if (state !== 'recording') clearOutputCanvases();
-}
-
-document.querySelectorAll('#scale-buttons button').forEach(btn => {
-    btn.addEventListener('click', () => {
-document.querySelectorAll('#scale-buttons button').forEach(b => b.classList.remove('active'));
-btn.classList.add('active');
-currentScale = btn.dataset.scale;
-document.getElementById('custom-notes').style.display =
-    currentScale === 'custom' ? 'block' : 'none';
-applyScale();
-    });
-});
-
-document.getElementById('root-select').addEventListener('change', applyScale);
-
-const slider = document.getElementById('shift-slider');
-const shiftDisplay = document.getElementById('shift-display');
-slider.addEventListener('input', () => {
-    const v = parseFloat(slider.value);
-    shiftDisplay.textContent = (v >= 0 ? '+' : '') + v + ' st';
-    if (corrector) corrector.set_shift(v);
-    if (state !== 'recording') clearOutputCanvases();
-});
-
-// --- WAV download/upload ---
-// Fallback only; the real device rate is read from the WASM module
-// (corrector.sample_rate()) once the corrector is created, so WAV
-// export and the debug dump always match the actual audio rate.
-let SAMPLE_RATE = 48000;
-
-function encodeWav(samples) {
-    const numSamples = samples.length;
-    const buffer = new ArrayBuffer(44 + numSamples * 2);
-    const view = new DataView(buffer);
-    const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
-    writeStr(0, 'RIFF');
-    view.setUint32(4, 36 + numSamples * 2, true);
-    writeStr(8, 'WAVE');
-    writeStr(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, SAMPLE_RATE, true);
-    view.setUint32(28, SAMPLE_RATE * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeStr(36, 'data');
-    view.setUint32(40, numSamples * 2, true);
-    for (let i = 0; i < numSamples; i++) {
-const s = Math.max(-1, Math.min(1, samples[i]));
-view.setInt16(44 + i * 2, s * 0x7FFF, true);
-    }
-    return new Blob([buffer], { type: 'audio/wav' });
-}
-
-function downloadRecording() {
-    if (!corrector) return;
-    const samples = corrector.get_recording();
-    if (samples.length === 0) return;
-    const blob = encodeWav(samples);
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'recording.wav';
-    a.click();
-    URL.revokeObjectURL(url);
-}
-
-function downloadDebugDump() {
-    if (!corrector) return;
-    const input = Array.from(corrector.get_recording());
-    const output = Array.from(corrector.get_output_recording());
-    const target = Array.from(targetContour);
-    const edited = editedContour ? Array.from(editedContour) : null;
-    const dump = { sampleRate: SAMPLE_RATE, input, output, targetContour: target, editedContour: edited };
-    const blob = new Blob([JSON.stringify(dump)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'debug-dump.json';
-    a.click();
-    URL.revokeObjectURL(url);
-}
-
-function decodeWav(arrayBuffer) {
-    const view = new DataView(arrayBuffer);
-    let offset = 12;
-    while (offset < view.byteLength - 8) {
-const id = String.fromCharCode(view.getUint8(offset), view.getUint8(offset+1), view.getUint8(offset+2), view.getUint8(offset+3));
-const size = view.getUint32(offset + 4, true);
-if (id === 'data') {
-    const bitsPerSample = view.getUint16(34, true);
-    const numChannels = view.getUint16(22, true);
-    const samples = [];
-    const dataStart = offset + 8;
-    if (bitsPerSample === 16) {
-        for (let i = 0; i < size; i += 2 * numChannels) {
-            samples.push(view.getInt16(dataStart + i, true) / 0x7FFF);
-        }
-    } else if (bitsPerSample === 32) {
-        for (let i = 0; i < size; i += 4 * numChannels) {
-            samples.push(view.getFloat32(dataStart + i, true));
-        }
-    }
-    return new Float32Array(samples);
-}
-offset += 8 + size;
-    }
-    return null;
-}
-
-async function uploadRecording(file) {
-    await init();
-    if (!corrector) {
-corrector = new WebPitchCorrector();
-// E2E test hook: expose the corrector so Playwright can read
-// the captured input/output buffers. Only when ?e2e is set.
-if (new URLSearchParams(location.search).has('e2e')) window.__pc = corrector;
-SAMPLE_RATE = corrector.sample_rate();
-applyScale();
-corrector.set_shift(parseFloat(slider.value));
-    }
-    const buf = await file.arrayBuffer();
-    const samples = decodeWav(buf);
-    if (!samples || samples.length === 0) {
-els.status.textContent = 'Error: could not decode WAV';
-return;
-    }
-    corrector.load_recording(samples);
-    targetContour = [];
-    editedContour = null;
-    postCorrectionActive = false;
-    document.getElementById('post-correction-cb').checked = false;
-    columnX = 0;
-    recordedColumns = 0;
-    allCanvasIds.forEach(id => canvases[id].getContext('2d').clearRect(0, 0, canvases[id].width, canvases[id].height));
-
-    // Process in chunks, drawing after each
-    const width = canvases['input-spectrogram'].width;
-    const samplesPerCol = Math.ceil(samples.length / width);
-    let offset = 0;
-    for (let x = 0; x < width && offset < samples.length; x++) {
-const chunk = samples.subarray(offset);
-offset += corrector.process_offline(chunk, samplesPerCol);
-corrector.draw_spectrogram(canvases['output-spectrogram'], x);
-corrector.draw_input_spectrogram(canvases['input-spectrogram'], x);
-corrector.draw_pitch_contour(canvases['output-contour'], x);
-corrector.draw_input_contour(canvases['input-contour'], x);
-corrector.draw_waveform(canvases['output-waveform'], x);
-corrector.draw_input_waveform(canvases['input-waveform'], x);
-recordedColumns++;
-    }
-    columnX = recordedColumns % width;
-    targetContour = Array.from(corrector.take_target_pitch_contour());
-    setState('stopped');
-}
-
-// --- Button wiring ---
-els.recordBtn.addEventListener('click', startRecording);
-
-// At load: gate on browser support, then pre-warm the audio engine
-// (WASM compile + FFT planner caches + DSP buffers) so the first Record
-// click doesn't jank the main thread for ~0.3s. Record is disabled
-// until warm-up finishes.
-(async function prewarm() {
-    const missing = checkBrowserSupport();
-    if (missing.length) {
-els.status.textContent =
-    'This browser is missing ' + missing.join(', ') +
-    '. Use a recent Chrome, Edge, or Firefox over HTTPS.';
-els.recordBtn.disabled = true;
-return;
-    }
-    els.recordBtn.disabled = true;
-    els.status.textContent = 'Loading audio engine…';
-    try {
-await init();
-warmup();
-    } catch (e) {
-els.status.textContent =
-    'Failed to load the audio engine (WASM). Check your connection and reload. (' + e + ')';
-return;
-    }
-    els.recordBtn.disabled = false;
-    if (state === 'idle') els.status.textContent = 'Click Record to begin';
-})();
-
-els.downloadBtn.addEventListener('click', downloadRecording);
-els.debugBtn.addEventListener('click', downloadDebugDump);
-els.uploadBtn.addEventListener('click', () => els.uploadInput.click());
-els.uploadInput.addEventListener('change', (e) => {
-    if (e.target.files[0]) uploadRecording(e.target.files[0]);
-    e.target.value = '';
-});
-
-els.stopBtn.addEventListener('click', () => {
-    if (state === 'recording') {
-if (corrector && corrector.recording_len() > 0) {
-    targetContour = Array.from(corrector.take_target_pitch_contour());
-    setState('stopped');
-} else {
-    setState('idle');
-}
-    }
-});
-
-els.playBtn.addEventListener('click', () => {
-    if (state === 'playing') {
-if (corrector) {
+function pausePlayback() {
     corrector.stop_playback();
     corrector.clear_contour();
+    setState('paused');
 }
-restorePlayhead();
-setState('paused');
-    } else if (state === 'stopped' || state === 'paused') {
-startPlayback();
-    }
+
+function seekTo(sample) {
+    if (!corrector || totalSamples === 0) return;
+    if (state !== 'stopped' && state !== 'playing' && state !== 'paused') return;
+    corrector.seek(sample / totalSamples);
+    timeline.setPlayhead(sample);
+    timeline.setDataEnd('output', corrector.output_len());
+    timeline.render();
+}
+
+els.recordBtn.addEventListener('click', startRecording);
+els.stopBtn.addEventListener('click', stopRecording);
+els.playBtn.addEventListener('click', () => {
+    if (state === 'playing') pausePlayback();
+    else if (state === 'stopped' || state === 'paused') startPlayback();
+});
+window.addEventListener('keydown', e => {
+    if (e.code !== 'Space' || e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
+    if (state === 'playing') { e.preventDefault(); pausePlayback(); }
+    else if (state === 'stopped' || state === 'paused') { e.preventDefault(); startPlayback(); }
 });
 
 els.sweepBtn.addEventListener('click', () => {
@@ -592,152 +322,158 @@ els.sweepBtn.addEventListener('click', () => {
     if (corrector) corrector.set_sweep(active);
 });
 
-allCanvasIds.forEach(id => canvases[id].addEventListener('click', handleCanvasClick));
+// --- Scale / shift controls ---
 
-// --- View toggle ---
-function setupViewToggle(groupId, canvasIds) {
-    document.getElementById(groupId).addEventListener('click', (e) => {
-if (!e.target.dataset.view) return;
-e.target.parentElement.querySelectorAll('button').forEach(b => b.classList.remove('active'));
-e.target.classList.add('active');
-const view = e.target.dataset.view;
-for (const [viewName, id] of Object.entries(canvasIds)) {
-    document.getElementById(id).style.display = view === viewName ? 'block' : 'none';
-}
+const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+let currentScale = 'pentatonic';
+let customBits = 0xFFF;
+
+const noteGrid = $('note-grid');
+noteNames.forEach((name, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = name;
+    btn.dataset.note = i;
+    btn.classList.add('active');
+    btn.addEventListener('click', () => {
+        btn.classList.toggle('active');
+        customBits = 0;
+        noteGrid.querySelectorAll('button.active').forEach(b => {
+            customBits |= (1 << parseInt(b.dataset.note));
+        });
+        if (corrector && currentScale === 'custom') corrector.set_scale(customBits);
     });
-}
-setupViewToggle('input-view-group', {spectrogram: 'input-spectrogram', pitch: 'input-contour', waveform: 'input-waveform'});
-setupViewToggle('output-view-group', {spectrogram: 'output-spectrogram', pitch: 'output-contour', waveform: 'output-waveform'});
-
-// Show post-correction checkbox only when output pitch contour is visible
-document.getElementById('output-view-group').addEventListener('click', (e) => {
-    if (!e.target.dataset.view) return;
-    outputPitchView = e.target.dataset.view === 'pitch';
-    updatePostCorrectionVisibility();
+    noteGrid.appendChild(btn);
 });
 
-function updatePostCorrectionVisibility() {
-    const show = outputPitchView && (state === 'stopped' || state === 'paused') && targetContour.length > 0;
-    document.getElementById('post-correction-label').style.display = show ? '' : 'none';
+function applyScale() {
+    if (!corrector) return;
+    const root = parseInt($('root-select').value);
+    if (currentScale === 'custom') {
+        corrector.set_scale(customBits);
+    } else {
+        corrector.set_scale(WebPitchCorrector.scale_bits(currentScale, root));
+    }
 }
+
+document.querySelectorAll('#scale-buttons button').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('#scale-buttons button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        currentScale = btn.dataset.scale;
+        $('custom-notes').style.display = currentScale === 'custom' ? 'block' : 'none';
+        applyScale();
+    });
+});
+
+$('root-select').addEventListener('change', applyScale);
+
+const slider = $('shift-slider');
+const shiftDisplay = $('shift-display');
+slider.addEventListener('input', () => {
+    const v = parseFloat(slider.value);
+    shiftDisplay.textContent = (v >= 0 ? '+' : '') + v + ' st';
+    if (corrector) corrector.set_shift(v);
+});
 
 // --- Post-correction ---
-const postCorrectionCb = document.getElementById('post-correction-cb');
-postCorrectionCb.addEventListener('change', () => {
-    postCorrectionActive = postCorrectionCb.checked;
+
+function updatePostCorrectionVisibility() {
+    const show = (state === 'stopped' || state === 'paused') && targetContour.length > 0;
+    els.postCorrectionLabel.style.display = show ? '' : 'none';
+}
+
+els.postCorrectionCb.addEventListener('change', () => {
+    postCorrectionActive = els.postCorrectionCb.checked;
+    if (postCorrectionActive && !editedContour) editedContour = targetContour.slice();
     if (postCorrectionActive) {
-if (!editedContour) editedContour = targetContour.slice();
-// Save canvas state before overlay
-const canvas = canvases['output-contour'];
-contourSnapshot = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+        const out = timeline.getTrack('output');
+        if (out.view !== 'pitch') {
+            out.view = 'pitch';
+            out.viewSelect.value = 'pitch';
+        }
+        els.status.textContent = 'Post-correction: drag on the output pitch track to edit the melody, then Play.';
     }
-    if (!postCorrectionActive && contourSnapshot) {
-// Restore original canvas
-canvases['output-contour'].getContext('2d').putImageData(contourSnapshot, 0, 0);
-contourSnapshot = null;
-    }
-    drawPostCorrectionOverlay();
+    timeline.invalidate('output');
 });
 
-function freqToContourY(freq, height) {
-    if (freq <= 0) return -1;
-    // Mirrors draw_contour_dot in src/web.rs: 57 = A4 semitones from C0,
-    // 440 = A4 Hz, 24 = two-octave wrap. Keep the two in sync.
-    const semitones = 57.0 + 12.0 * Math.log2(freq / 440.0);
-    const inTwoOctaves = ((semitones % 24) + 24) % 24;
-    return height * (1.0 - inTwoOctaves / 24.0);
-}
+// --- WAV download / upload / debug dump ---
 
-function contourYToSemitoneInOctave(y, height) {
-    return (1.0 - y / height) * 24.0;
-}
-
-function drawPostCorrectionOverlay() {
-    const canvas = canvases['output-contour'];
-    const ctx = canvas.getContext('2d');
-    const height = canvas.height;
-    const width = canvas.width;
-    const totalCols = Math.min(recordedColumns, width);
-    const startCol = (columnX - totalCols + width) % width;
-    const numHops = editedContour ? editedContour.length : 0;
-
-    if (!postCorrectionActive || !editedContour || numHops === 0) return;
-
-    // Restore base canvas to clear old overlay
-    if (contourSnapshot) {
-ctx.putImageData(contourSnapshot, 0, 0);
-    }
-
-    for (let i = 0; i < totalCols; i++) {
-const x = (startCol + i) % width;
-// Map column to hop index
-const hop = Math.floor(i * numHops / totalCols);
-const freq = editedContour[hop];
-if (freq <= 0) continue;
-const y = freqToContourY(freq, height);
-if (y < 0) continue;
-
-ctx.strokeStyle = 'rgba(255,80,200,0.8)';
-ctx.lineWidth = 1.5;
-ctx.beginPath();
-ctx.arc(x + 1, y, 1.5, 0, Math.PI * 2);
-ctx.stroke();
-    }
-}
-
-// Drag on output contour to edit target notes
-let dragging = false;
-const contourCanvas = canvases['output-contour'];
-
-function applyEditAtPosition(e) {
-    if (!postCorrectionActive || !editedContour || !corrector) return;
-
-    const canvas = contourCanvas;
-    const rect = canvas.getBoundingClientRect();
-    const clickX = (e.clientX - rect.left) * (canvas.width / rect.width);
-    const clickY = (e.clientY - rect.top) * (canvas.height / rect.height);
-    const width = canvas.width;
-    const totalCols = Math.min(recordedColumns, width);
-    const startCol = (columnX - totalCols + width) % width;
-    const numHops = editedContour.length;
-
-    const col = Math.round(((clickX - startCol + width) % width));
-    if (col < 0 || col >= totalCols) return;
-
-    // Find a reference frequency from nearby hops for octave context
-    const centerHop = Math.floor(col * numHops / totalCols);
-    let refFreq = 0;
-    for (let d = 0; d <= 20 && refFreq <= 0; d++) {
-if (centerHop + d < numHops) refFreq = editedContour[centerHop + d];
-if (refFreq <= 0 && centerHop - d >= 0) refFreq = editedContour[centerHop - d];
-    }
-    if (refFreq <= 0) return;
-
-    const semitoneInTwoOctaves = contourYToSemitoneInOctave(clickY, canvas.height);
-    const refSemitones = 57.0 + 12.0 * Math.log2(refFreq / 440.0);
-    const refGroup = Math.floor(refSemitones / 24.0);
-    const newFreq = 440.0 * Math.pow(2, (refGroup * 24.0 + semitoneInTwoOctaves - 57.0) / 12.0);
-
-    const noteBits = corrector.get_scale();
-    const snapped = noteBits > 0 ? WebPitchCorrector.snap_to_scale(newFreq, noteBits) : newFreq;
-
-    const hop = Math.floor(col * numHops / totalCols);
-    if (editedContour[hop] === snapped) return false;
-    editedContour[hop] = snapped;
-    return true;
-}
-
-contourCanvas.addEventListener('mousedown', (e) => {
-    if (!postCorrectionActive || !editedContour) return;
-    dragging = true;
-    if (applyEditAtPosition(e)) drawPostCorrectionOverlay();
+els.downloadBtn.addEventListener('click', () => {
+    if (!corrector) return;
+    const samples = corrector.get_recording();
+    if (samples.length === 0) return;
+    downloadBlob(encodeWav(samples, sampleRate), 'recording.wav');
 });
 
-contourCanvas.addEventListener('mousemove', (e) => {
-    if (!dragging) return;
-    if (applyEditAtPosition(e)) drawPostCorrectionOverlay();
+els.debugBtn.addEventListener('click', () => {
+    if (!corrector) return;
+    const dump = {
+        sampleRate,
+        input: Array.from(corrector.get_recording()),
+        output: Array.from(corrector.get_output_recording()),
+        targetContour: Array.from(targetContour),
+        editedContour: editedContour ? Array.from(editedContour) : null,
+    };
+    downloadBlob(new Blob([JSON.stringify(dump)], { type: 'application/json' }), 'debug-dump.json');
 });
 
-window.addEventListener('mouseup', () => {
-    dragging = false;
+els.uploadBtn.addEventListener('click', () => els.uploadInput.click());
+els.uploadInput.addEventListener('change', (e) => {
+    if (e.target.files[0]) uploadRecording(e.target.files[0]);
+    e.target.value = '';
 });
+
+async function uploadRecording(file) {
+    await init();
+    if (!corrector) newCorrector();
+    const buf = await file.arrayBuffer();
+    const samples = decodeWav(buf);
+    if (!samples || samples.length === 0) {
+        els.status.textContent = 'Error: could not decode WAV';
+        return;
+    }
+    corrector.load_recording(samples);
+    resetSession();
+    corrector.clear_target_pitch_contour();
+
+    // Process offline in chunks, yielding so the page stays responsive.
+    const chunk = sampleRate; // ~1s of audio per slice
+    for (let offset = 0; offset < samples.length;) {
+        els.status.textContent = `Processing… ${Math.round(offset / samples.length * 100)}%`;
+        offset += corrector.process_offline(samples.subarray(offset), chunk);
+        totalSamples = corrector.analyze();
+        timeline.setTotal(totalSamples);
+        await new Promise(r => setTimeout(r, 0));
+    }
+    totalSamples = corrector.analyze();
+    timeline.setTotal(totalSamples);
+    targetContour = Array.from(corrector.take_target_pitch_contour());
+    timeline.fit();
+    timeline.setPlayhead(0);
+    corrector.seek(0);
+    setState('stopped');
+}
+
+// --- Boot: gate on browser support, then pre-warm the audio engine ---
+
+(async function prewarm() {
+    const missing = checkBrowserSupport();
+    if (missing.length) {
+        els.status.textContent =
+            'This browser is missing ' + missing.join(', ') +
+            '. Use a recent Chrome, Edge, or Firefox over HTTPS.';
+        els.recordBtn.disabled = true;
+        return;
+    }
+    els.recordBtn.disabled = true;
+    els.status.textContent = 'Loading audio engine…';
+    try {
+        await init();
+        warmup();
+    } catch (e) {
+        els.status.textContent =
+            'Failed to load the audio engine (WASM). Check your connection and reload. (' + e + ')';
+        return;
+    }
+    setState('idle');
+})();

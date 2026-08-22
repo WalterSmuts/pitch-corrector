@@ -9,7 +9,7 @@ use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::{Clamped, JsCast};
+use wasm_bindgen::JsCast;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 
 /// Prime the expensive, one-time initialization that would otherwise run on
@@ -582,6 +582,13 @@ impl WebPitchCorrector {
         a.input_samples.len() as f64
     }
 
+    /// Analyzed output length in samples. Lags the input by the pipeline
+    /// latency during recording; the UI uses it as the repaint watermark
+    /// for output tracks.
+    pub fn output_len(&self) -> f64 {
+        self.analysis.lock().unwrap().output_samples.len() as f64
+    }
+
     /// Detected input pitch per hop (Hz, 0 = unvoiced).
     pub fn input_pitch_track(&self) -> Vec<f32> {
         self.analysis.lock().unwrap().input_pitch.track().to_vec()
@@ -658,8 +665,11 @@ impl WebPitchCorrector {
             height as usize,
             &mut a.rgba,
         );
-        let img =
-            ImageData::new_with_u8_clamped_array_and_sh(Clamped(&a.rgba), width_px, height)?;
+        // ImageData rejects views into SharedArrayBuffer-backed wasm memory
+        // (the threads build), so copy into a fresh, unshared JS array.
+        let data = js_sys::Uint8ClampedArray::new_with_length(a.rgba.len() as u32);
+        data.copy_from(&a.rgba);
+        let img = ImageData::new_with_js_u8_clamped_array_and_sh(&data, width_px, height)?;
         let ctx: CanvasRenderingContext2d = canvas
             .get_context("2d")?
             .ok_or_else(|| JsValue::from_str("no 2d context"))?
