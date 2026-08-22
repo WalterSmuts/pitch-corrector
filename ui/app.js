@@ -40,8 +40,8 @@ const els = {
 
 const timeline = new Timeline($('timeline'), {
     tracks: [
-        { id: 'input', label: 'Input', views: ['spectrogram', 'pitch', 'waveform'], view: 'spectrogram' },
-        { id: 'output', label: 'Output', views: ['spectrogram', 'pitch', 'waveform'], view: 'spectrogram' },
+        { id: 'input', label: 'Input', views: ['waveform', 'pitch', 'spectrogram'], view: 'waveform' },
+        { id: 'output', label: 'Output', views: ['waveform', 'pitch', 'spectrogram'], view: 'waveform' },
     ],
     renderTrack,
     onSeek: seekTo,

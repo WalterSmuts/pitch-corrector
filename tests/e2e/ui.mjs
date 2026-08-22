@@ -90,7 +90,7 @@ try {
     return n;
   }, [sel, test]);
 
-  check(await probe(0, 'hot') > 500, 'input spectrogram shows energy');
+  check(await probe(0, 'orange') > 100, 'default view is the waveform (orange peaks)');
   const perTrackVisible = () => page.evaluate(() =>
     [...document.querySelectorAll('.tl-view-select')].map(s => s.style.display !== 'none'));
   check((await perTrackVisible()).every(v => !v), 'per-track selectors hidden by default');
