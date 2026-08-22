@@ -1,5 +1,5 @@
 use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
-use crate::pitch_correction::{PitchCorrector, PitchCorrectorControls};
+use crate::pitch_correction::{Harmonizer, PitchCorrector, PitchCorrectorControls};
 use crate::session::{waveform_peaks, PitchTrack, SpectrogramRenderer, PITCH_HOP, SPEC_WINDOW};
 use crate::signal_processing::{StreamProcessor, BUFFER_SIZE};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -50,10 +50,10 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn new(sample_rate: f32) -> Self {
-        let corrector = PitchCorrector::with_sample_rate(sample_rate);
-        let controls = corrector.controls();
+        let harmonizer = Harmonizer::with_sample_rate(sample_rate);
+        let controls = harmonizer.controls();
         Pipeline {
-            processor: Arc::new(corrector),
+            processor: Arc::new(harmonizer),
             controls,
         }
     }
@@ -416,6 +416,16 @@ impl WebPitchCorrector {
             .play()
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         Ok(())
+    }
+
+    /// Enabled harmony voices: bit0 = 3rd, bit1 = 5th, bit2 = octave.
+    pub fn set_harmony(&self, mask: u8) {
+        self.pipeline.controls.set_harmony(mask);
+    }
+
+    /// Diatonic (walk the selected scale) vs absolute (fixed semitones).
+    pub fn set_harmony_in_key(&self, in_key: bool) {
+        self.pipeline.controls.set_harmony_in_key(in_key);
     }
 
     /// Audible live passthrough while recording (default off). Playback is

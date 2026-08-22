@@ -3,9 +3,12 @@ use crate::signal_processing::{
     PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, BUFFER_SIZE,
 };
 use crossbeam_queue::ArrayQueue;
-use std::sync::atomic::{AtomicI32, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+
+/// Sentinel for "no target this hop" in `hop_target_semis`.
+const NO_TARGET: i32 = i32::MIN;
 
 /// Snaps detected pitch to the nearest note in a scale, with hysteresis.
 struct NoteSnapper {
@@ -62,6 +65,17 @@ pub struct PitchCorrectorControls {
     /// it is drained from the UI thread on stop/clear. Entries are dropped if
     /// the log fills (bounded memory) rather than growing unboundedly.
     target_pitch_contour: ArrayQueue<Option<Pitch>>,
+    /// Per-hop publication for the harmony voices, which run as parallel
+    /// pipelines and must agree with the main voice's analysis: the detected
+    /// frequency (f32 bits; 0 = unvoiced) and the final post-shift target
+    /// as whole semitones from C0 (NO_TARGET = none). The main ratio_fn
+    /// writes these each hop before the harmony ratio_fns read them.
+    hop_detected_bits: AtomicU32,
+    hop_target_semis: AtomicI32,
+    /// Enabled harmony voices: bit0 = 3rd, bit1 = 5th, bit2 = octave.
+    harmony_mask: AtomicU32,
+    /// Diatonic (walk the scale) vs absolute (fixed semitones) harmony.
+    harmony_in_key: AtomicBool,
     /// Edited target contour (post-correction playback). Written wholesale by
     /// the UI and read by index on the audio thread. It is only populated
     /// during post-correction playback and swapped rarely, so the lock is
@@ -115,6 +129,24 @@ impl PitchCorrectorControls {
     pub fn clear_target_pitch_contour(&self) {
         while self.target_pitch_contour.pop().is_some() {}
     }
+
+    /// Enabled harmony voices: bit0 = 3rd, bit1 = 5th, bit2 = octave.
+    pub fn set_harmony(&self, mask: u8) {
+        self.harmony_mask.store(mask as u32, Ordering::Relaxed);
+    }
+
+    pub fn get_harmony(&self) -> u8 {
+        self.harmony_mask.load(Ordering::Relaxed) as u8
+    }
+
+    /// Diatonic (in the selected key) vs absolute (fixed semitones).
+    pub fn set_harmony_in_key(&self, in_key: bool) {
+        self.harmony_in_key.store(in_key, Ordering::Relaxed);
+    }
+
+    pub fn get_harmony_in_key(&self) -> bool {
+        self.harmony_in_key.load(Ordering::Relaxed)
+    }
 }
 
 pub struct PitchCorrector {
@@ -135,7 +167,7 @@ impl PitchCorrector {
     /// one-pole coefficient is derived from this and the actual sample rate,
     /// so the smoothing speed is independent of rate and hop size. ~12.7ms
     /// reproduces the previous fixed alpha=0.6 at 44.1kHz / 512-sample hop.
-    const SMOOTHING_TAU_SECONDS: f32 = 0.0127;
+    pub(crate) const SMOOTHING_TAU_SECONDS: f32 = 0.0127;
 
     pub fn new() -> Self {
         Self::with_scale(Scale::pentatonic(Note::C))
@@ -171,6 +203,10 @@ impl PitchCorrector {
             shift_semitones: AtomicI32::new(Interval::UNISON.semitones()),
             scale_bits: AtomicU32::new(scale.bits() as u32),
             target_pitch_contour: ArrayQueue::new(TARGET_CONTOUR_CAPACITY),
+            hop_detected_bits: AtomicU32::new(0),
+            hop_target_semis: AtomicI32::new(NO_TARGET),
+            harmony_mask: AtomicU32::new(0),
+            harmony_in_key: AtomicBool::new(true),
             contour: Mutex::new(Vec::new()),
             contour_hop: AtomicUsize::new(0),
         });
@@ -201,6 +237,20 @@ impl PitchCorrector {
             // Lock-free, alloc-free log on the real-time audio thread. Drops
             // the entry if the bounded queue is full rather than allocating.
             let _ = controls_clone.target_pitch_contour.push(target_pitch);
+
+            // Publish this hop's analysis for the harmony voices (parallel
+            // pipelines fed in lockstep; they read these in their own
+            // ratio_fns, which run after this one within the same sample).
+            controls_clone.hop_detected_bits.store(
+                detected.unwrap_or(0.0).to_bits(),
+                Ordering::Relaxed,
+            );
+            controls_clone.hop_target_semis.store(
+                target_pitch
+                    .map(|p| p.semitones_from_c0() as i32 + shift_semitones)
+                    .unwrap_or(NO_TARGET),
+                Ordering::Relaxed,
+            );
 
             let target_ratio = match (target_pitch, detected) {
                 (Some(pitch), Some(freq)) => pitch.to_freq() / freq,
@@ -258,6 +308,135 @@ impl StreamProcessor for PitchCorrector {
     }
 }
 
+/// Harmony voice definitions: (label, scale degrees when in key, semitones
+/// when absolute). An octave is +12 semitones in either mode.
+const HARMONY_VOICES: [(usize, i32); 3] = [
+    (2, 4),  // 3rd: 2 scale degrees / major third
+    (4, 7),  // 5th: 4 scale degrees / perfect fifth
+    (7, 12), // octave (degrees unused; +12 in both modes)
+];
+/// Mix level of each harmony voice relative to the main voice.
+const HARMONY_GAIN: f32 = 0.5;
+
+/// The main corrected voice plus up to three harmony voices, each its own
+/// phase-vocoder pipeline running in lockstep on the same input. The main
+/// corrector publishes its per-hop detection and target through the shared
+/// controls; each harmony voice derives its own target from them — walking
+/// the scale for diatonic harmonies or adding fixed semitones for absolute
+/// ones — and the outputs are mixed with per-voice gains that fade in/out
+/// (click-free) as voices are toggled or the signal goes unvoiced.
+pub struct Harmonizer {
+    main: PitchCorrector,
+    voices: [PhaseVocoderPitchShifter<RatioFn>; 3],
+    /// Per-voice smoothed mix gains (audio thread only; uncontended).
+    gains: Mutex<[f32; 3]>,
+    /// Per-sample one-pole coefficient for the gain fades (~5ms).
+    gain_alpha: f32,
+    controls: Arc<PitchCorrectorControls>,
+}
+
+impl Harmonizer {
+    pub fn with_sample_rate(sample_rate: f32) -> Self {
+        let main = PitchCorrector::with_sample_rate(sample_rate);
+        let controls = main.controls();
+
+        let hop_period = (BUFFER_SIZE / 4) as f32 / sample_rate;
+        let smoothing_alpha =
+            1.0 - (-hop_period / PitchCorrector::SMOOTHING_TAU_SECONDS).exp();
+
+        let voices = HARMONY_VOICES.map(|(degrees, abs_semitones)| {
+            let controls = controls.clone();
+            let smoothed = Mutex::new(1.0f32);
+            let gap_hops = Mutex::new(0usize);
+            let ratio_fn: RatioFn = Box::new(move |_frame: &[f32]| {
+                let detected = f32::from_bits(controls.hop_detected_bits.load(Ordering::Relaxed));
+                let semis = controls.hop_target_semis.load(Ordering::Relaxed);
+
+                let target_freq = if detected > 0.0 && semis != NO_TARGET {
+                    let base = Pitch::new(
+                        Note::ALL[semis.rem_euclid(12) as usize],
+                        semis.div_euclid(12) as i8,
+                    );
+                    let scale = controls.get_scale();
+                    let in_key = controls.harmony_in_key.load(Ordering::Relaxed);
+                    let harmony = if abs_semitones == 12 || !in_key || scale.is_empty() {
+                        // Octave, absolute mode, or no key to walk in.
+                        base.to_freq() * 2f32.powf(abs_semitones as f32 / 12.0)
+                    } else {
+                        scale.degree_above(base, degrees).to_freq()
+                    };
+                    Some(harmony)
+                } else {
+                    None
+                };
+
+                // Same smoothing + gap handling as the main voice.
+                const GAP_RESET_HOPS: usize = 43;
+                let mut prev = smoothed.lock().unwrap();
+                let mut gaps = gap_hops.lock().unwrap();
+                match target_freq {
+                    Some(f) => {
+                        *prev += smoothing_alpha * (f / detected - *prev);
+                        *gaps = 0;
+                    }
+                    None => {
+                        *gaps = gaps.saturating_add(1);
+                        if *gaps >= GAP_RESET_HOPS {
+                            *prev = 1.0;
+                        }
+                    }
+                }
+                *prev
+            });
+            PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn)
+        });
+
+        Harmonizer {
+            main,
+            voices,
+            gains: Mutex::new([0.0; 3]),
+            gain_alpha: 1.0 - (-1.0 / (0.005 * sample_rate)).exp(),
+            controls,
+        }
+    }
+
+    pub fn controls(&self) -> Arc<PitchCorrectorControls> {
+        self.controls.clone()
+    }
+}
+
+impl StreamProcessor for Harmonizer {
+    fn push_sample(&self, sample: f32) {
+        // Main first: its hop publishes the analysis the voices read when
+        // their (same-position) hop fires.
+        self.main.push_sample(sample);
+        for v in &self.voices {
+            v.push_sample(sample);
+        }
+    }
+
+    fn pop_sample(&self) -> Option<f32> {
+        let main = self.main.pop_sample()?;
+        let mask = self.controls.harmony_mask.load(Ordering::Relaxed);
+        let voiced = self.controls.hop_target_semis.load(Ordering::Relaxed) != NO_TARGET;
+        let mut gains = self.gains.lock().unwrap();
+        let mut out = main;
+        let mut norm = 1.0;
+        for (i, v) in self.voices.iter().enumerate() {
+            // Identical pipelines fed in lockstep emit in lockstep; treat a
+            // (theoretical) miss as silence rather than stalling the mix.
+            let h = v.pop_sample().unwrap_or(0.0);
+            // Fade voices in only while enabled AND the signal is voiced —
+            // harmonizing breath noise just doubles it.
+            let target = if mask & (1 << i) != 0 && voiced { 1.0 } else { 0.0 };
+            gains[i] += self.gain_alpha * (target - gains[i]);
+            out += h * gains[i] * HARMONY_GAIN;
+            norm += gains[i] * HARMONY_GAIN;
+        }
+        Some(out / norm)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,6 +485,64 @@ mod tests {
             c.set_scale(s);
             assert_eq!(c.get_scale(), s);
         }
+    }
+
+    /// Spectrum check: with a harmony voice enabled, the output must contain
+    /// energy at the harmony frequency — the diatonic third of A3 in C major
+    /// is C4 (minor third), the absolute third is C#4 (major third). The two
+    /// modes must land on their own note and not the other's.
+    #[test]
+    fn harmonizer_third_follows_the_mode() {
+        use easyfft::dyn_size::realfft::DynRealFft;
+
+        let bin_mag = |output: &[f32], freq: f32| -> f32 {
+            let n = 16384;
+            let tail = &output[output.len() - n..];
+            let spectrum = tail.to_vec().real_fft();
+            let bins = spectrum.get_frequency_bins();
+            let bin = (freq * n as f32 / SAMPLE_RATE as f32).round() as usize;
+            (bin - 1..=bin + 1).map(|b| bins[b].norm()).fold(0.0, f32::max)
+        };
+
+        let run = |in_key: bool| -> Vec<f32> {
+            let h = Harmonizer::with_sample_rate(SAMPLE_RATE as f32);
+            let c = h.controls();
+            c.set_scale(Scale::major(Note::C));
+            c.set_harmony(0b001); // 3rd only
+            c.set_harmony_in_key(in_key);
+            let freq = Pitch::new(Note::A, 3).to_freq(); // 220Hz, in C major
+            let mut out = Vec::new();
+            for i in 0..BUFFER_SIZE * 40 {
+                h.push_sample((TAU * freq * i as f32 / SAMPLE_RATE as f32).sin() * 0.5);
+                while let Some(s) = h.pop_sample() {
+                    out.push(s);
+                }
+            }
+            out
+        };
+
+        let c4 = Pitch::new(Note::C, 4).to_freq();
+        let cs4 = Pitch::new(Note::CS, 4).to_freq();
+
+        let diatonic = run(true);
+        let d_c4 = bin_mag(&diatonic, c4);
+        let d_cs4 = bin_mag(&diatonic, cs4);
+        assert!(
+            d_c4 > d_cs4 * 2.0,
+            "in-key third of A3 should be C4, not C#4 (C4={d_c4:.1} C#4={d_cs4:.1})"
+        );
+
+        let absolute = run(false);
+        let a_c4 = bin_mag(&absolute, c4);
+        let a_cs4 = bin_mag(&absolute, cs4);
+        assert!(
+            a_cs4 > a_c4 * 2.0,
+            "absolute third of A3 should be C#4, not C4 (C4={a_c4:.1} C#4={a_cs4:.1})"
+        );
+
+        // And the main voice is still there.
+        let a3 = bin_mag(&diatonic, 220.0);
+        assert!(a3 > d_c4 * 0.5, "main voice should remain dominant (A3={a3:.1})");
     }
 
     #[test]

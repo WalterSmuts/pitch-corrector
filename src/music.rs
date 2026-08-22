@@ -316,6 +316,30 @@ impl Scale {
         Self(bits & 0x0FFF)
     }
 
+    /// The pitch `steps` scale degrees above `pitch`: the steps-th in-scale
+    /// note strictly above it, crossing octaves as needed. A diatonic third
+    /// is 2 steps, a fifth 4 steps. Alloc-free (runs on the audio thread).
+    /// Returns `pitch` unchanged if the scale is empty.
+    pub fn degree_above(self, pitch: Pitch, steps: usize) -> Pitch {
+        if self.is_empty() || steps == 0 {
+            return pitch;
+        }
+        let mut idx = pitch.note as usize;
+        let mut octave = pitch.octave as i32;
+        let mut remaining = steps;
+        while remaining > 0 {
+            idx += 1;
+            if idx >= 12 {
+                idx -= 12;
+                octave += 1;
+            }
+            if self.contains(Note::ALL[idx]) {
+                remaining -= 1;
+            }
+        }
+        Pitch::new(Note::ALL[idx], octave as i8)
+    }
+
     /// Snap a frequency to the nearest note in this scale.
     /// Returns the nearest chromatic pitch if the scale is empty.
     pub fn nearest_pitch(self, freq: f32) -> Pitch {
@@ -468,6 +492,29 @@ impl Interval {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn degree_above_walks_the_scale() {
+        let cmaj = Scale::major(Note::C);
+        // Diatonic third above C4 is E4 (major); above D4 is F4 (minor).
+        assert_eq!(cmaj.degree_above(Pitch::new(Note::C, 4), 2), Pitch::new(Note::E, 4));
+        assert_eq!(cmaj.degree_above(Pitch::new(Note::D, 4), 2), Pitch::new(Note::F, 4));
+        // Crossing the octave: third above B3 is D4.
+        assert_eq!(cmaj.degree_above(Pitch::new(Note::B, 3), 2), Pitch::new(Note::D, 4));
+        // Diatonic fifth above F4 is C5.
+        assert_eq!(cmaj.degree_above(Pitch::new(Note::F, 4), 4), Pitch::new(Note::C, 5));
+        // 7 steps = a full octave in a 7-note scale.
+        assert_eq!(cmaj.degree_above(Pitch::new(Note::G, 4), 7), Pitch::new(Note::G, 5));
+
+        // Pentatonic C (C D E G A): "third" (2 steps) above A3 is D4.
+        let pent = Scale::pentatonic(Note::C);
+        assert_eq!(pent.degree_above(Pitch::new(Note::A, 3), 2), Pitch::new(Note::D, 4));
+
+        // Out-of-scale start walks to in-scale targets all the same.
+        assert_eq!(cmaj.degree_above(Pitch::new(Note::CS, 4), 2), Pitch::new(Note::E, 4));
+        // Empty scale: unchanged.
+        assert_eq!(Scale::empty().degree_above(Pitch::new(Note::A, 4), 2), Pitch::new(Note::A, 4));
+    }
     use super::*;
 
     #[test]

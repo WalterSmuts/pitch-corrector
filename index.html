@@ -34,6 +34,8 @@
         button.active { background: #e94560; border-color: #e94560; }
         select { background: #16213e; color: #eee; border: 1px solid #555; padding: 6px; font-family: monospace; }
         #status { color: #888; margin: 6px 2px; font-size: 0.9em; min-height: 1.2em; }
+        .settings { border: 1px solid #333; padding: 2px 10px 6px; margin: 8px 0; }
+        .settings-title { font-size: 0.8em; color: #888; text-transform: uppercase; letter-spacing: 1px; margin: 4px 0; }
         .controls { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
         .controls .sep { flex: 0 0 1px; align-self: stretch; background: #444; margin: 0 4px; }
         .note-grid { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; }
@@ -95,6 +97,8 @@
             <input type="file" id="upload-input" accept=".wav" style="display:none">
         </div>
         <div id="status">Loading…</div>
+        <div class="settings">
+        <div class="settings-title">Correction</div>
         <div class="controls" id="scale-buttons">
             <span>Scale:</span>
             <button data-scale="off">Off</button>
@@ -130,6 +134,20 @@
         </div>
         <div id="custom-notes" style="display:none">
             <div class="note-grid" id="note-grid"></div>
+        </div>
+        </div>
+        <div class="settings">
+        <div class="settings-title">Harmony</div>
+        <div class="controls" id="harmony-controls">
+            <span>Voices:</span>
+            <button data-hvoice="0" class="active">3rd</button>
+            <button data-hvoice="1">5th</button>
+            <button data-hvoice="2">Octave</button>
+            <span class="sep"></span>
+            <span>Intervals:</span>
+            <button data-hmode="key" class="active" title="Walk the selected scale: the third above A in C major is C (minor third)">In key</button>
+            <button data-hmode="abs" title="Fixed semitones: a third is always 4 semitones up">Absolute</button>
+        </div>
         </div>
         <div class="controls">
             <span>View:</span>

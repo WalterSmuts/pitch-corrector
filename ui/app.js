@@ -364,6 +364,7 @@ async function startRecording() {
         applyScale();
         corrector.set_shift(parseFloat(slider.value));
         corrector.set_monitor(passthroughOn);
+        applyHarmony();
         corrector.start_recording();
 
         els.status.textContent = 'Initializing audio…';
@@ -449,6 +450,36 @@ window.addEventListener('keydown', e => {
     if (e.code !== 'Space' || e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
     if (state === 'playing') { e.preventDefault(); pausePlayback(); }
     else if (state === 'stopped' || state === 'paused') { e.preventDefault(); startPlayback(); }
+});
+
+// --- Harmony controls ---
+// Voices are a bitmask (bit0=3rd, bit1=5th, bit2=octave); intervals are
+// either diatonic (walk the selected scale from the corrected note) or
+// absolute (fixed semitone offsets). Defaults: 3rd on, in key.
+let harmonyMask = 0b001;
+let harmonyInKey = true;
+
+function applyHarmony() {
+    if (!corrector) return;
+    corrector.set_harmony(harmonyMask);
+    corrector.set_harmony_in_key(harmonyInKey);
+}
+
+document.querySelectorAll('#harmony-controls button[data-hvoice]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        harmonyMask ^= 1 << parseInt(btn.dataset.hvoice);
+        btn.classList.toggle('active');
+        applyHarmony();
+    });
+});
+document.querySelectorAll('#harmony-controls button[data-hmode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('#harmony-controls button[data-hmode]')
+            .forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        harmonyInKey = btn.dataset.hmode === 'key';
+        applyHarmony();
+    });
 });
 
 // --- Scale / shift controls ---
@@ -572,6 +603,7 @@ async function uploadRecording(file) {
         els.status.textContent = 'Error: could not decode WAV';
         return;
     }
+    applyHarmony();
     corrector.load_recording(samples);
     resetSession();
     corrector.clear_target_pitch_contour();
