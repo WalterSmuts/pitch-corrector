@@ -222,7 +222,11 @@ function waitForAudioReady(c, timeoutMs = 6000) {
 }
 
 function newCorrector() {
-    if (corrector) corrector.stop();
+    // One corrector (one audio graph) for the whole session: cpal's web
+    // hosts don't reliably stop a replaced stream's callbacks, so
+    // constructing a second WebPitchCorrector leaves the old AudioContext
+    // live and fighting over the microphone. Re-record via start_recording.
+    if (corrector) return;
     corrector = new WebPitchCorrector();
     // E2E test hook: expose the corrector so Playwright can inspect the
     // captured buffers. Only when ?e2e is set.
@@ -230,8 +234,6 @@ function newCorrector() {
     sampleRate = corrector.sample_rate();
     pitchHop = corrector.pitch_hop();
     timeline.setSampleRate(sampleRate);
-    applyScale();
-    corrector.set_shift(parseFloat(slider.value));
 }
 
 function resetSession() {
@@ -262,7 +264,9 @@ async function startRecording() {
     try {
         newCorrector();
         resetSession();
-        corrector.clear_target_pitch_contour();
+        applyScale();
+        corrector.set_shift(parseFloat(slider.value));
+        corrector.start_recording();
 
         els.status.textContent = 'Initializing audio…';
         await waitForAudioReady(corrector);
@@ -446,7 +450,9 @@ els.uploadInput.addEventListener('change', (e) => {
 
 async function uploadRecording(file) {
     await init();
-    if (!corrector) newCorrector();
+    newCorrector();
+    applyScale();
+    corrector.set_shift(parseFloat(slider.value));
     const buf = await file.arrayBuffer();
     const samples = decodeWav(buf);
     if (!samples || samples.length === 0) {

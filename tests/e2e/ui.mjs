@@ -44,6 +44,28 @@ try {
   check(Math.abs(fitState.xEnd - fitState.cssW) < 3,
     `fit maps recording end to right edge (xEnd=${fitState.xEnd.toFixed(1)}, cssW=${fitState.cssW})`);
 
+  // --- Re-record: a second take must be a fresh session on the SAME audio
+  // graph (regression: a new WebPitchCorrector per take left the old
+  // AudioContext live — runaway sample counts and dropped-closure errors) ---
+  await page.click('#record-btn');
+  await page.waitForFunction(
+    () => document.getElementById('status').textContent.includes('Recording'),
+    { timeout: 15000 });
+  const earlyLen = await page.evaluate(() => window.__pc.recording_len());
+  check(earlyLen < 100000, `second take starts from zero (len=${earlyLen} right after start)`);
+  await sleep(2500);
+  await page.click('#stop-btn');
+  await page.waitForFunction(() => document.getElementById('status').textContent.includes('saved'));
+  const second = await page.evaluate(() => ({
+    total: window.__pc.recording_len(),
+    tlTotal: window.__tl.total,
+    s0: window.__tl.s0,
+  }));
+  check(second.total > 48000 && second.total < 48000 * 12,
+    `second take grows at a sane rate (${second.total} samples)`);
+  check(second.tlTotal === second.total && second.s0 === 0,
+    'timeline reset and refit for the second take');
+
   // --- Wheel zoom in at the track center halves samples-per-px ---
   const track = page.locator('.tl-track-canvas').first();
   const box = await track.boundingBox();

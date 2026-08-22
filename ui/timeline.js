@@ -150,6 +150,7 @@ export class Timeline {
         this.s0 = 0;
         this.spp = null;
         this.playhead = null;
+        for (const t of this.tracks) t.dataEnd = undefined;
         this.invalidate();
     }
 

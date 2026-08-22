@@ -380,6 +380,30 @@ impl WebPitchCorrector {
         let _ = self.output_stream.pause();
     }
 
+    /// Begin a fresh recording on the existing audio graph. Reusing the
+    /// corrector (instead of constructing a new one per take) matters:
+    /// cpal's web hosts don't reliably stop a paused stream's render
+    /// callbacks, so a second live AudioContext leaves the old one fighting
+    /// over the capture device ("closure invoked after being dropped"
+    /// errors, duplicated sample delivery).
+    pub fn start_recording(&self) -> Result<(), JsValue> {
+        self.playback.playing.store(false, Ordering::Relaxed);
+        spin_lock(&self.playback.recording).clear();
+        spin_lock(&self.playback.output_recording).clear();
+        self.playback.playback_pos.store(0, Ordering::Relaxed);
+        self.analysis.lock().unwrap().reset();
+        self.pipeline.controls.clear_target_pitch_contour();
+        self.pipeline.controls.clear_contour();
+        self.playback.input_active.store(true, Ordering::Relaxed);
+        self.input_stream
+            .play()
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        self.output_stream
+            .play()
+            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        Ok(())
+    }
+
     pub fn recording_len(&self) -> usize {
         spin_lock(&self.playback.recording).len()
     }
