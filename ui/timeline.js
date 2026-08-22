@@ -232,10 +232,21 @@ export class Timeline {
             const s0 = Math.max(0, this.total - this.w * spp);
             this.s0 = Math.floor(s0 / spp) * spp;
         }
-        for (const t of this.tracks) this.#renderTrack(t, spp);
+        let more = false;
+        for (const t of this.tracks) more = this.#renderTrack(t, spp) || more;
         this.#renderRuler(spp);
         this.#positionPlayhead();
+        // A repaint hit the per-frame budget: continue next frame so big
+        // repaints (zoom, fit) finish without an external render driver.
+        if (more && !this.#continuation) {
+            this.#continuation = requestAnimationFrame(() => {
+                this.#continuation = null;
+                this.render();
+            });
+        }
     }
+
+    #continuation = null;
 
     #renderTrack(t, spp) {
         const vp = { s0: this.s0, spp, w: t.canvas.width, h: t.canvas.height, dpr: this.dpr };
@@ -246,11 +257,23 @@ export class Timeline {
         const dataEnd = Math.min(t.dataEnd ?? this.total, this.total);
         const end = Math.min(dataEnd, this.s0 + vp.w * spp);
 
+        // Budget per frame: spectrogram columns cost an FFT each, so a full
+        // repaint of a long recording is spread over a few frames (the
+        // watermark resumes where the previous frame stopped) instead of
+        // blocking the main thread.
+        const MAX_COLS = 128;
+
+        let x0, x1;
         if (!r || r.spp !== spp || r.view !== t.view) {
-            // Zoom/view change: full repaint.
-            this.opts.renderTrack(t, t.canvas, vp, 0, vp.w);
+            // Zoom/view change: background-fill now (cheap), then repaint
+            // data columns progressively from the left.
+            const ctx = t.canvas.getContext('2d');
+            ctx.fillStyle = 'rgb(10,10,20)'; // matches the views' background
+            ctx.fillRect(0, 0, vp.w, vp.h);
+            x0 = 0;
+            x1 = Math.max(0, Math.min(vp.w, Math.ceil((end - this.s0) / spp)));
         } else if (r.s0 === this.s0 && r.end >= end) {
-            // Up to date.
+            return false; // up to date
         } else {
             const dxPx = Math.round((this.s0 - r.s0) / spp);
             if (dxPx !== 0 && Math.abs(dxPx) < vp.w) {
@@ -258,9 +281,8 @@ export class Timeline {
                 const ctx = t.canvas.getContext('2d');
                 ctx.drawImage(t.canvas, -dxPx, 0);
             }
-            let x0, x1;
             if (Math.abs(dxPx) >= vp.w || dxPx < 0) {
-                // Jumped or scrolled left: repaint everything (rare, user pan).
+                // Jumped or scrolled left: repaint everything (user pan).
                 x0 = 0;
                 x1 = vp.w;
             } else {
@@ -272,9 +294,19 @@ export class Timeline {
                 x0 = Math.max(0, Math.min(vp.w - dxPx, watermarkX));
                 x1 = dxPx > 0 ? vp.w : Math.max(0, Math.min(vp.w, dataEndX));
             }
-            if (x0 < x1) this.opts.renderTrack(t, t.canvas, vp, x0, x1);
         }
-        t.rendered = { s0: this.s0, spp, end, view: t.view };
+        const truncated = x1 > x0 + MAX_COLS;
+        x1 = Math.min(x1, x0 + MAX_COLS);
+        if (x0 < x1) this.opts.renderTrack(t, t.canvas, vp, x0, x1);
+        // Watermark reflects what was actually rendered so the next frame
+        // resumes from there.
+        t.rendered = {
+            s0: this.s0,
+            spp,
+            end: Math.min(end, this.s0 + x1 * spp),
+            view: t.view,
+        };
+        return truncated;
     }
 
     #renderRuler(spp) {

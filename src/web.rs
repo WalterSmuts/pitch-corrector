@@ -42,6 +42,20 @@ static HEATMAP_LUT: std::sync::LazyLock<[String; 256]> = std::sync::LazyLock::ne
 static GRID_ALPHA_STRONG: &str = "rgba(255,255,255,0.3)";
 static GRID_ALPHA_WEAK: &str = "rgba(255,255,255,0.1)";
 
+/// Lock a mutex shared with the audio threads without ever blocking on a
+/// futex: `Mutex::lock` calls `Atomics.wait` under contention, which throws
+/// on the wasm main thread. The audio callbacks hold these locks for
+/// microseconds, so spinning on `try_lock` is safe and brief.
+fn spin_lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    loop {
+        match m.try_lock() {
+            Ok(g) => return g,
+            Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
+            Err(std::sync::TryLockError::Poisoned(p)) => return p.into_inner(),
+        }
+    }
+}
+
 /// Pre-allocated scratch buffers for zero-alloc drawing
 struct DrawState {
     spec_scratch: Vec<f32>,
@@ -177,7 +191,7 @@ impl Analysis {
     /// re-analyzes the tail; a shrunken input recording resets the mirror.
     fn sync(&mut self, playback: &PlaybackState) {
         {
-            let rec = playback.recording.lock().unwrap();
+            let rec = spin_lock(&playback.recording);
             if rec.len() < self.input_samples.len() {
                 self.input_samples.clear();
                 self.input_pitch.reset();
@@ -186,7 +200,7 @@ impl Analysis {
             self.input_samples.extend_from_slice(&rec[n..]);
         }
         {
-            let out = playback.output_recording.lock().unwrap();
+            let out = spin_lock(&playback.output_recording);
             if out.len() < self.output_samples.len() {
                 self.output_samples.truncate(out.len());
                 self.output_pitch.invalidate_from(out.len());
@@ -445,16 +459,16 @@ impl WebPitchCorrector {
     }
 
     pub fn recording_len(&self) -> usize {
-        self.playback.recording.lock().unwrap().len()
+        spin_lock(&self.playback.recording).len()
     }
 
     pub fn get_recording(&self) -> Vec<f32> {
-        self.playback.recording.lock().unwrap().clone()
+        spin_lock(&self.playback.recording).clone()
     }
 
     pub fn load_recording(&self, samples: &[f32]) {
-        *self.playback.recording.lock().unwrap() = samples.to_vec();
-        self.playback.output_recording.lock().unwrap().clear();
+        *spin_lock(&self.playback.recording) = samples.to_vec();
+        spin_lock(&self.playback.output_recording).clear();
         self.playback.playback_pos.store(0, Ordering::Relaxed);
         self.playback.input_active.store(false, Ordering::Relaxed);
         self.analysis.lock().unwrap().reset();
@@ -467,18 +481,18 @@ impl WebPitchCorrector {
         for &s in &samples[..n] {
             self.pipeline.processor.push_sample(s);
             while let Some(o) = self.pipeline.processor.pop_sample() {
-                self.playback.output_recording.lock().unwrap().push(o);
+                spin_lock(&self.playback.output_recording).push(o);
             }
         }
         n
     }
 
     pub fn get_output_recording(&self) -> Vec<f32> {
-        self.playback.output_recording.lock().unwrap().clone()
+        spin_lock(&self.playback.output_recording).clone()
     }
 
     pub fn play_recording(&self) -> Result<(), JsValue> {
-        if self.playback.recording.lock().unwrap().is_empty() {
+        if spin_lock(&self.playback.recording).is_empty() {
             return Ok(());
         }
         self.playback.input_active.store(false, Ordering::Relaxed);
@@ -487,7 +501,7 @@ impl WebPitchCorrector {
         // callback's appends line up.
         let pos = self.playback.playback_pos.load(Ordering::Relaxed) as usize;
         {
-            let mut out = self.playback.output_recording.lock().unwrap();
+            let mut out = spin_lock(&self.playback.output_recording);
             out.truncate(pos);
             out.resize(pos, 0.0);
         }
@@ -519,7 +533,7 @@ impl WebPitchCorrector {
         self.playback.playback_pos.store(pos, Ordering::Relaxed);
         // If we're mid-playback, the output write head must jump with us.
         if self.playback.playing.load(Ordering::Relaxed) {
-            let mut out = self.playback.output_recording.lock().unwrap();
+            let mut out = spin_lock(&self.playback.output_recording);
             out.truncate(pos as usize);
             out.resize(pos as usize, 0.0);
         }

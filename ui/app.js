@@ -48,6 +48,8 @@ const timeline = new Timeline($('timeline'), {
     onViewChange: () => updatePostCorrectionVisibility(),
     onTrackDrag: contourDrag,
 });
+// E2E test hook: expose the timeline for viewport assertions.
+if (new URLSearchParams(location.search).has('e2e')) window.__tl = timeline;
 
 function renderTrack(track, canvas, vp, x0, x1) {
     const isInput = track.id === 'input';
