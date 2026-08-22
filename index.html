@@ -63,7 +63,9 @@
         .tl-view-select { font-size: 11px; padding: 2px; width: 100%; }
         .tl-canvas-wrap { position: relative; line-height: 0; border-bottom: 1px solid #333; }
         .tl-ruler-wrap { height: 26px; }
-        .tl-track .tl-canvas-wrap { height: 170px; }
+        .tl-track .tl-canvas-wrap { height: 340px; }
+        /* Slight gap between the tracks; the playhead spans across it. */
+        .tl-track + .tl-track { margin-top: 8px; border-top: 1px solid #444; }
         .tl canvas { display: block; width: 100%; height: 100%; }
         .tl-track-canvas { cursor: crosshair; }
         .tl-body { position: relative; }

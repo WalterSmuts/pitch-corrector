@@ -48,7 +48,7 @@ export async function launch({ port, wav = toneWav }) {
       '--autoplay-policy=no-user-gesture-required',
     ],
   });
-  const ctx = await browser.newContext();
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 1500 } });
   await ctx.grantPermissions(['microphone'], { origin: `http://localhost:${port}` });
   const page = await ctx.newPage();
 
