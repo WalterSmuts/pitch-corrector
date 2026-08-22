@@ -25,6 +25,11 @@ class COOPCOEPRequestHandler(SimpleHTTPRequestHandler):
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
         # Allow the wasm/js assets to be embedded under COEP.
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        # Without this, browsers apply heuristic freshness and may serve
+        # some ES modules from cache while fetching others fresh — mixed
+        # file versions after an edit ("X is not a function" errors).
+        # no-cache still allows 304 revalidation, so reloads stay fast.
+        self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
 
