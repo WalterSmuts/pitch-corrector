@@ -283,12 +283,23 @@ async function startRecording() {
     try {
         await init();
     } catch (e) {
+        setState('idle');
         els.status.textContent =
             'Failed to load the audio engine (WASM). Check your connection and reload. (' + e + ')';
-        setState('idle');
         return;
     }
     try {
+        if (!corrector) {
+            // Ask for the microphone explicitly, first thing: the
+            // getUserMedia promise resolves only once the permission
+            // prompt is accepted (and rejects on deny), so we don't build
+            // the audio graph or start drawing while the prompt is open.
+            // The probe track is released immediately; cpal re-acquires
+            // with the now-granted permission.
+            els.status.textContent = 'Waiting for microphone permission…';
+            const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+            probe.getTracks().forEach(t => t.stop());
+        }
         newCorrector();
         resetSession();
         applyScale();
@@ -297,12 +308,17 @@ async function startRecording() {
 
         els.status.textContent = 'Initializing audio…';
         await waitForAudioReady(corrector);
+        if (!corrector.is_audio_ready()) {
+            throw new Error('The audio pipeline did not start in time. Reload and try again.');
+        }
 
         timeline.follow(true);
         setState('recording');
     } catch (e) {
-        els.status.textContent = describeStartError(e);
+        // Order matters: setState writes the idle status line; the error
+        // message must land after it.
         setState('idle');
+        els.status.textContent = describeStartError(e);
     }
 }
 
