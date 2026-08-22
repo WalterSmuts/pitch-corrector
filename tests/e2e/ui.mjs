@@ -22,7 +22,16 @@ try {
     () => document.getElementById('status').textContent.includes('Recording'),
     { timeout: 15000 });
   await page.evaluate(() => window.__tl.follow(true, 1)); // 1s window
+  const lenBefore = await page.evaluate(() => window.__pc.recording_len());
+  const tRate = Date.now();
   await sleep(2500);
+  const lenAfter = await page.evaluate(() => window.__pc.recording_len());
+  // Sample delivery must match the believed rate (regression: interleaved
+  // stereo counted as mono delivered 2x samples and halved every frequency).
+  const delivered = (lenAfter - lenBefore) / ((Date.now() - tRate) / 1000);
+  const believed = await page.evaluate(() => window.__pc.sample_rate());
+  check(Math.abs(delivered / believed - 1) < 0.25,
+    `sample delivery matches the believed rate (${Math.round(delivered)} vs ${believed}/s)`);
 
   const followState = await page.evaluate(() => {
     const tl = window.__tl;
@@ -145,9 +154,7 @@ try {
   check(await probe(1, 'green') > 20, 'shared dropdown: output pitch view shows contour (green)');
 
   // Dynamic pitch axis: it must tighten well below the C2..C6 default
-  // (48 st) and contain the dominant detected pitch. (Derived from the
-  // track data: the headless fake mic plays the tone at ~2x rate, so the
-  // DSP legitimately hears ~an octave below 210Hz.)
+  // (48 st) and contain the dominant detected pitch.
   const scale = await page.evaluate(() => {
     const track = window.__pc.input_pitch_track().filter(f => f > 0);
     const midis = [...track].map(f => 69 + 12 * Math.log2(f / 440)).sort((a, b) => a - b);
@@ -161,6 +168,9 @@ try {
     `pitch axis tightened around the data (span ${scale.hi - scale.lo} st)`);
   check(scale.lo <= scale.median && scale.median <= scale.hi,
     `pitch axis contains the dominant pitch (midi ${scale.median.toFixed(1)} in [${scale.lo}, ${scale.hi}])`);
+  // Detection must be truthful: the 210Hz tone is midi ~56.2.
+  check(Math.abs(scale.median - 56.2) < 1,
+    `detected pitch matches the real tone (midi ${scale.median.toFixed(1)}, expect ~56.2)`);
 
   await page.check('#split-views-cb');
   check((await perTrackVisible()).every(v => v), 'split reveals per-track selectors');

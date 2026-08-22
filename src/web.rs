@@ -187,6 +187,12 @@ impl WebPitchCorrector {
 
         // Detection must use the real device rate, not the native default.
         let sample_rate = input_config.sample_rate() as f32;
+        // The web hosts default to stereo and deliver interleaved frames.
+        // Everything internal is mono: mix input frames down and fan the
+        // output sample out to every channel. Treating interleaved stereo
+        // as mono doubles the sample count and halves every frequency.
+        let input_channels = input_config.channels() as usize;
+        let output_channels = output_config.channels() as usize;
 
         let pipeline = Pipeline::new(sample_rate);
         let input_processor = pipeline.processor().clone();
@@ -212,11 +218,13 @@ impl WebPitchCorrector {
                     if !input_playback.input_active.load(Ordering::Relaxed) {
                         return;
                     }
-                    if let Ok(mut rec) = input_playback.recording.try_lock() {
-                        rec.extend_from_slice(data);
-                    }
-                    for &sample in data {
-                        input_processor.push_sample(sample);
+                    let mut rec = input_playback.recording.try_lock().ok();
+                    for frame in data.chunks_exact(input_channels) {
+                        let s = frame.iter().sum::<f32>() / input_channels as f32;
+                        input_processor.push_sample(s);
+                        if let Some(rec) = rec.as_mut() {
+                            rec.push(s);
+                        }
                     }
                 },
                 |err| log::error!("Input error: {}", err),
@@ -240,11 +248,12 @@ impl WebPitchCorrector {
                         .store(true, Ordering::Relaxed);
                     let fed = output_playback.playing.load(Ordering::Relaxed)
                         || output_playback.input_active.load(Ordering::Relaxed);
+                    let frames = data.len() / output_channels;
                     if output_playback.playing.load(Ordering::Relaxed) {
                         if let Ok(rec) = output_playback.recording.try_lock() {
                             let mut p =
                                 output_playback.playback_pos.load(Ordering::Relaxed) as usize;
-                            for _ in 0..data.len() {
+                            for _ in 0..frames {
                                 if p < rec.len() {
                                     output_processor.push_sample(rec[p]);
                                     p += 1;
@@ -259,13 +268,13 @@ impl WebPitchCorrector {
                         }
                     }
                     let mut missed = 0usize;
-                    for sample in data.iter_mut() {
+                    for frame in data.chunks_exact_mut(output_channels) {
                         match output_processor.pop_sample() {
                             Some(s) => {
                                 output_playback
                                     .pipeline_primed
                                     .store(true, Ordering::Relaxed);
-                                *sample = s;
+                                frame.fill(s);
                                 // Capture the produced audio both while
                                 // recording live and while re-processing
                                 // during playback (playback truncates the
@@ -282,7 +291,7 @@ impl WebPitchCorrector {
                             }
                             None => {
                                 missed += 1;
-                                *sample = 0.0;
+                                frame.fill(0.0);
                             }
                         }
                     }
