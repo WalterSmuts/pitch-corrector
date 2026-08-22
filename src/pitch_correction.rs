@@ -106,6 +106,11 @@ pub struct PitchCorrectorControls {
     /// it is drained from the UI thread on stop/clear. Entries are dropped if
     /// the log fills (bounded memory) rather than growing unboundedly.
     target_pitch_contour: ArrayQueue<Option<Pitch>>,
+    /// Dry bypass: output the uncorrected voice (no correction, no shift,
+    /// harmonies faded out) through the same vocoder path, so latency is
+    /// identical and A/B toggling is glitch-free — usable mid-recording
+    /// and mid-playback.
+    bypass: AtomicBool,
     /// Enabled harmony voices: bit0 = 3rd, bit1 = 5th, bit2 = octave.
     harmony_mask: AtomicU32,
     /// Per-hop produced-pitch log of every voice — [main, 3rd, 5th, octave]
@@ -180,6 +185,15 @@ impl PitchCorrectorControls {
 
     pub fn clear_target_pitch_contour(&self) {
         while self.target_pitch_contour.pop().is_some() {}
+    }
+
+    /// Dry bypass (A/B): true = hear the uncorrected voice.
+    pub fn set_bypass(&self, on: bool) {
+        self.bypass.store(on, Ordering::Relaxed);
+    }
+
+    pub fn get_bypass(&self) -> bool {
+        self.bypass.load(Ordering::Relaxed)
     }
 
     /// Enabled harmony voices: bit0 = 3rd, bit1 = 5th, bit2 = octave.
@@ -265,6 +279,7 @@ impl PitchCorrector {
             shift_semitones: AtomicI32::new(Interval::UNISON.semitones()),
             scale_bits: AtomicU32::new(scale.bits() as u32),
             target_pitch_contour: ArrayQueue::new(TARGET_CONTOUR_CAPACITY),
+            bypass: AtomicBool::new(false),
             harmony_mask: AtomicU32::new(0),
             voice_pitch_log: std::array::from_fn(|_| ArrayQueue::new(TARGET_CONTOUR_CAPACITY)),
             harmony_in_key: AtomicBool::new(true),
@@ -329,9 +344,15 @@ impl PitchCorrector {
             // an unrelated later note from being mis-corrected by a stale
             // ratio, without reintroducing the per-hop downward bias.
             const GAP_RESET_HOPS: usize = 43; // ~0.5s at 44.1kHz, hop=512
+            let bypass = controls_clone.bypass.load(Ordering::Relaxed);
             let mut prev = smoothed_ratio.lock().unwrap();
             let mut gaps = gap_hops.lock().unwrap();
-            if target_pitch.is_some() && detected.is_some() {
+            if bypass {
+                // Dry: glide the correction ratio back to unity through the
+                // same smoothing filter, and drop the shift below.
+                *prev += smoothing_alpha * (1.0 - *prev);
+                *gaps = 0;
+            } else if target_pitch.is_some() && detected.is_some() {
                 *prev += smoothing_alpha * (target_ratio - *prev);
                 *gaps = 0;
             } else {
@@ -340,7 +361,7 @@ impl PitchCorrector {
                     *prev = 1.0;
                 }
             }
-            let ratio = *prev * shift_ratio;
+            let ratio = *prev * if bypass { 1.0 } else { shift_ratio };
             // Log what this voice actually produces this hop (detected pitch
             // times the applied ratio; 0 when unvoiced).
             let _ = controls_clone.voice_pitch_log[0].push(detected.map_or(0.0, |f| f * ratio));
@@ -457,7 +478,8 @@ impl Harmonizer {
                 }
                 // Log this voice's produced pitch for the plot: only while
                 // enabled and voiced (it is faded out of the mix otherwise).
-                let produced = match (enabled, pair) {
+                let bypass = controls.bypass.load(Ordering::Relaxed);
+                let produced = match (enabled && !bypass, pair) {
                     (true, Some((detected, _))) => detected * *prev,
                     _ => 0.0,
                 };
@@ -495,7 +517,7 @@ impl StreamProcessor for Harmonizer {
     fn pop_sample(&self) -> Option<f32> {
         let main = self.main.pop_sample()?;
         let mask = self.controls.harmony_mask.load(Ordering::Relaxed);
-        let voiced = self.hop_bus.voiced();
+        let voiced = self.hop_bus.voiced() && !self.controls.bypass.load(Ordering::Relaxed);
         let mut gains = self.gains.lock().unwrap();
         let mut out = main;
         let mut norm = 1.0;

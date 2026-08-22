@@ -53,6 +53,7 @@ const els = {
     stopBtn: $('stop-btn'),
     playBtn: $('play-btn'),
     passthroughBtn: $('passthrough-btn'),
+    dryBtn: $('dry-btn'),
     downloadBtn: $('download-btn'),
     debugBtn: $('debug-btn'),
     uploadBtn: $('upload-btn'),
@@ -472,6 +473,7 @@ async function startRecording() {
         applyScale();
         corrector.set_shift(parseFloat(slider.value));
         corrector.set_monitor(passthroughOn);
+        corrector.set_bypass(dryOn);
         applyHarmony();
         corrector.start_recording();
 
@@ -541,6 +543,16 @@ function seekTo(sample) {
 
 els.recordBtn.addEventListener('click', startRecording);
 
+// Dry bypass (A/B): hear the uncorrected voice. Toggles live — the DSP
+// glides the correction to unity and fades harmonies out, during both
+// recording and playback re-processing.
+let dryOn = false;
+els.dryBtn.addEventListener('click', () => {
+    dryOn = !dryOn;
+    els.dryBtn.classList.toggle('active', dryOn);
+    if (corrector) corrector.set_bypass(dryOn);
+});
+
 // Live passthrough: hear the corrected output while recording. Off by
 // default — the DSP and visuals run either way, only the speakers gate.
 let passthroughOn = false;
@@ -555,8 +567,9 @@ els.playBtn.addEventListener('click', () => {
     else if (state === 'stopped' || state === 'paused') startPlayback();
 });
 window.addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
     if (e.code === 'Space') {
+        // Don't fight a focused control (Space also activates buttons).
+        if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
         if (state === 'playing') {
             e.preventDefault();
             pausePlayback();
@@ -566,7 +579,9 @@ window.addEventListener('keydown', (e) => {
         }
     } else if (e.code === 'KeyH' && !e.repeat) {
         // Hold h: spectral-freeze audition of the frame under the playhead.
+        // During playback, pause first and freeze right there.
         if (!corrector || totalSamples === 0) return;
+        if (state === 'playing') pausePlayback();
         if (state !== 'stopped' && state !== 'paused') return;
         e.preventDefault();
         const pos = corrector.playback_progress() * totalSamples;

@@ -483,6 +483,12 @@ impl WebPitchCorrector {
         self.pipeline.controls.set_harmony_in_key(in_key);
     }
 
+    /// Dry bypass (A/B): hear the uncorrected voice. Applies live, during
+    /// both recording and playback re-processing.
+    pub fn set_bypass(&self, on: bool) {
+        self.pipeline.controls.set_bypass(on);
+    }
+
     /// Sustain the sound at `position` (samples on the output timeline)
     /// using a spectral freeze — hold-a-key audition. Only meaningful while
     /// stopped or paused; returns false if that doesn't hold or there is
@@ -494,7 +500,13 @@ impl WebPitchCorrector {
             return false;
         }
         let a = self.analysis.lock().unwrap();
-        match SpectralFreeze::new(&a.output_samples, position.max(0.0) as usize) {
+        // Analyze the window *ending* at the cursor — the audio just heard.
+        // During/after playback the output only exists up to the playhead
+        // (minus pipeline latency), so clamp to what is actually there and
+        // a window centered on the cursor would have no second half anyway.
+        let end = (position.max(0.0) as usize).min(a.output_samples.len());
+        let center = end.saturating_sub((BUFFER_SIZE + HOP_SIZE) / 2);
+        match SpectralFreeze::new(&a.output_samples, center) {
             Some(fz) => {
                 *spin_lock(&self.playback.freeze) = Some(fz);
                 self.playback.freeze_active.store(true, Ordering::Relaxed);

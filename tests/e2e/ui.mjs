@@ -115,6 +115,36 @@ try {
     'Off clears the enabled voices',
   );
   await page.click('[data-hmode="key"]');
+
+  // --- Dry A/B while recording: with +12 shift the corrected output sits an
+  // octave up; toggling Dry glides back to the uncorrected pitch live ---
+  const tailMedian = () =>
+    page.evaluate(() => {
+      const midi = (f) => 69 + 12 * Math.log2(f / 440);
+      const t = [...window.__pc.output_pitch_track()].filter((f) => f > 0).map(midi);
+      const tail = t.slice(-25).sort((a, b) => a - b);
+      return tail[Math.floor(tail.length / 2)] ?? 0;
+    });
+  await page.evaluate(() => {
+    const sl = document.getElementById('shift-slider');
+    sl.value = '12';
+    sl.dispatchEvent(new Event('input'));
+  });
+  await sleep(700);
+  const wet = await tailMedian();
+  await page.click('#dry-btn');
+  await sleep(700);
+  const dry = await tailMedian();
+  check(
+    wet - dry > 10,
+    `Dry bypasses correction live (wet midi ${wet.toFixed(1)} -> dry ${dry.toFixed(1)})`,
+  );
+  await page.click('#dry-btn'); // wet again
+  await page.evaluate(() => {
+    const sl = document.getElementById('shift-slider');
+    sl.value = '0';
+    sl.dispatchEvent(new Event('input'));
+  });
   // The recording grows between the render and this readback, so allow
   // ~100ms of audio of slack on the pin check.
   const rightEdge = followState.s0 + followState.w * followState.spp;
@@ -423,6 +453,28 @@ try {
   await sleep(300);
   const stillAt = await page.evaluate(() => window.__pc.playback_progress());
   check(Math.abs(stillAt - pausedAt) < 0.01, 'pause holds the playhead');
+
+  // Holding h during playback pauses right there and freezes that frame.
+  await page.click('#play-btn');
+  await page.waitForFunction(() =>
+    document.getElementById('status').textContent.includes('Playing'),
+  );
+  await sleep(300);
+  await page.keyboard.down('h');
+  await sleep(200);
+  const midPlayFreeze = await page.evaluate(() => ({
+    freezing: window.__pc.is_freezing(),
+    playing: window.__pc.is_playing(),
+  }));
+  check(
+    midPlayFreeze.freezing && !midPlayFreeze.playing,
+    'h during playback pauses and freezes the frame there',
+  );
+  await page.keyboard.up('h');
+  check(
+    await page.evaluate(() => !window.__pc.is_freezing()),
+    'releasing h after a mid-playback freeze stays paused',
+  );
 
   // --- Upload runs the offline path and lands in stopped state ---
   await page.setInputFiles('#upload-input', toneWav);
