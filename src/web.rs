@@ -78,6 +78,10 @@ struct PlaybackState {
     /// it starts drawing — avoids the async worklet setup janking mid-draw.
     input_started: AtomicBool,
     output_started: AtomicBool,
+    /// True once the DSP pipeline has produced its first output sample
+    /// since the last (re)start of a feed; underruns before that are the
+    /// expected warm-up gap, not a problem worth logging.
+    pipeline_primed: AtomicBool,
 }
 
 /// Main-thread analysis state: mirrors of the shared recordings plus
@@ -196,6 +200,7 @@ impl WebPitchCorrector {
             playing: AtomicBool::new(false),
             input_started: AtomicBool::new(false),
             output_started: AtomicBool::new(false),
+            pipeline_primed: AtomicBool::new(false),
         });
 
         let input_playback = playback.clone();
@@ -220,6 +225,12 @@ impl WebPitchCorrector {
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
 
         let output_playback = playback.clone();
+        // Underruns are expected while the pipeline warms up (the vocoder
+        // needs a full window of input before it emits anything) and when
+        // nothing is feeding the pipeline; only warn about gaps after the
+        // pipeline has produced output, while actively fed — and once per
+        // callback, not once per sample (a starved stream would otherwise
+        // log tens of thousands of lines per second).
         let output_stream = output_device
             .build_output_stream(
                 output_config.into(),
@@ -227,6 +238,8 @@ impl WebPitchCorrector {
                     output_playback
                         .output_started
                         .store(true, Ordering::Relaxed);
+                    let fed = output_playback.playing.load(Ordering::Relaxed)
+                        || output_playback.input_active.load(Ordering::Relaxed);
                     if output_playback.playing.load(Ordering::Relaxed) {
                         if let Ok(rec) = output_playback.recording.try_lock() {
                             let mut p =
@@ -245,9 +258,13 @@ impl WebPitchCorrector {
                                 .store(p as u32, Ordering::Relaxed);
                         }
                     }
+                    let mut missed = 0usize;
                     for sample in data.iter_mut() {
                         match output_processor.pop_sample() {
                             Some(s) => {
+                                output_playback
+                                    .pipeline_primed
+                                    .store(true, Ordering::Relaxed);
                                 *sample = s;
                                 // Capture the produced audio both while
                                 // recording live and while re-processing
@@ -264,10 +281,18 @@ impl WebPitchCorrector {
                                 }
                             }
                             None => {
-                                log::warn!("Output callback: underrun — inserting silence");
+                                missed += 1;
                                 *sample = 0.0;
                             }
                         }
+                    }
+                    if missed > 0
+                        && fed
+                        && output_playback.pipeline_primed.load(Ordering::Relaxed)
+                    {
+                        log::warn!(
+                            "Output callback: underrun — inserted {missed} silent samples"
+                        );
                     }
                 },
                 |err| log::error!("Output error: {}", err),
@@ -364,6 +389,7 @@ impl WebPitchCorrector {
         self.analysis.lock().unwrap().reset();
         self.pipeline.controls.clear_target_pitch_contour();
         self.pipeline.controls.clear_contour();
+        self.playback.pipeline_primed.store(false, Ordering::Relaxed);
         self.playback.input_active.store(true, Ordering::Relaxed);
         self.input_stream
             .play()
@@ -421,6 +447,7 @@ impl WebPitchCorrector {
             out.truncate(pos);
             out.resize(pos, 0.0);
         }
+        self.playback.pipeline_primed.store(false, Ordering::Relaxed);
         self.playback.playing.store(true, Ordering::Relaxed);
         let _ = self.output_stream.play();
         Ok(())

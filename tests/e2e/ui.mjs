@@ -8,6 +8,10 @@ const PORT = 8892;
 const { check, finish } = makeChecker();
 
 const { page, errors, close } = await launch({ port: PORT });
+// Underrun warnings are rate-limited and gated to real gaps; a runaway here
+// means a stream was left running unfed (regression).
+let underruns = 0;
+page.on('console', m => { if (m.text().includes('underrun')) underruns++; });
 try {
   await page.goto(`http://localhost:${PORT}/?e2e`, { waitUntil: 'load' });
   await page.waitForFunction(() => !document.getElementById('record-btn').disabled, { timeout: 20000 });
@@ -197,6 +201,7 @@ try {
   check(await probe(0, 'hot') > 500, 'uploaded audio rendered to the input track');
 
   // --- No uncaught errors anywhere in the session ---
+  check(underruns < 20, `no underrun log runaway (${underruns} warnings all session)`);
   const fatal = errors.filter(e => !/favicon/.test(e));
   if (fatal.length) console.log('  errors:', fatal.slice(0, 5));
   check(fatal.length === 0, 'no console errors or uncaught exceptions');

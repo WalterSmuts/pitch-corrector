@@ -155,6 +155,10 @@ function loop() {
         } else {
             timeline.setPlayhead(corrector.playback_progress() * totalSamples);
             if (!corrector.is_playing()) {
+                // Playback reached the end: pause the output stream too —
+                // left running it pulls from an unfed pipeline forever
+                // (an endless stream of underruns).
+                corrector.stop_playback();
                 corrector.clear_contour();
                 setState('stopped');
             }
