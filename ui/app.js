@@ -64,6 +64,7 @@ const timeline = new Timeline($('timeline'), {
     onViewChange: () => updatePostCorrectionVisibility(),
     onTrackDrag: contourDrag,
     onVerticalZoom: verticalZoom,
+    onFit: resetVerticalZoom,
 });
 // E2E test hook: expose the timeline for viewport assertions.
 if (new URLSearchParams(location.search).has('e2e')) {
@@ -146,6 +147,15 @@ function drawEditedContour(ctx, vp) {
         const x = (i / n * totalSamples - vp.s0) / vp.spp;
         ctx.fillRect(x - vp.dpr, y - vp.dpr, 2 * vp.dpr, 2 * vp.dpr);
     }
+}
+
+// Fit shows everything: restore the vertical axes alongside the timeline.
+function resetVerticalZoom() {
+    vzoom.waveformGain = 1;
+    vzoom.spec = { lo: 0, hi: 1 };
+    pitchScale.reset();
+    updatePitchScale(); // auto-fit is back: refit to the data now
+    timeline.invalidate();
 }
 
 // Ctrl+scroll: zoom the vertical axis of whichever view is under the

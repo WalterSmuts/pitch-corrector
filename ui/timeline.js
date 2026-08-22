@@ -182,6 +182,8 @@ export class Timeline {
         this.spp = null;
         this.s0 = 0;
         this.followMode = false;
+        // Fit means "show me everything": vertical axes reset too.
+        this.opts.onFit?.();
         this.render();
     }
 

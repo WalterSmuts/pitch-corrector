@@ -234,6 +234,8 @@ try {
   await page.selectOption('#view-select', 'waveform');
 
   await page.click('.tl-zoom-btn:nth-child(3)'); // restore Fit
+  check(await page.evaluate(() => !window.__scale.manual),
+    'Fit resets the manual vertical zoom back to auto-fit');
 
   // --- Transport: play, progress advances, pause holds ---
   await page.click('#play-btn');
