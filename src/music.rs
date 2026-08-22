@@ -384,6 +384,20 @@ impl Scale {
     }
 }
 
+/// Transpose a pitch by an interval: the typed form of semitone
+/// arithmetic, so callers never hand-roll `semis + shift` and octave
+/// wrapping.
+impl std::ops::Add<Interval> for Pitch {
+    type Output = Pitch;
+    fn add(self, interval: Interval) -> Pitch {
+        let semis = self.note as i32 + 12 * self.octave as i32 + interval.semitones();
+        Pitch::new(
+            Note::ALL[semis.rem_euclid(12) as usize],
+            semis.div_euclid(12) as i8,
+        )
+    }
+}
+
 impl std::ops::BitOr<Note> for Scale {
     type Output = Self;
     fn bitor(self, rhs: Note) -> Self {
@@ -492,6 +506,19 @@ impl Interval {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pitch_plus_interval_transposes() {
+        let a3 = Pitch::new(Note::A, 3);
+        assert_eq!(a3 + Interval::MAJOR_THIRD, Pitch::new(Note::CS, 4));
+        assert_eq!(a3 + Interval::PERFECT_FIFTH, Pitch::new(Note::E, 4));
+        assert_eq!(a3 + Interval::OCTAVE, Pitch::new(Note::A, 4));
+        assert_eq!(a3 + Interval::UNISON, a3);
+        assert_eq!(
+            a3 + Interval::compound(SimpleInterval::MinorThird, -1),
+            Pitch::new(Note::C, 3),
+        );
+    }
 
     #[test]
     fn degree_above_walks_the_scale() {

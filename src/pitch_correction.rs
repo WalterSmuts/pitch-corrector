@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering}
 use std::sync::Arc;
 use std::sync::Mutex;
 
-/// Sentinel for "no target this hop" in `HopBus::target_semis`.
+/// Sentinel for "no target this hop" in `HopBus`'s internal encoding.
 const NO_TARGET: i32 = i32::MIN;
 
 /// Intra-DSP per-hop bus: the main voice publishes its analysis here and
@@ -29,11 +29,13 @@ impl HopBus {
         }
     }
 
-    fn publish(&self, detected: Option<f32>, target_semis: Option<i32>) {
+    fn publish(&self, detected: Option<f32>, target: Option<Pitch>) {
         self.detected_bits
             .store(detected.unwrap_or(0.0).to_bits(), Ordering::Relaxed);
-        self.target_semis
-            .store(target_semis.unwrap_or(NO_TARGET), Ordering::Relaxed);
+        self.target_semis.store(
+            target.map_or(NO_TARGET, |p| p.note as i32 + 12 * p.octave as i32),
+            Ordering::Relaxed,
+        );
     }
 
     fn detected(&self) -> Option<f32> {
@@ -41,9 +43,10 @@ impl HopBus {
         (f > 0.0).then_some(f)
     }
 
-    fn target_semis(&self) -> Option<i32> {
+    fn target_pitch(&self) -> Option<Pitch> {
         let s = self.target_semis.load(Ordering::Relaxed);
-        (s != NO_TARGET).then_some(s)
+        (s != NO_TARGET)
+            .then(|| Pitch::new(Note::ALL[s.rem_euclid(12) as usize], s.div_euclid(12) as i8))
     }
 
     fn voiced(&self) -> bool {
@@ -295,8 +298,8 @@ impl PitchCorrector {
         let smoothed_ratio = Mutex::new(1.0f32);
         let gap_hops = Mutex::new(0usize);
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
-            let shift_semitones = controls_clone.shift_semitones.load(Ordering::Relaxed);
-            let shift_ratio = 2f32.powf(shift_semitones as f32 / 12.0);
+            let shift = controls_clone.get_shift();
+            let shift_ratio = shift.to_ratio();
             let detected = detector.lock().unwrap().detect(frame);
 
             // Check for active contour, otherwise snap to scale
@@ -319,10 +322,7 @@ impl PitchCorrector {
             // Publish this hop's analysis for the harmony voices (parallel
             // pipelines fed in lockstep; they read these in their own
             // ratio_fns, which run after this one within the same sample).
-            bus_clone.publish(
-                detected,
-                target_pitch.map(|p| p.semitones_from_c0() as i32 + shift_semitones),
-            );
+            bus_clone.publish(detected, target_pitch.map(|p| p + shift));
 
             let target_ratio = match (target_pitch, detected) {
                 (Some(pitch), Some(freq)) => pitch.to_freq() / freq,
@@ -391,12 +391,12 @@ impl StreamProcessor for PitchCorrector {
     }
 }
 
-/// Harmony voice definitions: (label, scale degrees when in key, semitones
-/// when absolute). An octave is +12 semitones in either mode.
-const HARMONY_VOICES: [(usize, i32); 3] = [
-    (2, 4),  // 3rd: 2 scale degrees / major third
-    (4, 7),  // 5th: 4 scale degrees / perfect fifth
-    (7, 12), // octave (degrees unused; +12 in both modes)
+/// Harmony voice definitions: scale degrees when in key, interval when
+/// absolute. An octave is an octave in either mode.
+const HARMONY_VOICES: [(usize, Interval); 3] = [
+    (2, Interval::MAJOR_THIRD),   // 3rd: 2 scale degrees when diatonic
+    (4, Interval::PERFECT_FIFTH), // 5th: 4 scale degrees when diatonic
+    (7, Interval::OCTAVE),        // octave in both modes
 ];
 /// Mix level of each harmony voice relative to the main voice.
 const HARMONY_GAIN: f32 = 0.5;
@@ -430,7 +430,7 @@ impl Harmonizer {
         let smoothing_alpha = 1.0 - (-hop_period / PitchCorrector::SMOOTHING_TAU_SECONDS).exp();
 
         let mut voice_idx = 0usize;
-        let voices = HARMONY_VOICES.map(|(degrees, abs_semitones)| {
+        let voices = HARMONY_VOICES.map(|(degrees, interval)| {
             voice_idx += 1;
             let log_idx = voice_idx; // 1..=3 ([0] is the main voice)
             let controls = controls.clone();
@@ -441,21 +441,18 @@ impl Harmonizer {
                 let enabled =
                     controls.harmony_mask.load(Ordering::Relaxed) & (1 << (log_idx - 1)) != 0;
 
-                let pair = match (bus.detected(), bus.target_semis()) {
-                    (Some(detected), Some(semis)) => {
-                        let base = Pitch::new(
-                            Note::ALL[semis.rem_euclid(12) as usize],
-                            semis.div_euclid(12) as i8,
-                        );
+                let pair = match (bus.detected(), bus.target_pitch()) {
+                    (Some(detected), Some(base)) => {
                         let scale = controls.get_scale();
                         let in_key = controls.harmony_in_key.load(Ordering::Relaxed);
-                        let harmony = if abs_semitones == 12 || !in_key || scale.is_empty() {
+                        let harmony = if interval == Interval::OCTAVE || !in_key || scale.is_empty()
+                        {
                             // Octave, absolute mode, or no key to walk in.
-                            base.to_freq() * 2f32.powf(abs_semitones as f32 / 12.0)
+                            base + interval
                         } else {
-                            scale.degree_above(base, degrees).to_freq()
+                            scale.degree_above(base, degrees)
                         };
-                        Some((detected, harmony))
+                        Some((detected, harmony.to_freq()))
                     }
                     _ => None,
                 };
