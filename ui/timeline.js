@@ -415,7 +415,15 @@ export class Timeline {
                 const dy = e.deltaY * k;
                 const rect = c.getBoundingClientRect();
                 const x = e.clientX - rect.left;
-                if (Math.abs(dx) > Math.abs(dy)) {
+                if (e.ctrlKey) {
+                    // Ctrl+scroll: zoom the view's vertical axis (delegated —
+                    // its meaning depends on the view).
+                    const t = this.tracks.find(t => t.canvas === c);
+                    if (t) {
+                        const yFrac = (e.clientY - rect.top) / rect.height;
+                        this.opts.onVerticalZoom?.(t, Math.exp(dy * 0.002), yFrac);
+                    }
+                } else if (Math.abs(dx) > Math.abs(dy)) {
                     this.panBy(dx); // trackpad horizontal scroll / tilt wheel
                 } else if (e.shiftKey) {
                     this.panBy(dy);

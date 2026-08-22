@@ -21,6 +21,15 @@ let postCorrectionActive = false;
 // dynamically fitted to the data with hysteresis. See PitchScale.
 const pitchScale = new PitchScale();
 
+// Vertical-axis zoom state (ctrl+scroll), shared between the two tracks so
+// they stay comparable: amplitude gain for waveforms, log-frequency window
+// (fractions of the full axis) for spectrograms. Pitch zoom lives on
+// pitchScale itself.
+const vzoom = {
+    waveformGain: 1,
+    spec: { lo: 0, hi: 1 },
+};
+
 const INPUT_COLOR = 'rgb(255,150,50)';
 const OUTPUT_COLOR = 'rgb(50,255,120)';
 const EDIT_COLOR = 'rgb(255,80,200)';
@@ -54,6 +63,7 @@ const timeline = new Timeline($('timeline'), {
     onSeek: seekTo,
     onViewChange: () => updatePostCorrectionVisibility(),
     onTrackDrag: contourDrag,
+    onVerticalZoom: verticalZoom,
 });
 // E2E test hook: expose the timeline for viewport assertions.
 if (new URLSearchParams(location.search).has('e2e')) {
@@ -89,8 +99,13 @@ function renderTrack(track, canvas, vp, x0, x1) {
         case 'spectrogram': {
             const w = x1 - x0;
             const start = vp.s0 + x0 * vp.spp;
-            if (isInput) corrector.draw_input_spectrogram_range(canvas, x0, w, start, vp.spp);
-            else corrector.draw_output_spectrogram_range(canvas, x0, w, start, vp.spp);
+            if (isInput) {
+                corrector.draw_input_spectrogram_range(
+                    canvas, x0, w, start, vp.spp, vzoom.spec.lo, vzoom.spec.hi);
+            } else {
+                corrector.draw_output_spectrogram_range(
+                    canvas, x0, w, start, vp.spp, vzoom.spec.lo, vzoom.spec.hi);
+            }
             break;
         }
         case 'pitch': {
@@ -110,7 +125,8 @@ function renderTrack(track, canvas, vp, x0, x1) {
             const fetchPeaks = isInput
                 ? (a, b, n) => corrector.input_peaks(a, b, n)
                 : (a, b, n) => corrector.output_peaks(a, b, n);
-            drawWaveform(ctx, fetchPeaks, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR, x0, x1);
+            drawWaveform(ctx, fetchPeaks, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR, x0, x1,
+                vzoom.waveformGain);
             break;
         }
     }
@@ -129,6 +145,33 @@ function drawEditedContour(ctx, vp) {
         if (y < 0 || y > vp.h) continue;
         const x = (i / n * totalSamples - vp.s0) / vp.spp;
         ctx.fillRect(x - vp.dpr, y - vp.dpr, 2 * vp.dpr, 2 * vp.dpr);
+    }
+}
+
+// Ctrl+scroll: zoom the vertical axis of whichever view is under the
+// cursor. Shared between tracks so input and output stay comparable.
+function verticalZoom(track, factor, yFrac) {
+    switch (track.view) {
+        case 'pitch':
+            pitchScale.zoomBy(factor, yFrac);
+            break;
+        case 'waveform':
+            // Wheel-up (factor < 1) zooms in = more gain.
+            vzoom.waveformGain = Math.min(Math.max(vzoom.waveformGain / factor, 1), 64);
+            break;
+        case 'spectrogram': {
+            const span = Math.min(Math.max((vzoom.spec.hi - vzoom.spec.lo) * factor, 0.05), 1);
+            const anchor = vzoom.spec.hi - yFrac * (vzoom.spec.hi - vzoom.spec.lo);
+            let hi = anchor + yFrac * span;
+            let lo = hi - span;
+            if (lo < 0) { hi -= lo; lo = 0; }
+            if (hi > 1) { lo -= hi - 1; hi = 1; }
+            vzoom.spec = { lo, hi };
+            break;
+        }
+    }
+    for (const id of ['input', 'output']) {
+        if (timeline.getTrack(id).view === track.view) timeline.invalidate(id);
     }
 }
 
@@ -269,6 +312,7 @@ function newCorrector() {
 }
 
 function resetSession() {
+    pitchScale.reset(); // manual vertical zoom ends with the session
     totalSamples = 0;
     targetContour = [];
     editedContour = null;

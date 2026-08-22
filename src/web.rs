@@ -592,6 +592,7 @@ impl WebPitchCorrector {
     /// Render `width_px` spectrogram columns of the input recording into
     /// `canvas` at `dest_x`, covering the time range starting at
     /// `start_sample` with `samples_per_px` samples per column.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_input_spectrogram_range(
         &self,
         canvas: &HtmlCanvasElement,
@@ -599,11 +600,23 @@ impl WebPitchCorrector {
         width_px: u32,
         start_sample: f64,
         samples_per_px: f64,
+        f_lo: f32,
+        f_hi: f32,
     ) -> Result<(), JsValue> {
-        self.draw_spec_range(canvas, dest_x, width_px, start_sample, samples_per_px, true)
+        self.draw_spec_range(
+            canvas,
+            dest_x,
+            width_px,
+            start_sample,
+            samples_per_px,
+            f_lo,
+            f_hi,
+            true,
+        )
     }
 
     /// Same as `draw_input_spectrogram_range`, for the produced output.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_output_spectrogram_range(
         &self,
         canvas: &HtmlCanvasElement,
@@ -611,10 +624,22 @@ impl WebPitchCorrector {
         width_px: u32,
         start_sample: f64,
         samples_per_px: f64,
+        f_lo: f32,
+        f_hi: f32,
     ) -> Result<(), JsValue> {
-        self.draw_spec_range(canvas, dest_x, width_px, start_sample, samples_per_px, false)
+        self.draw_spec_range(
+            canvas,
+            dest_x,
+            width_px,
+            start_sample,
+            samples_per_px,
+            f_lo,
+            f_hi,
+            false,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_spec_range(
         &self,
         canvas: &HtmlCanvasElement,
@@ -622,6 +647,8 @@ impl WebPitchCorrector {
         width_px: u32,
         start_sample: f64,
         samples_per_px: f64,
+        f_lo: f32,
+        f_hi: f32,
         input: bool,
     ) -> Result<(), JsValue> {
         if width_px == 0 {
@@ -640,6 +667,8 @@ impl WebPitchCorrector {
             samples_per_px,
             width_px as usize,
             height as usize,
+            f_lo,
+            f_hi,
             &mut a.rgba,
         );
         // ImageData rejects views into SharedArrayBuffer-backed wasm memory

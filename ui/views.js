@@ -91,11 +91,32 @@ export class PitchScale {
     constructor() {
         this.lo = SCALE_DEFAULT_LO;
         this.hi = SCALE_DEFAULT_HI;
+        this.manual = false; // user zoomed: auto-fit stands down
+    }
+
+    /** Manual vertical zoom around `yFrac` (0 = top of the view). Puts the
+     *  scale in manual mode so auto-fit stops moving it; cleared by reset(). */
+    zoomBy(factor, yFrac = 0.5) {
+        const span = Math.min(Math.max((this.hi - this.lo) * factor, 4), SCALE_ABS_HI - SCALE_ABS_LO);
+        const anchor = this.hi - yFrac * (this.hi - this.lo);
+        let hi = anchor + yFrac * span;
+        let lo = hi - span;
+        if (lo < SCALE_ABS_LO) { hi += SCALE_ABS_LO - lo; lo = SCALE_ABS_LO; }
+        if (hi > SCALE_ABS_HI) { lo -= hi - SCALE_ABS_HI; hi = SCALE_ABS_HI; }
+        this.lo = lo;
+        this.hi = hi;
+        this.manual = true;
+    }
+
+    /** Back to auto-fit (new session). */
+    reset() {
+        this.manual = false;
     }
 
     /** freqLists: iterable of Float32Arrays (Hz per hop, 0 = unvoiced).
      *  Returns true if the applied range changed (views need a repaint). */
     update(freqLists) {
+        if (this.manual) return false;
         const st = [];
         for (const list of freqLists) {
             for (const f of list) if (f > 0) st.push(freqToMidi(f));
@@ -257,7 +278,7 @@ export function drawPitchTrack(ctx, track, hopSamples, vp, color, scale) {
  * repainting the full width since lines span columns.
  * vp: {s0, spp, w, h, dpr, end} — end is the absolute data end in samples.
  */
-export function drawWaveform(ctx, fetchPeaks, vp, color, x0, x1) {
+export function drawWaveform(ctx, fetchPeaks, vp, color, x0, x1, gain = 1) {
     const { s0, spp, w, h, dpr } = vp;
     const mid = h / 2;
     const spacingCss = 1 / spp / dpr;
@@ -273,7 +294,7 @@ export function drawWaveform(ctx, fetchPeaks, vp, color, x0, x1) {
             const mn = peaks[i * 2];
             const mx = peaks[i * 2 + 1];
             if (mn === 0 && mx === 0) continue;
-            cols.push({ x: x0 + i, y0: mid - mx * mid, y1: mid - mn * mid });
+            cols.push({ x: x0 + i, y0: mid - mx * gain * mid, y1: mid - mn * gain * mid });
         }
         drawEnvelopeColumns(ctx, cols, dpr, color);
     } else {
@@ -286,7 +307,7 @@ export function drawWaveform(ctx, fetchPeaks, vp, color, x0, x1) {
         const peaks = fetchPeaks(a, b, n); // one bin per sample: min == max
         const pts = [];
         for (let j = 0; j < n; j++) {
-            pts.push({ x: (a + j - s0) / spp, y: mid - peaks[j * 2] * mid });
+            pts.push({ x: (a + j - s0) / spp, y: mid - peaks[j * 2] * gain * mid });
         }
         drawLinesAndDots(ctx, pts, spacingCss, dpr, color);
     }

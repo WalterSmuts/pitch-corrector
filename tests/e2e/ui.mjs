@@ -217,6 +217,22 @@ try {
   });
   check(cover.maxX >= cover.w - 2,
     `zoom keeps the full width covered (maxX=${cover.maxX} of ${cover.w})`);
+  // Ctrl+scroll zooms the vertical axis of the view under the cursor.
+  // On the pitch view that narrows the frequency span (and pins it manual).
+  await page.selectOption('#view-select', 'pitch');
+  const spanBefore = await page.evaluate(() => window.__scale.hi - window.__scale.lo);
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -300);
+  await page.keyboard.up('Control');
+  const vz = await page.evaluate(() => ({
+    span: window.__scale.hi - window.__scale.lo,
+    manual: window.__scale.manual,
+  }));
+  check(vz.span < spanBefore, `ctrl+scroll zooms the pitch axis (span ${spanBefore.toFixed(1)} -> ${vz.span.toFixed(1)} st)`);
+  check(vz.manual, 'manual pitch zoom overrides auto-fit');
+  await page.selectOption('#view-select', 'waveform');
+
   await page.click('.tl-zoom-btn:nth-child(3)'); // restore Fit
 
   // --- Transport: play, progress advances, pause holds ---

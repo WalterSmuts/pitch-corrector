@@ -140,8 +140,11 @@ impl SpectrogramRenderer {
     /// Render `width` columns × `height` rows into `rgba` (row-major RGBA,
     /// resized to `width * height * 4`). Column `x` shows the FFT of a
     /// window centered at `start_sample + (x + 0.5) * samples_per_px`.
-    /// The y axis is log-frequency, highest at the top, matching the
-    /// original display. Out-of-range samples are treated as silence.
+    /// The y axis is log-frequency, highest at the top; `f_lo..f_hi`
+    /// (fractions of the full log-frequency axis, 0 = lowest bin,
+    /// 1 = Nyquist) select the vertical window, so the UI can zoom the
+    /// frequency axis. Out-of-range samples are treated as silence.
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         samples: &[f32],
@@ -149,6 +152,8 @@ impl SpectrogramRenderer {
         samples_per_px: f64,
         width: usize,
         height: usize,
+        f_lo: f32,
+        f_hi: f32,
         rgba: &mut Vec<u8>,
     ) {
         rgba.clear();
@@ -178,7 +183,8 @@ impl SpectrogramRenderer {
 
             for y in 0..height {
                 let t = 1.0 - (y as f32 / height as f32);
-                let bin_f = (log_min + t * (log_max - log_min)).exp();
+                let tt = f_lo + t * (f_hi - f_lo);
+                let bin_f = (log_min + tt * (log_max - log_min)).exp();
                 let bin_lo = (bin_f as usize).min(num_bins - 2);
                 let frac = bin_f - bin_lo as f32;
                 let mag_lo = bins[bin_lo].norm();
@@ -292,9 +298,9 @@ mod tests {
         let mut r = SpectrogramRenderer::new();
         let mut rgba = Vec::new();
         // Two columns: one centered in the tone, one far past the end (silence).
-        r.render(&samples, 12_000.0, 1.0, 1, 64, &mut rgba);
+        r.render(&samples, 12_000.0, 1.0, 1, 64, 0.0, 1.0, &mut rgba);
         let tone_energy: u32 = rgba.iter().step_by(4).map(|&v| v as u32).sum();
-        r.render(&samples, 500_000.0, 1.0, 1, 64, &mut rgba);
+        r.render(&samples, 500_000.0, 1.0, 1, 64, 0.0, 1.0, &mut rgba);
         let silence_energy: u32 = rgba.iter().step_by(4).map(|&v| v as u32).sum();
         assert!(
             tone_energy > silence_energy,
