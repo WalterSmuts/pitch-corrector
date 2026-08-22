@@ -43,6 +43,9 @@ const timeline = new Timeline($('timeline'), {
         { id: 'output', label: 'Output', views: ['waveform', 'pitch', 'spectrogram'], view: 'waveform' },
     ],
     renderTrack,
+    // Spectrogram columns cost an FFT each; budget them per frame so big
+    // repaints stay off the long-task radar. Other views are cheap.
+    renderBudget: (t) => t.view === 'spectrogram' ? 128 : Infinity,
     onSeek: seekTo,
     onViewChange: () => updatePostCorrectionVisibility(),
     onTrackDrag: contourDrag,

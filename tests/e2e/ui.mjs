@@ -154,6 +154,26 @@ try {
   await page.selectOption('#view-select', 'spectrogram');
   check(await probe(1, 'hot') > 500, 'un-split re-unifies views (output spectrogram)');
 
+  // Zooming must keep the full width covered: the old content serves as a
+  // stretch-blit placeholder while the exact repaint refines progressively
+  // (regression: continuous zooming showed only the first ~quarter).
+  await sleep(400); // let the fit spectrogram finish its progressive fill
+  const specBox = await page.locator('.tl-track-canvas').nth(1).boundingBox();
+  await page.mouse.move(specBox.x + specBox.width / 2, specBox.y + specBox.height / 2);
+  await page.mouse.wheel(0, -300);
+  const cover = await page.evaluate(() => {
+    const c = document.querySelectorAll('.tl-track-canvas')[1];
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let maxX = -1;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i] + d[i + 1] + d[i + 2] > 90) maxX = Math.max(maxX, (i / 4) % c.width);
+    }
+    return { maxX, w: c.width };
+  });
+  check(cover.maxX >= cover.w - 2,
+    `zoom keeps the full width covered (maxX=${cover.maxX} of ${cover.w})`);
+  await page.click('.tl-zoom-btn:nth-child(3)'); // restore Fit
+
   // --- Transport: play, progress advances, pause holds ---
   await page.click('#play-btn');
   await page.waitForFunction(() => document.getElementById('status').textContent.includes('Playing'));

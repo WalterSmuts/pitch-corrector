@@ -277,19 +277,35 @@ export class Timeline {
         const r = t.rendered;
         const end = Math.min(dataEnd, this.s0 + vp.w * spp);
 
-        // Budget per frame: spectrogram columns cost an FFT each, so a full
-        // repaint of a long recording is spread over a few frames (the
-        // watermark resumes where the previous frame stopped) instead of
-        // blocking the main thread.
-        const MAX_COLS = 128;
+        // Budget per frame: views declare their per-column cost (spectrogram
+        // columns cost an FFT each); a full repaint of a long recording is
+        // spread over a few frames (the watermark resumes where the previous
+        // frame stopped) instead of blocking the main thread.
+        const budget = this.opts.renderBudget?.(t) ?? Infinity;
 
         let x0, x1;
         if (!r || r.spp !== spp || r.view !== t.view) {
-            // Zoom/view change: background-fill now (cheap), then repaint
-            // data columns progressively from the left.
             const ctx = t.canvas.getContext('2d');
-            ctx.fillStyle = 'rgb(10,10,20)'; // matches the views' background
-            ctx.fillRect(0, 0, vp.w, vp.h);
+            if (r && r.view === t.view && r.spp !== spp) {
+                // Zoom change: stretch-blit the old content as an instant
+                // full-width placeholder (its samples [r.s0, r.s0 + w*r.spp]
+                // mapped into the new viewport), then let the exact repaint
+                // refine it progressively. Without this, continuous zooming
+                // restarts the budgeted repaint every tick and only the
+                // first batches are ever visible.
+                const dst0 = (r.s0 - this.s0) / spp;
+                const dst1 = (r.s0 + vp.w * r.spp - this.s0) / spp;
+                ctx.fillStyle = 'rgb(10,10,20)';
+                if (dst0 > 0) ctx.fillRect(0, 0, dst0, vp.h);
+                if (dst1 < vp.w) ctx.fillRect(dst1, 0, vp.w - dst1, vp.h);
+                if (dst1 > 0 && dst0 < vp.w) {
+                    ctx.drawImage(t.canvas, 0, 0, vp.w, vp.h, dst0, 0, dst1 - dst0, vp.h);
+                }
+            } else {
+                // View change / first paint: background-fill, no placeholder.
+                ctx.fillStyle = 'rgb(10,10,20)';
+                ctx.fillRect(0, 0, vp.w, vp.h);
+            }
             x0 = 0;
             x1 = Math.max(0, Math.min(vp.w, Math.ceil((end - this.s0) / spp)));
         } else if (r.s0 === this.s0 && r.end >= end) {
@@ -315,8 +331,8 @@ export class Timeline {
                 x1 = dxPx > 0 ? vp.w : Math.max(0, Math.min(vp.w, dataEndX));
             }
         }
-        const truncated = x1 > x0 + MAX_COLS;
-        x1 = Math.min(x1, x0 + MAX_COLS);
+        const truncated = x1 > x0 + budget;
+        x1 = Math.min(x1, x0 + budget);
         if (x0 < x1) this.opts.renderTrack(t, t.canvas, vp, x0, x1);
         // Watermark reflects what was actually rendered so the next frame
         // resumes from there.
