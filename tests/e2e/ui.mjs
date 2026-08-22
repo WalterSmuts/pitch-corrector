@@ -228,6 +228,19 @@ try {
   check(uploaded === 192000, `upload decoded the full WAV (${uploaded} samples)`);
   check(await probe(0, 'hot') > 500, 'uploaded audio rendered to the input track');
 
+  // --- Reload: restored form values must drive the actual state ---
+  // (Browsers restore control values across reloads; the dropdown said
+  // "Pitch" while the tracks still rendered the waveform default.)
+  await page.selectOption('#view-select', 'pitch');
+  await page.reload({ waitUntil: 'load' });
+  await page.waitForFunction(() => window.__tl, { timeout: 10000 });
+  const restored = await page.evaluate(() => ({
+    sel: document.getElementById('view-select').value,
+    view: window.__tl.getTrack('input').view,
+  }));
+  check(restored.sel === restored.view,
+    `after reload the dropdown and the actual view agree ("${restored.sel}" vs "${restored.view}")`);
+
   // --- No uncaught errors anywhere in the session ---
   check(underruns < 20, `no underrun log runaway (${underruns} warnings all session)`);
   const fatal = errors.filter(e => !/favicon/.test(e));

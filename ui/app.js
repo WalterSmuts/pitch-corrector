@@ -75,7 +75,6 @@ splitCb.addEventListener('change', () => {
     viewSelect.disabled = splitCb.checked;
     if (!splitCb.checked) applySharedView(); // re-unify on un-split
 });
-timeline.showTrackSelectors(false);
 
 function renderTrack(track, canvas, vp, x0, x1) {
     const isInput = track.id === 'input';
@@ -438,10 +437,13 @@ $('root-select').addEventListener('change', applyScale);
 
 const slider = $('shift-slider');
 const shiftDisplay = $('shift-display');
-slider.addEventListener('input', () => {
+function updateShiftDisplay() {
     const v = parseFloat(slider.value);
     shiftDisplay.textContent = (v >= 0 ? '+' : '') + v + ' st';
-    if (corrector) corrector.set_shift(v);
+}
+slider.addEventListener('input', () => {
+    updateShiftDisplay();
+    if (corrector) corrector.set_shift(parseFloat(slider.value));
 });
 
 // --- Post-correction ---
@@ -528,7 +530,18 @@ async function uploadRecording(file) {
     setState('stopped');
 }
 
-// --- Boot: gate on browser support, then pre-warm the audio engine ---
+// --- Boot ---
+
+// Browsers restore form-control values across reloads (the dropdown can
+// say "Pitch" while the tracks still render the waveform default): adopt
+// whatever the DOM says as the initial state instead of assuming defaults.
+els.postCorrectionCb.checked = false; // session-bound; never restorable
+updateShiftDisplay();
+timeline.showTrackSelectors(splitCb.checked);
+viewSelect.disabled = splitCb.checked;
+if (!splitCb.checked) applySharedView();
+
+// Gate on browser support, then pre-warm the audio engine.
 
 (async function prewarm() {
     const missing = checkBrowserSupport();
