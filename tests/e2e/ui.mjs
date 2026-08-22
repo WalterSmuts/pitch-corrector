@@ -379,6 +379,18 @@ try {
   );
   await page.uncheck('#post-correction-cb');
 
+  // --- Spectral freeze: hold h to sustain the frame under the playhead ---
+  // (Sound quality is covered by the native spectral_freeze test; here we
+  // check the gating and lifecycle.)
+  await track.click({ position: { x: box.width * 0.5, y: box.height / 2 } }); // park the cursor mid-recording
+  await page.keyboard.down('h');
+  await sleep(200);
+  check(await page.evaluate(() => window.__pc.is_freezing()), 'holding h engages the freeze');
+  await page.keyboard.up('h');
+  check(await page.evaluate(() => !window.__pc.is_freezing()), 'releasing h stops the freeze');
+  const rejected = await page.evaluate(() => window.__pc.start_freeze(0)); // too close to the edge
+  check(!rejected, 'freeze refuses positions without enough context');
+
   // --- Transport: play, progress advances, pause holds ---
   await page.click('#play-btn');
   await page.waitForFunction(() =>

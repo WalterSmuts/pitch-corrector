@@ -684,6 +684,137 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
     }
 }
 
+/// Spectral freeze: sustain the sound at one instant indefinitely.
+///
+/// Built from two overlapping analysis frames around a position in a
+/// recording: per bin we keep the magnitude and the measured instantaneous
+/// frequency (phase velocity), then synthesize hop after hop by advancing
+/// each bin's phase at that velocity — the phase-vocoder synthesis step with
+/// the analysis clock stopped. Pull samples with `next_sample()`; the OLA
+/// windowing fades the first frame in from silence, so starting is
+/// click-free by construction.
+pub struct SpectralFreeze {
+    magnitudes: Vec<f32>,
+    /// Per-hop phase advance per bin (radians).
+    phase_velocity: Vec<f32>,
+    /// Current synthesis phase per bin.
+    phases: Vec<f32>,
+    window: Vec<f32>,
+    spectrum: DynRealDft<f32>,
+    ifft_output: Vec<f32>,
+    /// Overlap-add accumulator; the front HOP_SIZE samples are ready.
+    accum: Vec<f32>,
+    /// Read cursor into the current hop's ready samples.
+    cursor: usize,
+}
+
+impl SpectralFreeze {
+    /// Analyze the `BUFFER_SIZE + HOP_SIZE` samples centered on `position`
+    /// in `samples`. Returns `None` when there is not enough audio around
+    /// the position.
+    pub fn new(samples: &[f32], position: usize) -> Option<Self> {
+        let need = BUFFER_SIZE + HOP_SIZE;
+        let start = position.checked_sub(need / 2)?;
+        if start + need > samples.len() {
+            return None;
+        }
+        let window: Vec<f32> = apodize::hanning_iter(BUFFER_SIZE)
+            .map(|w| w as f32)
+            .collect();
+
+        let fft_at = |offset: usize| -> DynRealDft<f32> {
+            let frame: Vec<f32> = samples[start + offset..start + offset + BUFFER_SIZE]
+                .iter()
+                .zip(&window)
+                .map(|(s, w)| s * w)
+                .collect();
+            frame.real_fft()
+        };
+        let a = fft_at(0);
+        let b = fft_at(HOP_SIZE);
+
+        let bins_a = a.get_frequency_bins();
+        let bins_b = b.get_frequency_bins();
+        let num_bins = bins_a.len();
+        let expected = |k: usize| {
+            std::f32::consts::TAU * (k + 1) as f32 * HOP_SIZE as f32 / BUFFER_SIZE as f32
+        };
+
+        let mut magnitudes = vec![0.0; num_bins];
+        let mut phase_velocity = vec![0.0; num_bins];
+        let mut phases = vec![0.0; num_bins];
+        for k in 0..num_bins {
+            magnitudes[k] = bins_b[k].norm();
+            phases[k] = bins_b[k].arg();
+            // Instantaneous frequency: expected advance for this bin plus the
+            // wrapped deviation actually measured between the two frames.
+            let mut dev = bins_b[k].arg() - bins_a[k].arg() - expected(k);
+            dev = dev.rem_euclid(std::f32::consts::TAU);
+            if dev > std::f32::consts::PI {
+                dev -= std::f32::consts::TAU;
+            }
+            phase_velocity[k] = expected(k) + dev;
+        }
+
+        let spectrum = a; // reuse as synthesis scratch (same size/offset kind)
+        Some(SpectralFreeze {
+            magnitudes,
+            phase_velocity,
+            phases,
+            window,
+            spectrum,
+            ifft_output: vec![0.0; BUFFER_SIZE],
+            accum: vec![0.0; BUFFER_SIZE],
+            cursor: HOP_SIZE, // force a synthesis hop on the first pull
+        })
+    }
+
+    /// Next sample of the sustained sound. Alloc-free.
+    pub fn next_sample(&mut self) -> f32 {
+        if self.cursor >= HOP_SIZE {
+            self.synthesize_hop();
+            self.cursor = 0;
+        }
+        let s = self.accum[self.cursor];
+        self.cursor += 1;
+        s
+    }
+
+    fn synthesize_hop(&mut self) {
+        // Advance every bin's phase by one hop at its own velocity.
+        for (p, v) in self.phases.iter_mut().zip(&self.phase_velocity) {
+            *p = (*p + v).rem_euclid(std::f32::consts::TAU);
+        }
+        *self.spectrum.get_offset_mut() = 0.0;
+        for (bin, (m, p)) in self
+            .spectrum
+            .get_frequency_bins_mut()
+            .iter_mut()
+            .zip(self.magnitudes.iter().zip(&self.phases))
+        {
+            *bin = Complex::from_polar(*m, *p);
+        }
+        self.spectrum.real_ifft_using(&mut self.ifft_output);
+
+        // Shift the accumulator left by one hop and overlap-add the new
+        // frame. The magnitudes already carry the analysis Hann; one more
+        // synthesis Hann makes Hann² whose 75%-overlap sum is 1.5, exactly
+        // like the vocoder (IFFT is unnormalized, hence / BUFFER_SIZE).
+        self.accum.copy_within(HOP_SIZE.., 0);
+        for s in &mut self.accum[BUFFER_SIZE - HOP_SIZE..] {
+            *s = 0.0;
+        }
+        let norm = BUFFER_SIZE as f32 * 1.5;
+        for (acc, (s, w)) in self
+            .accum
+            .iter_mut()
+            .zip(self.ifft_output.iter().zip(&self.window))
+        {
+            *acc += s * w / norm;
+        }
+    }
+}
+
 impl<F: Fn(&[f32]) -> f32 + Send + Sync> StreamProcessor for PhaseVocoderPitchShifter<F> {
     fn push_sample(&self, sample: f32) {
         if self.input_buffer.push(sample).is_err() {
@@ -1105,6 +1236,59 @@ fn parabolic_interpolation(cmnd: &[f32], tau: usize) -> f32 {
 }
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn spectral_freeze_sustains_the_frame() {
+        let sr = 44_100.0;
+        let freq = 220.0;
+        // A tone with a couple of harmonics, like a voice.
+        let samples: Vec<f32> = (0..sr as usize)
+            .map(|i| {
+                let t = i as f32 / sr;
+                (std::f32::consts::TAU * freq * t).sin() * 0.4
+                    + (std::f32::consts::TAU * 2.0 * freq * t).sin() * 0.15
+            })
+            .collect();
+
+        let mut freeze = SpectralFreeze::new(&samples, samples.len() / 2).unwrap();
+        // Skip the OLA fade-in, then take two seconds of sustain.
+        for _ in 0..BUFFER_SIZE {
+            freeze.next_sample();
+        }
+        let mut out = vec![0.0f32; 2 * sr as usize];
+        assert_no_alloc::assert_no_alloc(|| {
+            for s in out.iter_mut() {
+                *s = freeze.next_sample();
+            }
+        });
+
+        // Pitch is preserved.
+        let mut yin = YinPitchDetector::new();
+        let detected = yin.detect(&out[..BUFFER_SIZE]).expect("freeze is voiced");
+        assert!(
+            (detected - freq).abs() < 3.0,
+            "freeze should sustain {freq}Hz, detected {detected}Hz"
+        );
+
+        // Amplitude is stable: RMS of the first and last half agree, and is
+        // in the ballpark of the source (windowing/OLA scaling correct).
+        let rms = |x: &[f32]| (x.iter().map(|s| s * s).sum::<f32>() / x.len() as f32).sqrt();
+        let (a, b) = out.split_at(out.len() / 2);
+        let (ra, rb) = (rms(a), rms(b));
+        let source_rms = rms(&samples);
+        assert!(
+            (ra / rb - 1.0).abs() < 0.05,
+            "sustain should not decay or grow (first {ra:.4} vs last {rb:.4})"
+        );
+        assert!(
+            ra > source_rms * 0.5 && ra < source_rms * 2.0,
+            "freeze level should be near the source ({ra:.4} vs {source_rms:.4})"
+        );
+
+        // Not enough context near the edges: refuse, don't panic.
+        assert!(SpectralFreeze::new(&samples, 10).is_none());
+        assert!(SpectralFreeze::new(&samples, samples.len() - 10).is_none());
+    }
     use super::*;
 
     const TEST_SAMPLE_SIZE: usize = BUFFER_SIZE * 10;

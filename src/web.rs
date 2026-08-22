@@ -1,7 +1,7 @@
 use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::pitch_correction::{Harmonizer, PitchCorrector, PitchCorrectorControls};
 use crate::session::{waveform_peaks, PitchTrack, SpectrogramRenderer, PITCH_HOP, SPEC_WINDOW};
-use crate::signal_processing::{StreamProcessor, BUFFER_SIZE, HOP_SIZE};
+use crate::signal_processing::{SpectralFreeze, StreamProcessor, BUFFER_SIZE, HOP_SIZE};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::DynRealFft;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -85,6 +85,13 @@ struct PlaybackState {
     /// since the last (re)start of a feed; underruns before that are the
     /// expected warm-up gap, not a problem worth logging.
     pipeline_primed: AtomicBool,
+    /// Spectral-freeze audition (hold a key to sustain the frame under the
+    /// playhead). The synth is installed by the UI thread and consumed by
+    /// the output callback, which takes priority over the pipeline while
+    /// `freeze_active` (with a short gain ramp so start/stop are
+    /// click-free). Never recorded — it is an audition, not timeline data.
+    freeze: Mutex<Option<SpectralFreeze>>,
+    freeze_active: AtomicBool,
 }
 
 /// Main-thread analysis state: mirrors of the shared recordings plus
@@ -228,6 +235,8 @@ impl WebPitchCorrector {
             output_started: AtomicBool::new(false),
             monitor: AtomicBool::new(false),
             pipeline_primed: AtomicBool::new(false),
+            freeze: Mutex::new(None),
+            freeze_active: AtomicBool::new(false),
         });
 
         let input_playback = playback.clone();
@@ -254,6 +263,10 @@ impl WebPitchCorrector {
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
 
         let output_playback = playback.clone();
+        // Freeze-audition gain (f32 bits) and its ~5ms one-pole coefficient,
+        // owned by the output callback.
+        let freeze_gain = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let freeze_gain_alpha = 1.0 - (-1.0 / (0.005 * sample_rate)).exp();
         // Underruns are expected while the pipeline warms up (the vocoder
         // needs a full window of input before it emits anything) and when
         // nothing is feeding the pipeline; only warn about gaps after the
@@ -267,6 +280,30 @@ impl WebPitchCorrector {
                     output_playback
                         .output_started
                         .store(true, Ordering::Relaxed);
+
+                    // Freeze audition: synthesize directly, bypassing the
+                    // pipeline. Only reachable when neither recording nor
+                    // playing (the UI gates it), so nothing else needs the
+                    // buffer. Gain ramps ~5ms both ways; after the release
+                    // ramp finishes we fall through to the normal path.
+                    {
+                        let active = output_playback.freeze_active.load(Ordering::Relaxed);
+                        let mut gain = f32::from_bits(freeze_gain.load(Ordering::Relaxed));
+                        if active || gain > 1e-4 {
+                            if let Ok(mut fz) = output_playback.freeze.try_lock() {
+                                if let Some(fz) = fz.as_mut() {
+                                    let target = if active { 1.0 } else { 0.0 };
+                                    for frame in data.chunks_exact_mut(output_channels) {
+                                        gain += freeze_gain_alpha * (target - gain);
+                                        frame.fill(fz.next_sample() * gain);
+                                    }
+                                    freeze_gain.store(gain.to_bits(), Ordering::Relaxed);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+
                     let fed = output_playback.playing.load(Ordering::Relaxed)
                         || output_playback.input_active.load(Ordering::Relaxed);
                     let frames = data.len() / output_channels;
@@ -444,6 +481,37 @@ impl WebPitchCorrector {
     /// Diatonic (walk the selected scale) vs absolute (fixed semitones).
     pub fn set_harmony_in_key(&self, in_key: bool) {
         self.pipeline.controls.set_harmony_in_key(in_key);
+    }
+
+    /// Sustain the sound at `position` (samples on the output timeline)
+    /// using a spectral freeze — hold-a-key audition. Only meaningful while
+    /// stopped or paused; returns false if that doesn't hold or there is
+    /// not enough audio around the position.
+    pub fn start_freeze(&self, position: f64) -> bool {
+        if self.playback.playing.load(Ordering::Relaxed)
+            || self.playback.input_active.load(Ordering::Relaxed)
+        {
+            return false;
+        }
+        let a = self.analysis.lock().unwrap();
+        match SpectralFreeze::new(&a.output_samples, position.max(0.0) as usize) {
+            Some(fz) => {
+                *spin_lock(&self.playback.freeze) = Some(fz);
+                self.playback.freeze_active.store(true, Ordering::Relaxed);
+                let _ = self.output_stream.play();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Release the freeze; the callback ramps it out click-free.
+    pub fn stop_freeze(&self) {
+        self.playback.freeze_active.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_freezing(&self) -> bool {
+        self.playback.freeze_active.load(Ordering::Relaxed)
     }
 
     /// Audible live passthrough while recording (default off). Playback is

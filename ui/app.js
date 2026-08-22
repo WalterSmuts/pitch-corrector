@@ -332,6 +332,9 @@ requestAnimationFrame(loop);
 // --- Transport state machine ---
 
 function setState(newState) {
+    if (corrector && corrector.is_freezing() && newState !== 'stopped' && newState !== 'paused') {
+        corrector.stop_freeze();
+    }
     state = newState;
     const s = {
         idle: 'Click Record to begin',
@@ -532,14 +535,31 @@ els.playBtn.addEventListener('click', () => {
     else if (state === 'stopped' || state === 'paused') startPlayback();
 });
 window.addEventListener('keydown', (e) => {
-    if (e.code !== 'Space' || e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT')
-        return;
-    if (state === 'playing') {
+    if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
+    if (e.code === 'Space') {
+        if (state === 'playing') {
+            e.preventDefault();
+            pausePlayback();
+        } else if (state === 'stopped' || state === 'paused') {
+            e.preventDefault();
+            startPlayback();
+        }
+    } else if (e.code === 'KeyH' && !e.repeat) {
+        // Hold h: spectral-freeze audition of the frame under the playhead.
+        if (!corrector || totalSamples === 0) return;
+        if (state !== 'stopped' && state !== 'paused') return;
         e.preventDefault();
-        pausePlayback();
-    } else if (state === 'stopped' || state === 'paused') {
-        e.preventDefault();
-        startPlayback();
+        const pos = corrector.playback_progress() * totalSamples;
+        if (corrector.start_freeze(pos)) {
+            els.status.textContent =
+                '❄ Sustaining the frame under the playhead (release h to stop)';
+        }
+    }
+});
+window.addEventListener('keyup', (e) => {
+    if (e.code === 'KeyH' && corrector && corrector.is_freezing()) {
+        corrector.stop_freeze();
+        setState(state); // restore the state's status line
     }
 });
 
