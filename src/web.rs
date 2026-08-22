@@ -1,11 +1,9 @@
 use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::pitch_correction::{PitchCorrector, PitchCorrectorControls};
 use crate::session::{waveform_peaks, PitchTrack, SpectrogramRenderer, PITCH_HOP, SPEC_WINDOW};
-use crate::signal_processing::{
-    compose, DisplayProcessor, StreamProcessor, YinPitchDetector, BUFFER_SIZE, SPECTROGRAM_SIZE,
-};
+use crate::signal_processing::{StreamProcessor, BUFFER_SIZE};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
+use easyfft::dyn_size::realfft::DynRealFft;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
@@ -20,7 +18,6 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 pub fn warmup() {
     // Prime the real-FFT planner caches for all sizes the app uses.
     let _ = vec![0.0f32; BUFFER_SIZE].real_fft();
-    let _ = vec![0.0f32; SPECTROGRAM_SIZE].real_fft();
     let _ = vec![0.0f32; SPEC_WINDOW].real_fft();
     // Run a few silent hops through a throwaway corrector so the phase
     // vocoder's plans/scratch and the OLA buffers are all allocated/primed.
@@ -30,17 +27,6 @@ pub fn warmup() {
         while corrector.pop_sample().is_some() {}
     }
 }
-
-// Pre-computed RGB strings for heatmap: avoids format!() per pixel
-static HEATMAP_LUT: std::sync::LazyLock<[String; 256]> = std::sync::LazyLock::new(|| {
-    std::array::from_fn(|i| {
-        let (r, g, b) = heatmap(i as u8);
-        format!("rgb({r},{g},{b})")
-    })
-});
-
-static GRID_ALPHA_STRONG: &str = "rgba(255,255,255,0.3)";
-static GRID_ALPHA_WEAK: &str = "rgba(255,255,255,0.1)";
 
 /// Lock a mutex shared with the audio threads without ever blocking on a
 /// futex: `Mutex::lock` calls `Atomics.wait` under contention, which throws
@@ -56,75 +42,19 @@ fn spin_lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     }
 }
 
-/// Pre-allocated scratch buffers for zero-alloc drawing
-struct DrawState {
-    spec_scratch: Vec<f32>,
-    spec_spectrum: DynRealDft<f32>,
-    contour_scratch: Vec<f32>,
-    output_detector: YinPitchDetector,
-    input_detector: YinPitchDetector,
-}
-
-/// Audio processing pipeline, independent of audio I/O.
+/// The DSP chain plus its control handle, independent of audio I/O.
 pub struct Pipeline {
     processor: Arc<dyn StreamProcessor + Send + Sync>,
-    spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    contour_buffer: Arc<Mutex<[f32; BUFFER_SIZE]>>,
-    input_spectrogram_buffer: Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    input_contour_buffer: Arc<Mutex<[f32; BUFFER_SIZE]>>,
     controls: Arc<PitchCorrectorControls>,
-    draw_state: Mutex<DrawState>,
-}
-
-impl Default for Pipeline {
-    fn default() -> Self {
-        // Native default rate; headless callers (tests) use this.
-        Self::new(44_100.0)
-    }
 }
 
 impl Pipeline {
     pub fn new(sample_rate: f32) -> Self {
-        let spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
-        let spectrogram_buffer = spectrogram_display.clone_display_buffer();
-
-        let contour_display: DisplayProcessor<BUFFER_SIZE> = DisplayProcessor::new();
-        let contour_buffer = contour_display.clone_display_buffer();
-
-        let input_contour_display: DisplayProcessor<BUFFER_SIZE> = DisplayProcessor::new();
-        let input_contour_buffer = input_contour_display.clone_display_buffer();
-
-        let input_spectrogram_display: DisplayProcessor<SPECTROGRAM_SIZE> = DisplayProcessor::new();
-        let input_spectrogram_buffer = input_spectrogram_display.clone_display_buffer();
-
         let corrector = PitchCorrector::with_sample_rate(sample_rate);
         let controls = corrector.controls();
-
-        let processor: Arc<dyn StreamProcessor + Send + Sync> = Arc::new(compose(
-            input_contour_display,
-            compose(
-                input_spectrogram_display,
-                compose(corrector, compose(contour_display, spectrogram_display)),
-            ),
-        ));
-
-        let spec_scratch = vec![0.0f32; SPECTROGRAM_SIZE];
-        let spec_spectrum = spec_scratch.real_fft();
-
         Pipeline {
-            processor,
-            spectrogram_buffer,
-            contour_buffer,
-            input_spectrogram_buffer,
-            input_contour_buffer,
+            processor: Arc::new(corrector),
             controls,
-            draw_state: Mutex::new(DrawState {
-                spec_scratch,
-                spec_spectrum,
-                contour_scratch: vec![0.0f32; BUFFER_SIZE],
-                output_detector: YinPitchDetector::with_sample_rate(sample_rate),
-                input_detector: YinPitchDetector::with_sample_rate(sample_rate),
-            }),
         }
     }
 
@@ -134,14 +64,6 @@ impl Pipeline {
 
     pub fn controls(&self) -> &Arc<PitchCorrectorControls> {
         &self.controls
-    }
-
-    /// Push samples through the pipeline without audio I/O.
-    pub fn push_samples(&self, samples: &[f32]) {
-        for &s in samples {
-            self.processor.push_sample(s);
-            while self.processor.pop_sample().is_some() {}
-        }
     }
 }
 
@@ -689,266 +611,5 @@ impl WebPitchCorrector {
             .ok_or_else(|| JsValue::from_str("no 2d context"))?
             .dyn_into()?;
         ctx.put_image_data(&img, dest_x as f64, 0.0)
-    }
-
-    pub fn draw_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        let mut ds = self.pipeline.draw_state.lock().unwrap();
-        draw_spectrogram_from(canvas, column_x, &self.pipeline.spectrogram_buffer, &mut ds);
-    }
-
-    pub fn draw_input_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        let mut ds = self.pipeline.draw_state.lock().unwrap();
-        draw_spectrogram_from(
-            canvas,
-            column_x,
-            &self.pipeline.input_spectrogram_buffer,
-            &mut ds,
-        );
-    }
-    pub fn draw_pitch_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        let ds = &mut *self.pipeline.draw_state.lock().unwrap();
-        draw_contour(
-            canvas,
-            column_x,
-            &self.pipeline.contour_buffer,
-            "rgb(50,255,120)",
-            &mut ds.output_detector,
-            &mut ds.contour_scratch,
-        );
-    }
-
-    pub fn draw_input_contour(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        let ds = &mut *self.pipeline.draw_state.lock().unwrap();
-        draw_contour(
-            canvas,
-            column_x,
-            &self.pipeline.input_contour_buffer,
-            "rgb(255,150,50)",
-            &mut ds.input_detector,
-            &mut ds.contour_scratch,
-        );
-    }
-
-    pub fn draw_waveform(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_waveform_from(
-            canvas,
-            column_x,
-            &self.pipeline.spectrogram_buffer,
-            "rgb(50,255,120)",
-        );
-    }
-
-    pub fn draw_input_waveform(&self, canvas: &HtmlCanvasElement, column_x: f32) {
-        draw_waveform_from(
-            canvas,
-            column_x,
-            &self.pipeline.input_spectrogram_buffer,
-            "rgb(255,150,50)",
-        );
-    }
-}
-
-fn draw_spectrogram_from(
-    canvas: &HtmlCanvasElement,
-    column_x: f32,
-    buffer: &Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    ds: &mut DrawState,
-) {
-    let ctx: CanvasRenderingContext2d = canvas
-        .get_context("2d")
-        .unwrap()
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-
-    let height = canvas.height() as usize;
-
-    // Item 2: copy into pre-allocated scratch instead of .to_vec()
-    {
-        let buf = buffer.lock().unwrap();
-        ds.spec_scratch.copy_from_slice(&*buf);
-    }
-
-    let len = ds.spec_scratch.len() as f32;
-    for (i, sample) in ds.spec_scratch.iter_mut().enumerate() {
-        let w = 0.5 * (1.0 - (std::f32::consts::TAU * i as f32 / len).cos());
-        *sample *= w;
-    }
-
-    // Item 3: in-place FFT using pre-allocated spectrum
-    ds.spec_scratch.real_fft_using(&mut ds.spec_spectrum);
-    let bins = ds.spec_spectrum.get_frequency_bins();
-    let num_bins = bins.len();
-
-    let min_bin = 1.0f32;
-    let max_bin = num_bins as f32;
-    let log_min = min_bin.ln();
-    let log_max = max_bin.ln();
-
-    for y_pixel in 0..height {
-        let t = 1.0 - (y_pixel as f32 / height as f32);
-        let log_bin = log_min + t * (log_max - log_min);
-        let bin_f = log_bin.exp();
-        let bin_lo = (bin_f as usize).min(num_bins - 2);
-        let bin_hi = bin_lo + 1;
-        let frac = bin_f - bin_lo as f32;
-
-        let mag_lo = bins[bin_lo].norm();
-        let mag_hi = bins[bin_hi].norm();
-        let mut mag = (mag_lo * (1.0 - frac) + mag_hi * frac) / SPECTROGRAM_SIZE as f32;
-        mag *= bin_f.sqrt();
-
-        let power = mag * mag;
-        let db = if power > 1e-20 {
-            10.0 * power.log10()
-        } else {
-            -100.0
-        };
-        let intensity = ((db + 100.0) * (255.0 / 80.0)).clamp(0.0, 255.0) as u8;
-
-        // Item 1: pre-computed RGB string lookup instead of format!()
-        ctx.set_fill_style_str(&HEATMAP_LUT[intensity as usize]);
-        ctx.fill_rect(column_x as f64, y_pixel as f64, 1.0, 1.0);
-    }
-}
-
-fn draw_contour(
-    canvas: &HtmlCanvasElement,
-    column_x: f32,
-    buffer: &Arc<Mutex<[f32; BUFFER_SIZE]>>,
-    color: &str,
-    detector: &mut YinPitchDetector,
-    scratch: &mut Vec<f32>,
-) {
-    let ctx: CanvasRenderingContext2d = canvas
-        .get_context("2d")
-        .unwrap()
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-
-    let height = canvas.height() as f32;
-
-    // Item 2: copy into pre-allocated scratch instead of .to_vec()
-    {
-        let buf = buffer.lock().unwrap();
-        scratch.resize(buf.len(), 0.0);
-        scratch.copy_from_slice(&*buf);
-    }
-
-    // Item 4: reuse detector instead of YinPitchDetector::new()
-    let pitch = detector.detect(scratch);
-
-    // Background
-    ctx.set_fill_style_str("rgb(10,10,20)");
-    ctx.fill_rect(column_x as f64, 0.0, 2.0, height as f64);
-
-    // Semitone grid lines (2 octaves)
-    for semitone in 0..24 {
-        let y = height * (1.0 - semitone as f32 / 24.0);
-        let note = semitone % 12;
-        let alpha_str = if note == 0 || note == 4 || note == 7 {
-            GRID_ALPHA_STRONG
-        } else {
-            GRID_ALPHA_WEAK
-        };
-        ctx.set_stroke_style_str(alpha_str);
-        ctx.begin_path();
-        ctx.move_to(column_x as f64, y as f64);
-        ctx.line_to((column_x + 2.0) as f64, y as f64);
-        ctx.stroke();
-    }
-
-    // Persistent note labels — every 2 semitones for even spacing
-    let note_names = [
-        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
-    ];
-    ctx.set_fill_style_str("rgb(10,10,20)");
-    ctx.fill_rect(0.0, 0.0, 30.0, height as f64);
-    ctx.set_fill_style_str("rgba(255,255,255,0.7)");
-    ctx.set_font("10px monospace");
-    for semitone in (0..24).step_by(2) {
-        let y = height * (1.0 - semitone as f32 / 24.0);
-        let _ = ctx.fill_text(note_names[semitone % 12], 4.0, (y - 2.0) as f64);
-    }
-
-    // Detected pitch wrapped to two octaves
-    if let Some(freq) = pitch {
-        let semitones_from_a4 = 12.0 * (freq / 440.0).log2();
-        let semitone_in_octave = (semitones_from_a4 + 57.0).rem_euclid(24.0);
-        let y = height * (1.0 - semitone_in_octave / 24.0);
-        ctx.set_fill_style_str(color);
-        ctx.begin_path();
-        let _ = ctx.arc(
-            (column_x + 1.0) as f64,
-            y as f64,
-            // Keep in sync with the JS edited-contour dot radius in index.html.
-            1.5,
-            0.0,
-            std::f64::consts::TAU,
-        );
-        ctx.fill();
-    }
-}
-
-fn draw_waveform_from(
-    canvas: &HtmlCanvasElement,
-    column_x: f32,
-    buffer: &Arc<Mutex<[f32; SPECTROGRAM_SIZE]>>,
-    color: &str,
-) {
-    let ctx: CanvasRenderingContext2d = canvas
-        .get_context("2d")
-        .unwrap()
-        .unwrap()
-        .dyn_into()
-        .unwrap();
-
-    let height = canvas.height() as f32;
-    let mid = height / 2.0;
-    let buf = buffer.lock().unwrap();
-
-    // Find peak amplitude for this frame
-    let peak = buf
-        .iter()
-        .map(|s| s.abs())
-        .fold(0.0f32, f32::max)
-        .max(0.001);
-
-    // RMS for filled bar, peak for outline
-    let rms = (buf.iter().map(|s| s * s).sum::<f32>() / buf.len() as f32).sqrt();
-    let rms_h = (rms / peak) * mid;
-    let peak_h = mid;
-
-    // Background
-    ctx.set_fill_style_str("rgb(10,10,20)");
-    ctx.fill_rect(column_x as f64, 0.0, 1.0, height as f64);
-
-    // Peak bar (dim)
-    ctx.set_global_alpha(0.3);
-    ctx.set_fill_style_str(color);
-    ctx.fill_rect(
-        column_x as f64,
-        (mid - peak_h) as f64,
-        1.0,
-        (peak_h * 2.0) as f64,
-    );
-
-    // RMS bar (bright)
-    ctx.set_global_alpha(1.0);
-    ctx.fill_rect(
-        column_x as f64,
-        (mid - rms_h) as f64,
-        1.0,
-        (rms_h * 2.0) as f64,
-    );
-}
-
-fn heatmap(v: u8) -> (u8, u8, u8) {
-    match v {
-        0..=63 => (0, v * 4, 128 + v * 2),
-        64..=127 => (0, 255, 255 - (v - 64) * 4),
-        128..=191 => ((v - 128) * 4, 255, 0),
-        _ => (255, 255 - (v - 192) * 4, 0),
     }
 }

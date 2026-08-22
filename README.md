@@ -96,18 +96,24 @@ cargo test --lib
 
 ### Headless UX test (Playwright)
 
-`tests/e2e/` drives the **worklet** build in headless Chromium end-to-end:
-it serves the app with COOP/COEP (`serve.py`), feeds `tone.wav` as the
-microphone (Chromium `--use-file-for-fake-audio-capture`), clicks Record,
-and asserts cross-origin isolation, that the pipeline goes live, that the
-captured input/output are non-silent (audio actually flows in→DSP→out),
-that there are no long main-thread tasks during recording (no stutter),
-and that there are no `TextDecoder`/`Atomics`/shared-memory console errors.
+`tests/e2e/` drives the **worklet** build in headless Chromium end-to-end.
+Two suites share a harness (`harness.mjs`) that serves the app with
+COOP/COEP (`serve.py`) and feeds `tone.wav` as the microphone (Chromium
+`--use-fake-device-for-media-stream` + `--use-file-for-fake-audio-capture`):
+
+- `run.mjs` — audio pipeline health: cross-origin isolation, pipeline goes
+  live, captured input/output are non-silent (audio actually flows
+  in→DSP→out), no long main-thread tasks during recording or at stop
+  (no stutter), no `TextDecoder`/`Atomics`/shared-memory console errors.
+- `ui.mjs` — timeline behavior: follow-mode pinning while recording,
+  fit-on-stop, wheel/button zoom, click-to-seek accuracy and playhead
+  alignment (pixel-probed), all three track views, play/pause transport,
+  WAV upload, and no uncaught exceptions.
 
 ```bash
 ./build-worklet.sh                 # produce the worklet pkg/ first
 cd tests/e2e && npm install        # reuses a cached/system Chrome
-npm test                           # generates tone.wav, runs the checks
+npm test                           # generates tone.wav, runs both suites
 # PW_CHROME=/path/to/chrome npm test   # to point at a specific browser
 ```
 
