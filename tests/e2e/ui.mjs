@@ -278,6 +278,28 @@ try {
   check(await page.evaluate(() => !window.__scale.manual),
     'Fit resets the manual vertical zoom back to auto-fit');
 
+  // --- Post-correction: an edit lands (pink) at the clicked x — the drag,
+  // draw, and playback paths all address the contour by absolute hop, so
+  // a round-trip through them must not shift position ---
+  await page.check('#post-correction-cb'); // auto-switches to the pitch views
+  const outBox = await page.locator('.tl-track-canvas').nth(1).boundingBox();
+  const editX = outBox.x + outBox.width * 0.6;
+  await page.mouse.click(editX, outBox.y + outBox.height * 0.3);
+  const pink = await page.evaluate(() => {
+    const c = document.querySelectorAll('.tl-track-canvas')[1];
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    const xs = [];
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i] > 200 && d[i + 1] < 140 && d[i + 2] > 150) xs.push((i / 4) % c.width);
+    }
+    return xs;
+  });
+  const editCanvasX = (editX - outBox.x); // css == device px at dpr 1
+  const nearest = pink.reduce((m, x) => Math.min(m, Math.abs(x - editCanvasX)), Infinity);
+  check(pink.length > 0 && nearest <= 12,
+    `contour edit lands at the clicked position (nearest pink px ${nearest}px away)`);
+  await page.uncheck('#post-correction-cb');
+
   // --- Transport: play, progress advances, pause holds ---
   await page.click('#play-btn');
   await page.waitForFunction(() => document.getElementById('status').textContent.includes('Playing'));

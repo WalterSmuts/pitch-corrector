@@ -149,17 +149,21 @@ function renderTrack(track, canvas, vp, x0, x1) {
 }
 
 function drawEditedContour(ctx, vp) {
+    // Contour entry i belongs at input sample i * vocoderHop — hop-true,
+    // exactly like the voice pitch logs. Never rescale by the recording
+    // length: the log is bounded, so it may be shorter than the recording,
+    // and rescaling would smear every entry off its true position.
     const n = editedContour.length;
-    if (n === 0 || totalSamples === 0) return;
+    if (n === 0) return;
     ctx.fillStyle = EDIT_COLOR;
-    const first = Math.max(0, Math.floor(vp.s0 / totalSamples * n));
-    const last = Math.min(n - 1, Math.ceil((vp.s0 + vp.w * vp.spp) / totalSamples * n));
+    const first = Math.max(0, Math.floor(vp.s0 / vocoderHop));
+    const last = Math.min(n - 1, Math.ceil((vp.s0 + vp.w * vp.spp) / vocoderHop));
     for (let i = first; i <= last; i++) {
         const freq = editedContour[i];
         if (freq <= 0) continue;
         const y = pitchScale.freqToY(freq, vp.h);
         if (y < 0 || y > vp.h) continue;
-        const x = (i / n * totalSamples - vp.s0) / vp.spp;
+        const x = (i * vocoderHop - vp.s0) / vp.spp;
         ctx.fillRect(x - vp.dpr, y - vp.dpr, 2 * vp.dpr, 2 * vp.dpr);
     }
 }
@@ -207,9 +211,8 @@ function contourDrag(track, pos, phase) {
     if (state !== 'stopped' && state !== 'paused') return false;
     if (phase === 'end') return true;
 
-    const n = editedContour.length;
-    const hop = Math.floor(pos.sample / totalSamples * n);
-    if (hop < 0 || hop >= n) return true;
+    const hop = Math.floor(pos.sample / vocoderHop);
+    if (hop < 0 || hop >= editedContour.length) return true;
     const freq = pitchScale.yToFreq(pos.y, pos.h);
     const noteBits = corrector.get_scale();
     editedContour[hop] = noteBits > 0 ? WebPitchCorrector.snap_to_scale(freq, noteBits) : freq;

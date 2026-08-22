@@ -114,9 +114,21 @@ impl PitchCorrectorControls {
         Scale::from_bits(self.scale_bits.load(Ordering::Relaxed) as u16)
     }
 
+    /// Install an edited target contour. Entries are addressed by absolute
+    /// vocoder-hop index (entry `i` = input sample `i * HOP_SIZE`), the same
+    /// convention as every per-hop log; use `seek_contour` to align the
+    /// cursor with the playback position.
     pub fn set_contour(&self, contour: Vec<Option<Pitch>>) {
         *self.contour.lock().unwrap() = contour;
         self.contour_hop.store(0, Ordering::Relaxed);
+    }
+
+    /// Point the contour cursor at an absolute hop index. Playback that
+    /// starts mid-recording must call this with `position / HOP_SIZE`, or
+    /// the contour would be applied from the play position instead of its
+    /// own timeline.
+    pub fn seek_contour(&self, hop: usize) {
+        self.contour_hop.store(hop, Ordering::Relaxed);
     }
 
     pub fn clear_contour(&self) {
@@ -575,6 +587,56 @@ mod tests {
         // And the main voice is still there.
         let a3 = bin_mag(&diatonic, 220.0);
         assert!(a3 > d_c4 * 0.5, "main voice should remain dominant (A3={a3:.1})");
+    }
+
+    /// The edited contour is addressed by absolute hop index: playback that
+    /// starts mid-recording must apply the contour entries for *that*
+    /// region, not restart it from entry 0.
+    #[test]
+    fn contour_seek_applies_the_right_region() {
+        let sr = SAMPLE_RATE as f32;
+        let a3 = Pitch::new(Note::A, 3);
+        let a4 = Pitch::new(Note::A, 4);
+
+        // Contour: hops 0..200 target A3 (unison for an A3 input),
+        // hops 200.. target A4 (octave up).
+        let mut contour: Vec<Option<Pitch>> = vec![Some(a3); 200];
+        contour.extend(std::iter::repeat(Some(a4)).take(800));
+
+        let run = |seek_hop: usize| -> f32 {
+            let corrector = PitchCorrector::with_sample_rate(sr);
+            let c = corrector.controls();
+            c.set_contour(contour.clone());
+            c.seek_contour(seek_hop);
+            let freq = a3.to_freq();
+            let mut out = Vec::new();
+            for i in 0..BUFFER_SIZE * 24 {
+                corrector.push_sample((TAU * freq * i as f32 / sr).sin() * 0.5);
+                while let Some(s) = corrector.pop_sample() {
+                    out.push(s);
+                }
+            }
+            // Median produced pitch over the settled tail of the main log.
+            let mut produced: Vec<f32> = Vec::new();
+            c.drain_voice_pitch(0, &mut produced);
+            let tail = &produced[produced.len() / 2..];
+            let mut voiced: Vec<f32> = tail.iter().copied().filter(|&f| f > 0.0).collect();
+            voiced.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            voiced[voiced.len() / 2]
+        };
+
+        // Starting at hop 0: the A3 region applies (unison).
+        let from_start = run(0);
+        assert!(
+            (from_start / a3.to_freq()).log2().abs() < 0.1,
+            "from hop 0 expected ~A3, got {from_start:.1}Hz"
+        );
+        // Starting at hop 400 (mid-recording seek): the A4 region applies.
+        let from_middle = run(400);
+        assert!(
+            (from_middle / a4.to_freq()).log2().abs() < 0.1,
+            "from hop 400 expected ~A4, got {from_middle:.1}Hz"
+        );
     }
 
     #[test]

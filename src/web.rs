@@ -381,8 +381,11 @@ impl WebPitchCorrector {
         self.pipeline.controls.get_shift().semitones() as f32
     }
 
-    /// Returns the recorded target pitch contour (one entry per phase vocoder hop)
-    /// and clears it.
+    /// Returns the recorded target pitch contour and clears it. One entry
+    /// per vocoder hop: entry `i` belongs at input sample
+    /// `i * vocoder_hop()`. Never rescale it against the recording length —
+    /// the underlying log is bounded and may be shorter than the recording
+    /// (missing tail), but every entry it does have is hop-true.
     pub fn take_target_pitch_contour(&self) -> Vec<f32> {
         self.pipeline
             .controls
@@ -498,6 +501,9 @@ impl WebPitchCorrector {
             out.truncate(pos);
             out.resize(pos, 0.0);
         }
+        // The edited contour lives on the absolute hop timeline; align its
+        // cursor with where playback starts.
+        self.pipeline.controls.seek_contour(pos / HOP_SIZE);
         self.playback.pipeline_primed.store(false, Ordering::Relaxed);
         self.playback.playing.store(true, Ordering::Relaxed);
         let _ = self.output_stream.play();
@@ -527,9 +533,12 @@ impl WebPitchCorrector {
         self.playback.playback_pos.store(pos, Ordering::Relaxed);
         // If we're mid-playback, the output write head must jump with us.
         if self.playback.playing.load(Ordering::Relaxed) {
-            let mut out = spin_lock(&self.playback.output_recording);
-            out.truncate(pos as usize);
-            out.resize(pos as usize, 0.0);
+            {
+                let mut out = spin_lock(&self.playback.output_recording);
+                out.truncate(pos as usize);
+                out.resize(pos as usize, 0.0);
+            }
+            self.pipeline.controls.seek_contour(pos as usize / HOP_SIZE);
         }
     }
 
