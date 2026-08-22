@@ -139,30 +139,73 @@ export class PitchScale {
     }
 }
 
-/** Background + semitone/octave grid + note labels for a pitch track. */
-export function drawPitchGrid(ctx, w, h, dpr, scale) {
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+
+/**
+ * Background + note grid + labels for a pitch track.
+ *
+ * Lines and labels adapt to both the axis density and the active musical
+ * scale (opts.noteBits, bit per pitch class; opts.root):
+ * - in-scale notes get brighter lines, the root brightest; out-of-scale
+ *   lines fade (and drop entirely when the grid gets dense)
+ * - labels sit vertically centered on their line, and their density follows
+ *   px-per-semitone: every labeled-scale note when roomy, root + octave C's
+ *   in between, octave C's only when tight
+ */
+export function drawPitchGrid(ctx, w, h, dpr, scale, opts = {}) {
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, w, h);
 
+    const { noteBits = 0, root = 0 } = opts;
+    // "Off" and full chromatic carry no note preference.
+    const hasScale = noteBits !== 0 && noteBits !== 0xFFF;
     const semitonePx = h / (scale.hi - scale.lo);
+
+    ctx.font = `${10 * dpr}px monospace`;
+    ctx.textBaseline = 'middle';
+
     for (let midi = Math.ceil(scale.lo); midi <= Math.floor(scale.hi); midi++) {
         const y = scale.freqToY(midiToFreq(midi), h);
         const note = ((midi % 12) + 12) % 12;
-        if (note === 0) {
-            ctx.strokeStyle = 'rgba(255,255,255,0.28)';
-        } else if (semitonePx < 5 * dpr && note !== 7) {
-            continue; // too dense: only octaves and fifths
+        const octave = Math.floor(midi / 12) - 1;
+        const inScale = hasScale && (noteBits & (1 << note)) !== 0;
+        const isRoot = hasScale && note === root;
+        const isC = note === 0;
+
+        // Line emphasis.
+        let alpha;
+        if (hasScale) {
+            if (isRoot) alpha = 0.34;
+            else if (isC) alpha = 0.22;
+            else if (inScale) alpha = 0.16;
+            else alpha = semitonePx < 5 * dpr ? 0 : 0.05;
         } else {
-            ctx.strokeStyle = note === 7 ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.07)';
+            if (isC) alpha = 0.28;
+            else if (note === 7) alpha = 0.14;
+            else alpha = semitonePx < 5 * dpr ? 0 : 0.07;
         }
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(w, y);
-        ctx.stroke();
-        if (note === 0) {
-            ctx.fillStyle = 'rgba(255,255,255,0.7)';
-            ctx.font = `${10 * dpr}px monospace`;
-            ctx.fillText(`C${midi / 12 - 1}`, 4 * dpr, y - 3 * dpr);
+        if (alpha > 0) {
+            ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+            ctx.stroke();
+        }
+
+        // Label density tiers (10px text needs ~13px rows to not collide).
+        let label = null;
+        if (semitonePx >= 13 * dpr) {
+            if (!hasScale || inScale || isC) label = `${NOTE_NAMES[note]}${octave}`;
+        } else if (semitonePx >= 6 * dpr) {
+            if (isRoot || isC) label = `${NOTE_NAMES[note]}${octave}`;
+        } else if (isC) {
+            label = `C${octave}`;
+        }
+        if (label) {
+            ctx.fillStyle = `rgba(255,255,255,${isRoot || isC ? 0.75 : 0.5})`;
+            // Centered on the line; clamped so edge labels stay readable.
+            const ty = Math.max(6 * dpr, Math.min(h - 6 * dpr, y));
+            ctx.fillText(label, 4 * dpr, ty);
         }
     }
 }

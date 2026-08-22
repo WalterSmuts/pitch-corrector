@@ -95,7 +95,10 @@ function renderTrack(track, canvas, vp, x0, x1) {
         }
         case 'pitch': {
             // Cheap enough to always repaint fully.
-            drawPitchGrid(ctx, vp.w, vp.h, vp.dpr, pitchScale);
+            drawPitchGrid(ctx, vp.w, vp.h, vp.dpr, pitchScale, {
+                noteBits: corrector.get_scale(),
+                root: parseInt($('root-select').value),
+            });
             const data = isInput ? corrector.input_pitch_track() : corrector.output_pitch_track();
             drawPitchTrack(ctx, data, pitchHop, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR, pitchScale);
             if (!isInput && postCorrectionActive && editedContour) {
@@ -146,6 +149,12 @@ function contourDrag(track, pos, phase) {
     return true;
 }
 
+function invalidatePitchViews() {
+    for (const id of ['input', 'output']) {
+        if (timeline.getTrack(id).view === 'pitch') timeline.invalidate(id);
+    }
+}
+
 // Refit the shared pitch axis to the current data; on a real change (the
 // scale has hysteresis) repaint any visible pitch views.
 function updatePitchScale() {
@@ -154,11 +163,7 @@ function updatePitchScale() {
         corrector.input_pitch_track(),
         corrector.output_pitch_track(),
     ]);
-    if (changed) {
-        for (const id of ['input', 'output']) {
-            if (timeline.getTrack(id).view === 'pitch') timeline.invalidate(id);
-        }
-    }
+    if (changed) invalidatePitchViews();
 }
 
 // --- Render loop ---
@@ -400,7 +405,10 @@ noteNames.forEach((name, i) => {
         noteGrid.querySelectorAll('button.active').forEach(b => {
             customBits |= (1 << parseInt(b.dataset.note));
         });
-        if (corrector && currentScale === 'custom') corrector.set_scale(customBits);
+        if (corrector && currentScale === 'custom') {
+            corrector.set_scale(customBits);
+            invalidatePitchViews();
+        }
     });
     noteGrid.appendChild(btn);
 });
@@ -413,6 +421,7 @@ function applyScale() {
     } else {
         corrector.set_scale(WebPitchCorrector.scale_bits(currentScale, root));
     }
+    invalidatePitchViews(); // grid emphasis and labels follow the scale
 }
 
 document.querySelectorAll('#scale-buttons button').forEach(btn => {
