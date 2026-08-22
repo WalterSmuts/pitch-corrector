@@ -68,7 +68,6 @@ impl Pipeline {
 }
 
 struct PlaybackState {
-    sweep_active: AtomicBool,
     input_active: AtomicBool,
     recording: Mutex<Vec<f32>>,
     output_recording: Mutex<Vec<f32>>,
@@ -190,7 +189,6 @@ impl WebPitchCorrector {
         let output_processor = pipeline.processor().clone();
 
         let playback = Arc::new(PlaybackState {
-            sweep_active: AtomicBool::new(false),
             input_active: AtomicBool::new(true),
             recording: Mutex::new(Vec::new()),
             output_recording: Mutex::new(Vec::new()),
@@ -199,12 +197,6 @@ impl WebPitchCorrector {
             input_started: AtomicBool::new(false),
             output_started: AtomicBool::new(false),
         });
-
-        // Pack two f32s: [sample_counter, accumulated_phase]
-        let sweep_counter = Arc::new(AtomicU32::new(0.0f32.to_bits()));
-        let sweep_phase = Arc::new(AtomicU32::new(0.0f32.to_bits()));
-        let sweep_counter_clone = sweep_counter.clone();
-        let sweep_phase_clone = sweep_phase.clone();
 
         let input_playback = playback.clone();
         let input_stream = input_device
@@ -215,33 +207,11 @@ impl WebPitchCorrector {
                     if !input_playback.input_active.load(Ordering::Relaxed) {
                         return;
                     }
-                    if input_playback.sweep_active.load(Ordering::Relaxed) {
-                        let mut counter =
-                            f32::from_bits(sweep_counter_clone.load(Ordering::Relaxed));
-                        let mut phase = f32::from_bits(sweep_phase_clone.load(Ordering::Relaxed));
-                        for _ in data {
-                            // Sine sweep in pitch space: 50Hz–200Hz smoothly
-                            let t = counter / 960000.0;
-                            let sine = 0.5 - 0.5 * (std::f32::consts::TAU * t).cos();
-                            let freq = 50.0 * (200.0f32 / 50.0).powf(sine);
-                            phase += freq / sample_rate;
-                            phase -= phase.floor();
-                            let sample = (phase * std::f32::consts::TAU).sin() * 0.5;
-                            input_processor.push_sample(sample);
-                            if let Ok(mut rec) = input_playback.recording.try_lock() {
-                                rec.push(sample);
-                            }
-                            counter += 1.0;
-                        }
-                        sweep_counter_clone.store(counter.to_bits(), Ordering::Relaxed);
-                        sweep_phase_clone.store(phase.to_bits(), Ordering::Relaxed);
-                    } else {
-                        if let Ok(mut rec) = input_playback.recording.try_lock() {
-                            rec.extend_from_slice(data);
-                        }
-                        for &sample in data {
-                            input_processor.push_sample(sample);
-                        }
+                    if let Ok(mut rec) = input_playback.recording.try_lock() {
+                        rec.extend_from_slice(data);
+                    }
+                    for &sample in data {
+                        input_processor.push_sample(sample);
                     }
                 },
                 |err| log::error!("Input error: {}", err),
@@ -483,10 +453,6 @@ impl WebPitchCorrector {
             out.truncate(pos as usize);
             out.resize(pos as usize, 0.0);
         }
-    }
-
-    pub fn set_sweep(&self, active: bool) {
-        self.playback.sweep_active.store(active, Ordering::Relaxed);
     }
 
     pub fn scale_bits(preset: &str, root: u8) -> u16 {

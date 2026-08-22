@@ -27,7 +27,6 @@ const els = {
     recordBtn: $('record-btn'),
     stopBtn: $('stop-btn'),
     playBtn: $('play-btn'),
-    sweepBtn: $('sweep-btn'),
     downloadBtn: $('download-btn'),
     debugBtn: $('debug-btn'),
     uploadBtn: $('upload-btn'),
@@ -180,7 +179,6 @@ function setState(newState) {
     els.stopBtn.disabled = state !== 'recording';
     els.playBtn.disabled = !(state === 'stopped' || state === 'paused' || state === 'playing') || totalSamples === 0;
     els.playBtn.textContent = state === 'playing' ? '⏸ Pause' : '▶ Play';
-    els.sweepBtn.disabled = state !== 'recording';
     const hasRecording = totalSamples > 0 && (state === 'stopped' || state === 'paused');
     els.downloadBtn.disabled = !hasRecording;
     els.debugBtn.disabled = !hasRecording;
@@ -336,13 +334,6 @@ window.addEventListener('keydown', e => {
     if (e.code !== 'Space' || e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
     if (state === 'playing') { e.preventDefault(); pausePlayback(); }
     else if (state === 'stopped' || state === 'paused') { e.preventDefault(); startPlayback(); }
-});
-
-els.sweepBtn.addEventListener('click', () => {
-    const active = !els.sweepBtn.classList.contains('active');
-    els.sweepBtn.classList.toggle('active');
-    els.sweepBtn.textContent = active ? '🎵 Sweep On' : '🎵 Sine Sweep';
-    if (corrector) corrector.set_sweep(active);
 });
 
 // --- Scale / shift controls ---
