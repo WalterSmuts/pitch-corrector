@@ -2,6 +2,7 @@ use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::signal_processing::{
     PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, HOP_SIZE,
 };
+use crate::units::HopIdx;
 use crossbeam_queue::ArrayQueue;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -165,12 +166,12 @@ impl PitchCorrectorControls {
         self.contour_hop.store(0, Ordering::Relaxed);
     }
 
-    /// Point the contour cursor at an absolute hop index. Playback that
-    /// starts mid-recording must call this with `position / HOP_SIZE`, or
-    /// the contour would be applied from the play position instead of its
-    /// own timeline.
-    pub fn seek_contour(&self, hop: usize) {
-        self.contour_hop.store(hop, Ordering::Relaxed);
+    /// Point the contour cursor at an absolute vocoder-hop index. Playback
+    /// that starts mid-recording must call this with the hop containing the
+    /// play position, or the contour would be applied from the play
+    /// position instead of its own timeline.
+    pub fn seek_contour(&self, hop: HopIdx<HOP_SIZE>) {
+        self.contour_hop.store(hop.0, Ordering::Relaxed);
     }
 
     pub fn clear_contour(&self) {
@@ -668,7 +669,7 @@ mod tests {
             let corrector = PitchCorrector::with_sample_rate(sr);
             let c = corrector.controls();
             c.set_contour(contour.clone());
-            c.seek_contour(seek_hop);
+            c.seek_contour(HopIdx(seek_hop));
             let freq = a3.to_freq();
             let mut out = Vec::new();
             for i in 0..BUFFER_SIZE * 24 {

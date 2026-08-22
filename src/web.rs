@@ -2,6 +2,7 @@ use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::pitch_correction::{Harmonizer, PitchCorrector, PitchCorrectorControls};
 use crate::session::{waveform_peaks, PitchTrack, SpectrogramRenderer, PITCH_HOP, SPEC_WINDOW};
 use crate::signal_processing::{SpectralFreeze, StreamProcessor, BUFFER_SIZE, HOP_SIZE};
+use crate::units::{HopIdx, SampleIdx};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::DynRealFft;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -148,9 +149,9 @@ impl Analysis {
             let out = spin_lock(&playback.output_recording);
             if out.len() < self.output_samples.len() {
                 self.output_samples.truncate(out.len());
-                let hops = out.len() / HOP_SIZE;
+                let hops: HopIdx<HOP_SIZE> = HopIdx::containing(SampleIdx(out.len()));
                 for track in &mut self.voice_pitch {
-                    track.truncate(hops);
+                    track.truncate(hops.0);
                 }
             }
             let n = self.output_samples.len();
@@ -505,7 +506,7 @@ impl WebPitchCorrector {
         // (minus pipeline latency), so clamp to what is actually there and
         // a window centered on the cursor would have no second half anyway.
         let end = (position.max(0.0) as usize).min(a.output_samples.len());
-        let center = end.saturating_sub((BUFFER_SIZE + HOP_SIZE) / 2);
+        let center = SampleIdx(end.saturating_sub((BUFFER_SIZE + HOP_SIZE) / 2));
         match SpectralFreeze::new(&a.output_samples, center) {
             Some(fz) => {
                 *spin_lock(&self.playback.freeze) = Some(fz);
@@ -581,7 +582,9 @@ impl WebPitchCorrector {
         }
         // The edited contour lives on the absolute hop timeline; align its
         // cursor with where playback starts.
-        self.pipeline.controls.seek_contour(pos / HOP_SIZE);
+        self.pipeline
+            .controls
+            .seek_contour(HopIdx::containing(SampleIdx(pos)));
         self.playback
             .pipeline_primed
             .store(false, Ordering::Relaxed);
@@ -618,7 +621,9 @@ impl WebPitchCorrector {
                 out.truncate(pos as usize);
                 out.resize(pos as usize, 0.0);
             }
-            self.pipeline.controls.seek_contour(pos as usize / HOP_SIZE);
+            self.pipeline
+                .controls
+                .seek_contour(HopIdx::containing(SampleIdx(pos as usize)));
         }
     }
 

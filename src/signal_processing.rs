@@ -712,9 +712,9 @@ impl SpectralFreeze {
     /// Analyze the `BUFFER_SIZE + HOP_SIZE` samples centered on `position`
     /// in `samples`. Returns `None` when there is not enough audio around
     /// the position.
-    pub fn new(samples: &[f32], position: usize) -> Option<Self> {
+    pub fn new(samples: &[f32], position: crate::units::SampleIdx) -> Option<Self> {
         let need = BUFFER_SIZE + HOP_SIZE;
-        let start = position.checked_sub(need / 2)?;
+        let start = position.0.checked_sub(need / 2)?;
         if start + need > samples.len() {
             return None;
         }
@@ -1250,7 +1250,8 @@ mod tests {
             })
             .collect();
 
-        let mut freeze = SpectralFreeze::new(&samples, samples.len() / 2).unwrap();
+        let mut freeze =
+            SpectralFreeze::new(&samples, crate::units::SampleIdx(samples.len() / 2)).unwrap();
         // Skip the OLA fade-in, then take two seconds of sustain.
         for _ in 0..BUFFER_SIZE {
             freeze.next_sample();
@@ -1286,8 +1287,10 @@ mod tests {
         );
 
         // Not enough context near the edges: refuse, don't panic.
-        assert!(SpectralFreeze::new(&samples, 10).is_none());
-        assert!(SpectralFreeze::new(&samples, samples.len() - 10).is_none());
+        assert!(SpectralFreeze::new(&samples, crate::units::SampleIdx(10)).is_none());
+        assert!(
+            SpectralFreeze::new(&samples, crate::units::SampleIdx(samples.len() - 10)).is_none()
+        );
     }
     use super::*;
 

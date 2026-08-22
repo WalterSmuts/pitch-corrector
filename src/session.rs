@@ -6,6 +6,7 @@
 //! is unit-tested on native as well as wasm.
 
 use crate::signal_processing::{YinPitchDetector, BUFFER_SIZE};
+use crate::units::{HopIdx, SampleIdx};
 use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
 
 /// Samples between pitch-analysis hops. Each entry of a pitch track covers
@@ -57,13 +58,13 @@ impl PitchTrack {
         &self.track
     }
 
-    /// Drop analysis results from `sample_idx` onward so that region is
+    /// Drop analysis results from `sample` onward so that region is
     /// re-analyzed on the next `analyze` call (used when playback overwrites
     /// the output recording mid-stream).
-    pub fn invalidate_from(&mut self, sample_idx: usize) {
-        let hop_idx = sample_idx / PITCH_HOP;
-        self.track.truncate(hop_idx);
-        self.consumed = hop_idx * PITCH_HOP;
+    pub fn invalidate_from(&mut self, sample: SampleIdx) {
+        let hop: HopIdx<PITCH_HOP> = HopIdx::containing(sample);
+        self.track.truncate(hop.0);
+        self.consumed = hop.start().0;
     }
 
     pub fn reset(&mut self) {
@@ -267,7 +268,7 @@ mod tests {
         let mut pt = PitchTrack::new(sr);
         pt.analyze(&samples);
         let before = pt.track().to_vec();
-        pt.invalidate_from(24_000);
+        pt.invalidate_from(SampleIdx(24_000));
         assert!(pt.track().len() < before.len());
         pt.analyze(&samples);
         assert_eq!(pt.track().len(), before.len());
