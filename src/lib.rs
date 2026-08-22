@@ -15,6 +15,7 @@ pub mod complex_interpolation;
 pub mod interpolation;
 pub mod music;
 pub mod pitch_correction;
+pub mod session;
 pub mod signal_processing;
 
 #[cfg(feature = "native")]

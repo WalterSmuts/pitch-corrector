@@ -1,5 +1,6 @@
 use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::pitch_correction::{PitchCorrector, PitchCorrectorControls};
+use crate::session::{waveform_peaks, PitchTrack, SpectrogramRenderer, PITCH_HOP, SPEC_WINDOW};
 use crate::signal_processing::{
     compose, DisplayProcessor, StreamProcessor, YinPitchDetector, BUFFER_SIZE, SPECTROGRAM_SIZE,
 };
@@ -8,8 +9,8 @@ use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
-use wasm_bindgen::JsCast;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
+use wasm_bindgen::{Clamped, JsCast};
+use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 
 /// Prime the expensive, one-time initialization that would otherwise run on
 /// the first `Record` click and jank the main thread (~0.3s): the FFT planner
@@ -17,9 +18,10 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 /// Call this once at page load, after `init()`, before the user records.
 #[wasm_bindgen]
 pub fn warmup() {
-    // Prime the real-FFT planner caches for both sizes the app uses.
+    // Prime the real-FFT planner caches for all sizes the app uses.
     let _ = vec![0.0f32; BUFFER_SIZE].real_fft();
     let _ = vec![0.0f32; SPECTROGRAM_SIZE].real_fft();
+    let _ = vec![0.0f32; SPEC_WINDOW].real_fft();
     // Run a few silent hops through a throwaway corrector so the phase
     // vocoder's plans/scratch and the OLA buffers are all allocated/primed.
     let corrector = PitchCorrector::new();
@@ -143,12 +145,74 @@ struct PlaybackState {
     output_started: AtomicBool,
 }
 
+/// Main-thread analysis state: mirrors of the shared recordings plus
+/// incremental pitch tracks and spectrogram scratch. The audio callbacks
+/// append to the recordings with `try_lock` (dropping data on contention),
+/// so all long-running work here happens on private mirrors — the shared
+/// buffers are only locked briefly to copy out new samples.
+struct Analysis {
+    input_samples: Vec<f32>,
+    output_samples: Vec<f32>,
+    input_pitch: PitchTrack,
+    output_pitch: PitchTrack,
+    spec: SpectrogramRenderer,
+    rgba: Vec<u8>,
+}
+
+impl Analysis {
+    fn new(sample_rate: f32) -> Self {
+        Analysis {
+            input_samples: Vec::new(),
+            output_samples: Vec::new(),
+            input_pitch: PitchTrack::new(sample_rate),
+            output_pitch: PitchTrack::new(sample_rate),
+            spec: SpectrogramRenderer::new(),
+            rgba: Vec::new(),
+        }
+    }
+
+    /// Pull new samples from the shared recordings (short locks), then
+    /// advance pitch analysis on the mirrors. A shrunken output recording
+    /// (playback overwriting from the seek position) invalidates and
+    /// re-analyzes the tail; a shrunken input recording resets the mirror.
+    fn sync(&mut self, playback: &PlaybackState) {
+        {
+            let rec = playback.recording.lock().unwrap();
+            if rec.len() < self.input_samples.len() {
+                self.input_samples.clear();
+                self.input_pitch.reset();
+            }
+            let n = self.input_samples.len();
+            self.input_samples.extend_from_slice(&rec[n..]);
+        }
+        {
+            let out = playback.output_recording.lock().unwrap();
+            if out.len() < self.output_samples.len() {
+                self.output_samples.truncate(out.len());
+                self.output_pitch.invalidate_from(out.len());
+            }
+            let n = self.output_samples.len();
+            self.output_samples.extend_from_slice(&out[n..]);
+        }
+        self.input_pitch.analyze(&self.input_samples);
+        self.output_pitch.analyze(&self.output_samples);
+    }
+
+    fn reset(&mut self) {
+        self.input_samples.clear();
+        self.output_samples.clear();
+        self.input_pitch.reset();
+        self.output_pitch.reset();
+    }
+}
+
 #[wasm_bindgen]
 pub struct WebPitchCorrector {
     input_stream: cpal::Stream,
     output_stream: cpal::Stream,
     pipeline: Pipeline,
     playback: Arc<PlaybackState>,
+    analysis: Mutex<Analysis>,
     sample_rate: f32,
 }
 
@@ -279,7 +343,14 @@ impl WebPitchCorrector {
                         match output_processor.pop_sample() {
                             Some(s) => {
                                 *sample = s;
-                                if output_playback.input_active.load(Ordering::Relaxed) {
+                                // Capture the produced audio both while
+                                // recording live and while re-processing
+                                // during playback (playback truncates the
+                                // buffer to the play position first, so
+                                // appends stay timeline-aligned).
+                                if output_playback.input_active.load(Ordering::Relaxed)
+                                    || output_playback.playing.load(Ordering::Relaxed)
+                                {
                                     if let Ok(mut rec) = output_playback.output_recording.try_lock()
                                     {
                                         rec.push(s);
@@ -310,6 +381,7 @@ impl WebPitchCorrector {
             output_stream,
             pipeline,
             playback,
+            analysis: Mutex::new(Analysis::new(sample_rate)),
             sample_rate,
         })
     }
@@ -385,6 +457,7 @@ impl WebPitchCorrector {
         self.playback.output_recording.lock().unwrap().clear();
         self.playback.playback_pos.store(0, Ordering::Relaxed);
         self.playback.input_active.store(false, Ordering::Relaxed);
+        self.analysis.lock().unwrap().reset();
         let _ = self.input_stream.pause();
         let _ = self.output_stream.pause();
     }
@@ -409,6 +482,15 @@ impl WebPitchCorrector {
             return Ok(());
         }
         self.playback.input_active.store(false, Ordering::Relaxed);
+        // Re-processed output overwrites the timeline from the play position:
+        // drop everything after it (or pad silence up to it) so the
+        // callback's appends line up.
+        let pos = self.playback.playback_pos.load(Ordering::Relaxed) as usize;
+        {
+            let mut out = self.playback.output_recording.lock().unwrap();
+            out.truncate(pos);
+            out.resize(pos, 0.0);
+        }
         self.playback.playing.store(true, Ordering::Relaxed);
         let _ = self.output_stream.play();
         Ok(())
@@ -435,6 +517,12 @@ impl WebPitchCorrector {
         let len = self.recording_len() as f32;
         let pos = (fraction.clamp(0.0, 1.0) * len) as u32;
         self.playback.playback_pos.store(pos, Ordering::Relaxed);
+        // If we're mid-playback, the output write head must jump with us.
+        if self.playback.playing.load(Ordering::Relaxed) {
+            let mut out = self.playback.output_recording.lock().unwrap();
+            out.truncate(pos as usize);
+            out.resize(pos as usize, 0.0);
+        }
     }
 
     pub fn set_sweep(&self, active: bool) {
@@ -476,6 +564,107 @@ impl WebPitchCorrector {
     /// Restore the default NoteSnapper target.
     pub fn clear_contour(&self) {
         self.pipeline.controls.clear_contour();
+    }
+
+    // --- Session data APIs (timeline UI renders from these) ---
+
+    /// Samples per pitch-track hop.
+    pub fn pitch_hop(&self) -> u32 {
+        PITCH_HOP as u32
+    }
+
+    /// Pull new audio into the analysis mirrors and advance the pitch
+    /// tracks. Call once per animation frame; incremental and cheap when
+    /// nothing new arrived. Returns the input length in samples.
+    pub fn analyze(&self) -> f64 {
+        let mut a = self.analysis.lock().unwrap();
+        a.sync(&self.playback);
+        a.input_samples.len() as f64
+    }
+
+    /// Detected input pitch per hop (Hz, 0 = unvoiced).
+    pub fn input_pitch_track(&self) -> Vec<f32> {
+        self.analysis.lock().unwrap().input_pitch.track().to_vec()
+    }
+
+    /// Detected output pitch per hop (Hz, 0 = unvoiced).
+    pub fn output_pitch_track(&self) -> Vec<f32> {
+        self.analysis.lock().unwrap().output_pitch.track().to_vec()
+    }
+
+    /// Min/max waveform peaks for a sample range of the input, binned to
+    /// `bins` columns; `bins * 2` values interleaved `[min, max]`.
+    pub fn input_peaks(&self, start_sample: f64, end_sample: f64, bins: u32) -> Vec<f32> {
+        let a = self.analysis.lock().unwrap();
+        waveform_peaks(&a.input_samples, start_sample, end_sample, bins as usize)
+    }
+
+    /// Same as `input_peaks`, for the produced output.
+    pub fn output_peaks(&self, start_sample: f64, end_sample: f64, bins: u32) -> Vec<f32> {
+        let a = self.analysis.lock().unwrap();
+        waveform_peaks(&a.output_samples, start_sample, end_sample, bins as usize)
+    }
+
+    /// Render `width_px` spectrogram columns of the input recording into
+    /// `canvas` at `dest_x`, covering the time range starting at
+    /// `start_sample` with `samples_per_px` samples per column.
+    pub fn draw_input_spectrogram_range(
+        &self,
+        canvas: &HtmlCanvasElement,
+        dest_x: u32,
+        width_px: u32,
+        start_sample: f64,
+        samples_per_px: f64,
+    ) -> Result<(), JsValue> {
+        self.draw_spec_range(canvas, dest_x, width_px, start_sample, samples_per_px, true)
+    }
+
+    /// Same as `draw_input_spectrogram_range`, for the produced output.
+    pub fn draw_output_spectrogram_range(
+        &self,
+        canvas: &HtmlCanvasElement,
+        dest_x: u32,
+        width_px: u32,
+        start_sample: f64,
+        samples_per_px: f64,
+    ) -> Result<(), JsValue> {
+        self.draw_spec_range(canvas, dest_x, width_px, start_sample, samples_per_px, false)
+    }
+
+    fn draw_spec_range(
+        &self,
+        canvas: &HtmlCanvasElement,
+        dest_x: u32,
+        width_px: u32,
+        start_sample: f64,
+        samples_per_px: f64,
+        input: bool,
+    ) -> Result<(), JsValue> {
+        if width_px == 0 {
+            return Ok(());
+        }
+        let height = canvas.height();
+        let a = &mut *self.analysis.lock().unwrap();
+        let samples = if input {
+            &a.input_samples
+        } else {
+            &a.output_samples
+        };
+        a.spec.render(
+            samples,
+            start_sample,
+            samples_per_px,
+            width_px as usize,
+            height as usize,
+            &mut a.rgba,
+        );
+        let img =
+            ImageData::new_with_u8_clamped_array_and_sh(Clamped(&a.rgba), width_px, height)?;
+        let ctx: CanvasRenderingContext2d = canvas
+            .get_context("2d")?
+            .ok_or_else(|| JsValue::from_str("no 2d context"))?
+            .dyn_into()?;
+        ctx.put_image_data(&img, dest_x as f64, 0.0)
     }
 
     pub fn draw_spectrogram(&self, canvas: &HtmlCanvasElement, column_x: f32) {
