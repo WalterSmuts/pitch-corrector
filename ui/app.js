@@ -455,8 +455,8 @@ window.addEventListener('keydown', e => {
 // --- Harmony controls ---
 // Voices are a bitmask (bit0=3rd, bit1=5th, bit2=octave); intervals are
 // either diatonic (walk the selected scale from the corrected note) or
-// absolute (fixed semitone offsets). Defaults: 3rd on, in key.
-let harmonyMask = 0b001;
+// absolute (fixed semitone offsets). Defaults: off, in key.
+let harmonyMask = 0;
 let harmonyInKey = true;
 
 function applyHarmony() {
@@ -465,10 +465,19 @@ function applyHarmony() {
     corrector.set_harmony_in_key(harmonyInKey);
 }
 
+const harmonyOffBtn = $('harmony-off');
+harmonyOffBtn.addEventListener('click', () => {
+    harmonyMask = 0;
+    document.querySelectorAll('#harmony-controls button[data-hvoice]')
+        .forEach(b => b.classList.remove('active'));
+    harmonyOffBtn.classList.add('active');
+    applyHarmony();
+});
 document.querySelectorAll('#harmony-controls button[data-hvoice]').forEach(btn => {
     btn.addEventListener('click', () => {
         harmonyMask ^= 1 << parseInt(btn.dataset.hvoice);
         btn.classList.toggle('active');
+        harmonyOffBtn.classList.toggle('active', harmonyMask === 0);
         applyHarmony();
     });
 });

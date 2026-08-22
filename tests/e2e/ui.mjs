@@ -54,26 +54,30 @@ try {
     'passthrough toggles on');
   await page.click('#passthrough-btn');
 
-  // Harmony section: 3rd + in-key are the defaults; voices multi-toggle,
-  // mode is exclusive. (The harmony DSP itself is covered by the native
-  // spectrum test harmonizer_third_follows_the_mode.)
+  // Harmony section: off + in-key are the defaults; enabling a voice
+  // clears Off, Off clears the voices, mode is exclusive. (The harmony DSP
+  // itself is covered by the native test harmonizer_third_follows_the_mode.)
   const hDefaults = await page.evaluate(() => ({
+    off: document.getElementById('harmony-off').classList.contains('active'),
     third: document.querySelector('[data-hvoice="0"]').classList.contains('active'),
-    fifth: document.querySelector('[data-hvoice="1"]').classList.contains('active'),
     inKey: document.querySelector('[data-hmode="key"]').classList.contains('active'),
   }));
-  check(hDefaults.third && !hDefaults.fifth && hDefaults.inKey,
-    'harmony defaults: 3rd voice on, in-key intervals');
-  await page.click('[data-hvoice="1"]');
+  check(hDefaults.off && !hDefaults.third && hDefaults.inKey,
+    'harmony defaults: off, in-key intervals');
+  await page.click('[data-hvoice="0"]');
   await page.click('[data-hmode="abs"]');
   const hToggled = await page.evaluate(() => ({
-    fifth: document.querySelector('[data-hvoice="1"]').classList.contains('active'),
-    inKey: document.querySelector('[data-hmode="key"]').classList.contains('active'),
+    off: document.getElementById('harmony-off').classList.contains('active'),
+    third: document.querySelector('[data-hvoice="0"]').classList.contains('active'),
     abs: document.querySelector('[data-hmode="abs"]').classList.contains('active'),
   }));
-  check(hToggled.fifth && !hToggled.inKey && hToggled.abs,
-    'harmony voices multi-toggle and interval mode is exclusive');
-  await page.click('[data-hvoice="1"]');
+  check(hToggled.third && !hToggled.off && hToggled.abs,
+    'enabling a voice clears Off; interval mode is exclusive');
+  await page.click('#harmony-off');
+  check(await page.evaluate(() =>
+    document.getElementById('harmony-off').classList.contains('active')
+    && !document.querySelector('[data-hvoice="0"]').classList.contains('active')),
+    'Off clears the enabled voices');
   await page.click('[data-hmode="key"]');
   // The recording grows between the render and this readback, so allow
   // ~100ms of audio of slack on the pin check.
