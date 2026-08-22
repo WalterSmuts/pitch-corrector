@@ -73,6 +73,21 @@ try {
   }));
   check(hToggled.third && !hToggled.off && hToggled.abs,
     'enabling a voice clears Off; interval mode is exclusive');
+  // With the 3rd voice on and audio flowing, the harmony pitch log fills
+  // and the output pitch track stays the clean main voice (the DSP logs
+  // per-voice pitch; no detector ever sees the polyphonic mix).
+  await sleep(700);
+  const hTracks = await page.evaluate(() => {
+    const midi = f => 69 + 12 * Math.log2(f / 440);
+    const clean = a => [...a].filter(f => f > 0).map(midi);
+    const main = clean(window.__pc.output_pitch_track());
+    const third = clean(window.__pc.harmony_pitch_track(1));
+    const med = a => a.sort((x, y) => x - y)[Math.floor(a.length / 2)] ?? 0;
+    return { mainMed: med(main), thirdMed: med(third), thirdN: third.length };
+  });
+  check(hTracks.thirdN > 10, `harmony voice logs its pitch (${hTracks.thirdN} voiced hops)`);
+  check(hTracks.thirdMed > hTracks.mainMed + 2 && hTracks.thirdMed < hTracks.mainMed + 6,
+    `harmony sits a third above the main voice (midi ${hTracks.mainMed.toFixed(1)} vs ${hTracks.thirdMed.toFixed(1)})`);
   await page.click('#harmony-off');
   check(await page.evaluate(() =>
     document.getElementById('harmony-off').classList.contains('active')

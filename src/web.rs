@@ -1,7 +1,7 @@
 use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::pitch_correction::{Harmonizer, PitchCorrector, PitchCorrectorControls};
 use crate::session::{waveform_peaks, PitchTrack, SpectrogramRenderer, PITCH_HOP, SPEC_WINDOW};
-use crate::signal_processing::{StreamProcessor, BUFFER_SIZE};
+use crate::signal_processing::{StreamProcessor, BUFFER_SIZE, HOP_SIZE};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::DynRealFft;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -96,7 +96,11 @@ struct Analysis {
     input_samples: Vec<f32>,
     output_samples: Vec<f32>,
     input_pitch: PitchTrack,
-    output_pitch: PitchTrack,
+    /// Produced pitch per vocoder hop for every output voice
+    /// ([main, 3rd, 5th, octave]), drained from the DSP's logs. The output
+    /// pitch view plots these — never a pitch detector over the mixed
+    /// output, which is polyphonic once harmonies are enabled.
+    voice_pitch: [Vec<f32>; 4],
     spec: SpectrogramRenderer,
     rgba: Vec<u8>,
 }
@@ -107,7 +111,7 @@ impl Analysis {
             input_samples: Vec::new(),
             output_samples: Vec::new(),
             input_pitch: PitchTrack::new(sample_rate),
-            output_pitch: PitchTrack::new(sample_rate),
+            voice_pitch: std::array::from_fn(|_| Vec::new()),
             spec: SpectrogramRenderer::new(),
             rgba: Vec::new(),
         }
@@ -117,7 +121,7 @@ impl Analysis {
     /// advance pitch analysis on the mirrors. A shrunken output recording
     /// (playback overwriting from the seek position) invalidates and
     /// re-analyzes the tail; a shrunken input recording resets the mirror.
-    fn sync(&mut self, playback: &PlaybackState) {
+    fn sync(&mut self, playback: &PlaybackState, controls: &PitchCorrectorControls) {
         {
             let rec = spin_lock(&playback.recording);
             if rec.len() < self.input_samples.len() {
@@ -127,24 +131,37 @@ impl Analysis {
             let n = self.input_samples.len();
             self.input_samples.extend_from_slice(&rec[n..]);
         }
+        // Drain the DSP's per-voice pitch logs first: entries produced
+        // before a playback-seek truncation belong before it on the
+        // timeline, so append-then-truncate keeps them aligned.
+        for (voice, track) in self.voice_pitch.iter_mut().enumerate() {
+            controls.drain_voice_pitch(voice, track);
+        }
         {
             let out = spin_lock(&playback.output_recording);
             if out.len() < self.output_samples.len() {
                 self.output_samples.truncate(out.len());
-                self.output_pitch.invalidate_from(out.len());
+                let hops = out.len() / HOP_SIZE;
+                for track in &mut self.voice_pitch {
+                    track.truncate(hops);
+                }
             }
             let n = self.output_samples.len();
             self.output_samples.extend_from_slice(&out[n..]);
         }
         self.input_pitch.analyze(&self.input_samples);
-        self.output_pitch.analyze(&self.output_samples);
     }
 
-    fn reset(&mut self) {
+    fn reset(&mut self, controls: &PitchCorrectorControls) {
         self.input_samples.clear();
         self.output_samples.clear();
         self.input_pitch.reset();
-        self.output_pitch.reset();
+        for (voice, track) in self.voice_pitch.iter_mut().enumerate() {
+            track.clear();
+            // Discard any stale log entries from the previous session.
+            controls.drain_voice_pitch(voice, track);
+            track.clear();
+        }
     }
 }
 
@@ -404,7 +421,7 @@ impl WebPitchCorrector {
         spin_lock(&self.playback.recording).clear();
         spin_lock(&self.playback.output_recording).clear();
         self.playback.playback_pos.store(0, Ordering::Relaxed);
-        self.analysis.lock().unwrap().reset();
+        self.analysis.lock().unwrap().reset(&self.pipeline.controls);
         self.pipeline.controls.clear_target_pitch_contour();
         self.pipeline.controls.clear_contour();
         self.playback.pipeline_primed.store(false, Ordering::Relaxed);
@@ -447,7 +464,7 @@ impl WebPitchCorrector {
         spin_lock(&self.playback.output_recording).clear();
         self.playback.playback_pos.store(0, Ordering::Relaxed);
         self.playback.input_active.store(false, Ordering::Relaxed);
-        self.analysis.lock().unwrap().reset();
+        self.analysis.lock().unwrap().reset(&self.pipeline.controls);
         let _ = self.input_stream.pause();
         let _ = self.output_stream.pause();
     }
@@ -565,7 +582,7 @@ impl WebPitchCorrector {
     /// nothing new arrived. Returns the input length in samples.
     pub fn analyze(&self) -> f64 {
         let mut a = self.analysis.lock().unwrap();
-        a.sync(&self.playback);
+        a.sync(&self.playback, &self.pipeline.controls);
         a.input_samples.len() as f64
     }
 
@@ -581,9 +598,25 @@ impl WebPitchCorrector {
         self.analysis.lock().unwrap().input_pitch.track().to_vec()
     }
 
-    /// Detected output pitch per hop (Hz, 0 = unvoiced).
+    /// Samples per vocoder hop (the granularity of the voice pitch logs).
+    pub fn vocoder_hop(&self) -> u32 {
+        HOP_SIZE as u32
+    }
+
+    /// Produced pitch of the main corrected voice per vocoder hop (Hz,
+    /// 0 = unvoiced), logged by the DSP itself — no detector runs on the
+    /// (possibly polyphonic) mixed output.
     pub fn output_pitch_track(&self) -> Vec<f32> {
-        self.analysis.lock().unwrap().output_pitch.track().to_vec()
+        self.analysis.lock().unwrap().voice_pitch[0].clone()
+    }
+
+    /// Produced pitch of harmony voice 1..=3 (3rd, 5th, octave) per vocoder
+    /// hop (Hz, 0 = silent/disabled).
+    pub fn harmony_pitch_track(&self, voice: u32) -> Vec<f32> {
+        match voice {
+            1..=3 => self.analysis.lock().unwrap().voice_pitch[voice as usize].clone(),
+            _ => Vec::new(),
+        }
     }
 
     /// Min/max waveform peaks for a sample range of the input, binned to

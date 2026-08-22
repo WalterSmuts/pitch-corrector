@@ -10,6 +10,7 @@ let corrector = null;
 let sampleRate = 48000;
 let totalSamples = 0;
 let pitchHop = 1024;
+let vocoderHop = 512;
 
 // Post-correction: target contour (one entry per phase-vocoder hop, spanning
 // the whole recording) captured at stop, plus the user-edited copy.
@@ -33,6 +34,10 @@ const vzoom = {
 const INPUT_COLOR = 'rgb(255,150,50)';
 const OUTPUT_COLOR = 'rgb(50,255,120)';
 const EDIT_COLOR = 'rgb(255,80,200)';
+// Harmony voices get their own contours on the output pitch view (their
+// pitch comes from the DSP's per-voice logs, never from running a
+// monophonic detector on the mixed output): 3rd, 5th, octave.
+const HARMONY_COLORS = ['rgba(90,190,255,0.9)', 'rgba(200,130,255,0.9)', 'rgba(255,220,90,0.9)'];
 
 const $ = id => document.getElementById(id);
 const els = {
@@ -115,10 +120,20 @@ function renderTrack(track, canvas, vp, x0, x1) {
                 noteBits: corrector.get_scale(),
                 root: parseInt($('root-select').value),
             });
-            const data = isInput ? corrector.input_pitch_track() : corrector.output_pitch_track();
-            drawPitchTrack(ctx, data, pitchHop, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR, pitchScale);
-            if (!isInput && postCorrectionActive && editedContour) {
-                drawEditedContour(ctx, vp);
+            if (isInput) {
+                drawPitchTrack(ctx, corrector.input_pitch_track(), pitchHop, vp, INPUT_COLOR, pitchScale);
+            } else {
+                // Harmony voices first (dimmer, underneath), main on top.
+                for (let v = 1; v <= 3; v++) {
+                    const track = corrector.harmony_pitch_track(v);
+                    if (track.some(f => f > 0)) {
+                        drawPitchTrack(ctx, track, vocoderHop, vp, HARMONY_COLORS[v - 1], pitchScale);
+                    }
+                }
+                drawPitchTrack(ctx, corrector.output_pitch_track(), vocoderHop, vp, OUTPUT_COLOR, pitchScale);
+                if (postCorrectionActive && editedContour) {
+                    drawEditedContour(ctx, vp);
+                }
             }
             break;
         }
@@ -215,6 +230,9 @@ function updatePitchScale() {
     const changed = pitchScale.update([
         corrector.input_pitch_track(),
         corrector.output_pitch_track(),
+        corrector.harmony_pitch_track(1),
+        corrector.harmony_pitch_track(2),
+        corrector.harmony_pitch_track(3),
     ]);
     if (changed) invalidatePitchViews();
 }
@@ -318,6 +336,7 @@ function newCorrector() {
     if (new URLSearchParams(location.search).has('e2e')) window.__pc = corrector;
     sampleRate = corrector.sample_rate();
     pitchHop = corrector.pitch_hop();
+    vocoderHop = corrector.vocoder_hop();
     timeline.setSampleRate(sampleRate);
 }
 

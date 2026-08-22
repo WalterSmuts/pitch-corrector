@@ -1,6 +1,6 @@
 use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::signal_processing::{
-    PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, BUFFER_SIZE,
+    PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, HOP_SIZE,
 };
 use crossbeam_queue::ArrayQueue;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
@@ -74,6 +74,12 @@ pub struct PitchCorrectorControls {
     hop_target_semis: AtomicI32,
     /// Enabled harmony voices: bit0 = 3rd, bit1 = 5th, bit2 = octave.
     harmony_mask: AtomicU32,
+    /// Per-hop produced-pitch log of every voice — [main, 3rd, 5th, octave]
+    /// (Hz; 0 = silent/disabled) — written lock- and alloc-free from the
+    /// audio thread and drained by the UI. The output pitch view plots
+    /// these directly: the DSP knows what each voice produces, and running
+    /// a monophonic detector on the mixed output would garble.
+    voice_pitch_log: [ArrayQueue<f32>; 4],
     /// Diatonic (walk the scale) vs absolute (fixed semitones) harmony.
     harmony_in_key: AtomicBool,
     /// Edited target contour (post-correction playback). Written wholesale by
@@ -144,6 +150,14 @@ impl PitchCorrectorControls {
         self.harmony_in_key.store(in_key, Ordering::Relaxed);
     }
 
+    /// Drain the produced-pitch log of `voice` (0 = main, 1..=3 harmonies;
+    /// Hz per vocoder hop, 0 = silent) into `out`.
+    pub fn drain_voice_pitch(&self, voice: usize, out: &mut Vec<f32>) {
+        while let Some(f) = self.voice_pitch_log[voice].pop() {
+            out.push(f);
+        }
+    }
+
     pub fn get_harmony_in_key(&self) -> bool {
         self.harmony_in_key.load(Ordering::Relaxed)
     }
@@ -193,7 +207,7 @@ impl PitchCorrector {
         // Per-hop one-pole coefficient from the time constant: the ratio_fn
         // runs once per hop (BUFFER_SIZE/4 samples), so alpha adapts to the
         // real hop period and keeps a constant smoothing time.
-        let hop_period = (BUFFER_SIZE / 4) as f32 / sample_rate;
+        let hop_period = HOP_SIZE as f32 / sample_rate;
         let smoothing_alpha = 1.0 - (-hop_period / Self::SMOOTHING_TAU_SECONDS).exp();
 
         // ~94 hops/sec (hop=BUFFER_SIZE/4 at 44.1-48kHz); this bounds the
@@ -206,6 +220,7 @@ impl PitchCorrector {
             hop_detected_bits: AtomicU32::new(0),
             hop_target_semis: AtomicI32::new(NO_TARGET),
             harmony_mask: AtomicU32::new(0),
+            voice_pitch_log: std::array::from_fn(|_| ArrayQueue::new(TARGET_CONTOUR_CAPACITY)),
             harmony_in_key: AtomicBool::new(true),
             contour: Mutex::new(Vec::new()),
             contour_hop: AtomicUsize::new(0),
@@ -283,7 +298,12 @@ impl PitchCorrector {
                     *prev = 1.0;
                 }
             }
-            *prev * shift_ratio
+            let ratio = *prev * shift_ratio;
+            // Log what this voice actually produces this hop (detected pitch
+            // times the applied ratio; 0 when unvoiced).
+            let _ = controls_clone.voice_pitch_log[0]
+                .push(detected.map_or(0.0, |f| f * ratio));
+            ratio
         });
         let processor = PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn);
         PitchCorrector {
@@ -340,17 +360,21 @@ impl Harmonizer {
         let main = PitchCorrector::with_sample_rate(sample_rate);
         let controls = main.controls();
 
-        let hop_period = (BUFFER_SIZE / 4) as f32 / sample_rate;
+        let hop_period = HOP_SIZE as f32 / sample_rate;
         let smoothing_alpha =
             1.0 - (-hop_period / PitchCorrector::SMOOTHING_TAU_SECONDS).exp();
 
+        let mut voice_idx = 0usize;
         let voices = HARMONY_VOICES.map(|(degrees, abs_semitones)| {
+            voice_idx += 1;
+            let log_idx = voice_idx; // 1..=3 ([0] is the main voice)
             let controls = controls.clone();
             let smoothed = Mutex::new(1.0f32);
             let gap_hops = Mutex::new(0usize);
             let ratio_fn: RatioFn = Box::new(move |_frame: &[f32]| {
                 let detected = f32::from_bits(controls.hop_detected_bits.load(Ordering::Relaxed));
                 let semis = controls.hop_target_semis.load(Ordering::Relaxed);
+                let enabled = controls.harmony_mask.load(Ordering::Relaxed) & (1 << (log_idx - 1)) != 0;
 
                 let target_freq = if detected > 0.0 && semis != NO_TARGET {
                     let base = Pitch::new(
@@ -386,6 +410,14 @@ impl Harmonizer {
                         }
                     }
                 }
+                // Log this voice's produced pitch for the plot: only while
+                // enabled and voiced (it is faded out of the mix otherwise).
+                let produced = if enabled && target_freq.is_some() {
+                    detected * *prev
+                } else {
+                    0.0
+                };
+                let _ = controls.voice_pitch_log[log_idx].push(produced);
                 *prev
             });
             PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn)

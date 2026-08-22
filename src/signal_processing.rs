@@ -20,6 +20,9 @@ use std::sync::Mutex;
 // regress low-frequency detection; truly decoupling the two would require a
 // separate, longer detection buffer feeding a shorter synthesis window.
 pub const BUFFER_SIZE: usize = 2048;
+/// Phase-vocoder hop: the DSP produces one analysis/synthesis frame (and
+/// one per-voice pitch-log entry) every HOP_SIZE input samples.
+pub const HOP_SIZE: usize = BUFFER_SIZE / 4;
 pub const SPECTROGRAM_SIZE: usize = 8192;
 // Native default sampling rate. The native path forces the device to this
 // rate (see hardware.rs). YIN converts a detected period to Hz using a
@@ -472,7 +475,7 @@ impl PhaseVocoderPitchShifter<fn(&[f32]) -> f32> {
 impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
     pub fn with_ratio_fn(ratio_fn: F) -> Self {
         info!("Creating new PhaseVocoderPitchShifter with dynamic ratio");
-        let hop_size = BUFFER_SIZE / 4;
+        let hop_size = HOP_SIZE;
         let window: Vec<f32> = apodize::hanning_iter(BUFFER_SIZE)
             .map(|w| w as f32)
             .collect();
