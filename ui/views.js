@@ -13,9 +13,9 @@
 // (Spectrogram pixels come from Rust via draw_*_spectrogram_range.)
 
 const DENSE_LIMIT_CSS = 2; // point spacing below which we draw the envelope
-const DOT_RAMP_START = 3;  // css px spacing where dots begin to grow
-const DOT_RAMP_FULL = 9;   // css px spacing of full-size dots
-const DOT_R_CSS = 1.6;     // full dot radius (the classic pitch-dot look)
+const DOT_RAMP_START = 3; // css px spacing where dots begin to grow
+const DOT_RAMP_FULL = 9; // css px spacing of full-size dots
+const DOT_R_CSS = 1.6; // full dot radius (the classic pitch-dot look)
 const LINE_W_CSS = 1.1;
 
 const BG = 'rgb(10,10,20)';
@@ -42,7 +42,10 @@ function drawLinesAndDots(ctx, pts, spacingCss, dpr, color) {
     ctx.beginPath();
     let pen = false;
     for (const p of pts) {
-        if (!p) { pen = false; continue; }
+        if (!p) {
+            pen = false;
+            continue;
+        }
         if (pen) ctx.lineTo(p.x, p.y);
         else ctx.moveTo(p.x, p.y);
         pen = true;
@@ -51,7 +54,10 @@ function drawLinesAndDots(ctx, pts, spacingCss, dpr, color) {
 
     // Dots grow from line-width size (invisible against the line, but keeps
     // isolated points visible) to full radius as the points spread out.
-    const ramp = Math.min(1, Math.max(0, (spacingCss - DOT_RAMP_START) / (DOT_RAMP_FULL - DOT_RAMP_START)));
+    const ramp = Math.min(
+        1,
+        Math.max(0, (spacingCss - DOT_RAMP_START) / (DOT_RAMP_FULL - DOT_RAMP_START)),
+    );
     const r = Math.max(ramp * DOT_R_CSS, LINE_W_CSS * 0.6) * dpr;
     ctx.fillStyle = color;
     ctx.beginPath();
@@ -67,16 +73,16 @@ function drawLinesAndDots(ctx, pts, spacingCss, dpr, color) {
 
 // Work in MIDI semitones (69 = A4 = 440Hz): linear in log-frequency and
 // directly usable for the note grid.
-const freqToMidi = f => 69 + 12 * Math.log2(f / 440);
-const midiToFreq = m => 440 * 2 ** ((m - 69) / 12);
+const freqToMidi = (f) => 69 + 12 * Math.log2(f / 440);
+const midiToFreq = (m) => 440 * 2 ** ((m - 69) / 12);
 
-const SCALE_DEFAULT_LO = 36;  // C2
-const SCALE_DEFAULT_HI = 84;  // C6
-const SCALE_PAD_ST = 2;       // buffer on each side of the data
+const SCALE_DEFAULT_LO = 36; // C2
+const SCALE_DEFAULT_HI = 84; // C6
+const SCALE_PAD_ST = 2; // buffer on each side of the data
 const SCALE_MIN_SPAN_ST = 12; // never tighter than 1 octave
 const SCALE_SHRINK_SLACK = 4; // shrink only when this much slack per side
-const SCALE_ABS_LO = 12;      // C0
-const SCALE_ABS_HI = 108;     // C8
+const SCALE_ABS_LO = 12; // C0
+const SCALE_ABS_HI = 108; // C8
 
 /**
  * The y axis for pitch views. One instance is shared by the input and
@@ -97,12 +103,21 @@ export class PitchScale {
     /** Manual vertical zoom around `yFrac` (0 = top of the view). Puts the
      *  scale in manual mode so auto-fit stops moving it; cleared by reset(). */
     zoomBy(factor, yFrac = 0.5) {
-        const span = Math.min(Math.max((this.hi - this.lo) * factor, 4), SCALE_ABS_HI - SCALE_ABS_LO);
+        const span = Math.min(
+            Math.max((this.hi - this.lo) * factor, 4),
+            SCALE_ABS_HI - SCALE_ABS_LO,
+        );
         const anchor = this.hi - yFrac * (this.hi - this.lo);
         let hi = anchor + yFrac * span;
         let lo = hi - span;
-        if (lo < SCALE_ABS_LO) { hi += SCALE_ABS_LO - lo; lo = SCALE_ABS_LO; }
-        if (hi > SCALE_ABS_HI) { lo -= hi - SCALE_ABS_HI; hi = SCALE_ABS_HI; }
+        if (lo < SCALE_ABS_LO) {
+            hi += SCALE_ABS_LO - lo;
+            lo = SCALE_ABS_LO;
+        }
+        if (hi > SCALE_ABS_HI) {
+            lo -= hi - SCALE_ABS_HI;
+            hi = SCALE_ABS_HI;
+        }
         this.lo = lo;
         this.hi = hi;
         this.manual = true;
@@ -179,7 +194,7 @@ export function drawPitchGrid(ctx, w, h, dpr, scale, opts = {}) {
 
     const { noteBits = 0, root = 0 } = opts;
     // "Off" and full chromatic carry no note preference.
-    const hasScale = noteBits !== 0 && noteBits !== 0xFFF;
+    const hasScale = noteBits !== 0 && noteBits !== 0xfff;
     const semitonePx = h / (scale.hi - scale.lo);
 
     ctx.font = `${10 * dpr}px monospace`;

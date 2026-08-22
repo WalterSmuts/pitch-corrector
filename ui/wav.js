@@ -4,7 +4,9 @@ export function encodeWav(samples, sampleRate) {
     const numSamples = samples.length;
     const buffer = new ArrayBuffer(44 + numSamples * 2);
     const view = new DataView(buffer);
-    const writeStr = (off, str) => { for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i)); };
+    const writeStr = (off, str) => {
+        for (let i = 0; i < str.length; i++) view.setUint8(off + i, str.charCodeAt(i));
+    };
     writeStr(0, 'RIFF');
     view.setUint32(4, 36 + numSamples * 2, true);
     writeStr(8, 'WAVE');
@@ -20,7 +22,7 @@ export function encodeWav(samples, sampleRate) {
     view.setUint32(40, numSamples * 2, true);
     for (let i = 0; i < numSamples; i++) {
         const s = Math.max(-1, Math.min(1, samples[i]));
-        view.setInt16(44 + i * 2, s * 0x7FFF, true);
+        view.setInt16(44 + i * 2, s * 0x7fff, true);
     }
     return new Blob([buffer], { type: 'audio/wav' });
 }
@@ -29,7 +31,12 @@ export function decodeWav(arrayBuffer) {
     const view = new DataView(arrayBuffer);
     let offset = 12;
     while (offset < view.byteLength - 8) {
-        const id = String.fromCharCode(view.getUint8(offset), view.getUint8(offset + 1), view.getUint8(offset + 2), view.getUint8(offset + 3));
+        const id = String.fromCharCode(
+            view.getUint8(offset),
+            view.getUint8(offset + 1),
+            view.getUint8(offset + 2),
+            view.getUint8(offset + 3),
+        );
         const size = view.getUint32(offset + 4, true);
         if (id === 'data') {
             const bitsPerSample = view.getUint16(34, true);
@@ -38,7 +45,7 @@ export function decodeWav(arrayBuffer) {
             const dataStart = offset + 8;
             if (bitsPerSample === 16) {
                 for (let i = 0; i < size; i += 2 * numChannels) {
-                    samples.push(view.getInt16(dataStart + i, true) / 0x7FFF);
+                    samples.push(view.getInt16(dataStart + i, true) / 0x7fff);
                 }
             } else if (bitsPerSample === 32) {
                 for (let i = 0; i < size; i += 4 * numChannels) {

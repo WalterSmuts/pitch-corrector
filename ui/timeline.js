@@ -8,8 +8,8 @@
 // render (incremental columns while following a recording, full repaints on
 // zoom/pan), and handles DPR, resize, zoom, pan, follow mode, and seeking.
 
-const MIN_SPP = 0.125;       // max zoom in: 8px per sample (sample-level view)
-const HEAD_W = 110;          // css px, track header column
+const MIN_SPP = 0.125; // max zoom in: 8px per sample (sample-level view)
+const HEAD_W = 110; // css px, track header column
 
 export class Timeline {
     /**
@@ -26,16 +26,16 @@ export class Timeline {
         this.opts = opts;
         this.root = root;
         this.sampleRate = 48000;
-        this.total = 0;          // recording length in samples
-        this.s0 = 0;             // viewport left edge (samples)
-        this.spp = null;         // samples per device px; null = fit
+        this.total = 0; // recording length in samples
+        this.s0 = 0; // viewport left edge (samples)
+        this.spp = null; // samples per device px; null = fit
         this.followMode = false;
-        this.playhead = null;    // sample idx or null
+        this.playhead = null; // sample idx or null
         this.dpr = window.devicePixelRatio || 1;
-        this.tracks = opts.tracks.map(t => ({
+        this.tracks = opts.tracks.map((t) => ({
             ...t,
             canvas: null,
-            rendered: null,      // {s0, spp, end, view} of current canvas content
+            rendered: null, // {s0, spp, end, view} of current canvas content
         }));
 
         this.#buildDom();
@@ -119,7 +119,9 @@ export class Timeline {
             t.rendered = null;
         }
         this.rulerCanvas.width = Math.round(cssW * this.dpr);
-        this.rulerCanvas.height = Math.round(this.rulerCanvas.parentElement.clientHeight * this.dpr);
+        this.rulerCanvas.height = Math.round(
+            this.rulerCanvas.parentElement.clientHeight * this.dpr,
+        );
         this.renderedRuler = null;
         this.render();
     }
@@ -168,9 +170,7 @@ export class Timeline {
         const spp = this.#effSpp();
         const maxSpp = Math.max(this.total / Math.max(1, this.w), MIN_SPP);
         const newSpp = Math.min(Math.max(spp * factor, MIN_SPP), Math.max(maxSpp, spp));
-        const anchor = atCssX !== null
-            ? this.sampleAtX(atCssX)
-            : this.s0 + (this.w / 2) * spp;
+        const anchor = atCssX !== null ? this.sampleAtX(atCssX) : this.s0 + (this.w / 2) * spp;
         const anchorPx = atCssX !== null ? atCssX * this.dpr : this.w / 2;
         this.spp = newSpp;
         this.s0 = Math.max(0, anchor - anchorPx * newSpp);
@@ -205,7 +205,7 @@ export class Timeline {
      *  Rolls the repaint watermark back if the data shrank (playback
      *  re-processing truncates the output at the seek position). */
     setDataEnd(trackId, sampleIdx) {
-        const t = this.tracks.find(t => t.id === trackId);
+        const t = this.tracks.find((t) => t.id === trackId);
         if (!t) return;
         t.dataEnd = sampleIdx;
         if (t.rendered) t.rendered.end = Math.min(t.rendered.end, sampleIdx);
@@ -220,7 +220,7 @@ export class Timeline {
     }
 
     getTrack(id) {
-        return this.tracks.find(t => t.id === id);
+        return this.tracks.find((t) => t.id === id);
     }
 
     /** Programmatically switch a track's view (keeps its selector in sync). */
@@ -273,8 +273,12 @@ export class Timeline {
         // before their data existed get repainted when it arrives.
         const dataEnd = Math.min(t.dataEnd ?? this.total, this.total);
         const vp = {
-            s0: this.s0, spp, w: t.canvas.width, h: t.canvas.height,
-            dpr: this.dpr, end: dataEnd,
+            s0: this.s0,
+            spp,
+            w: t.canvas.width,
+            h: t.canvas.height,
+            dpr: this.dpr,
+            end: dataEnd,
         };
         const r = t.rendered;
         const end = Math.min(dataEnd, this.s0 + vp.w * spp);
@@ -365,18 +369,21 @@ export class Timeline {
         const secPerPx = spp / this.sampleRate;
         const target = secPerPx * 90 * this.dpr;
         const pow = 10 ** Math.floor(Math.log10(target));
-        const step = [1, 2, 5, 10].map(m => m * pow).find(s => s >= target) || 10 * pow;
+        const step = [1, 2, 5, 10].map((m) => m * pow).find((s) => s >= target) || 10 * pow;
 
-        const t0 = (this.s0 / this.sampleRate);
+        const t0 = this.s0 / this.sampleRate;
         const t1 = t0 + (w * spp) / this.sampleRate;
         ctx.beginPath();
         for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
             const x = (t * this.sampleRate - this.s0) / spp;
             ctx.moveTo(x, h * 0.4);
             ctx.lineTo(x, h);
-            const label = step >= 1 ? `${Math.round(t)}s`
-                : step >= 0.01 ? `${t.toFixed(step >= 0.1 ? 1 : 2)}s`
-                : `${(t * 1000).toFixed(step >= 0.001 ? 0 : 1)}ms`;
+            const label =
+                step >= 1
+                    ? `${Math.round(t)}s`
+                    : step >= 0.01
+                      ? `${t.toFixed(step >= 0.1 ? 1 : 2)}s`
+                      : `${(t * 1000).toFixed(step >= 0.001 ? 0 : 1)}ms`;
             ctx.fillText(label, x + 3 * this.dpr, h * 0.55);
         }
         // Minor ticks.
@@ -407,37 +414,41 @@ export class Timeline {
     // --- Interactions ---
 
     #bindInteractions() {
-        const surfaces = [this.rulerCanvas, ...this.tracks.map(t => t.canvas)];
+        const surfaces = [this.rulerCanvas, ...this.tracks.map((t) => t.canvas)];
         for (const c of surfaces) {
-            c.addEventListener('wheel', e => {
-                e.preventDefault();
-                // Normalize line-mode deltas (Firefox) to ~px.
-                const k = e.deltaMode === 1 ? 16 : 1;
-                const dx = e.deltaX * k;
-                const dy = e.deltaY * k;
-                const rect = c.getBoundingClientRect();
-                const x = e.clientX - rect.left;
-                if (e.ctrlKey) {
-                    // Ctrl+scroll: zoom the view's vertical axis (delegated —
-                    // its meaning depends on the view).
-                    const t = this.tracks.find(t => t.canvas === c);
-                    if (t) {
-                        const yFrac = (e.clientY - rect.top) / rect.height;
-                        this.opts.onVerticalZoom?.(t, Math.exp(dy * 0.002), yFrac);
+            c.addEventListener(
+                'wheel',
+                (e) => {
+                    e.preventDefault();
+                    // Normalize line-mode deltas (Firefox) to ~px.
+                    const k = e.deltaMode === 1 ? 16 : 1;
+                    const dx = e.deltaX * k;
+                    const dy = e.deltaY * k;
+                    const rect = c.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    if (e.ctrlKey) {
+                        // Ctrl+scroll: zoom the view's vertical axis (delegated —
+                        // its meaning depends on the view).
+                        const t = this.tracks.find((t) => t.canvas === c);
+                        if (t) {
+                            const yFrac = (e.clientY - rect.top) / rect.height;
+                            this.opts.onVerticalZoom?.(t, Math.exp(dy * 0.002), yFrac);
+                        }
+                    } else if (Math.abs(dx) > Math.abs(dy)) {
+                        this.panBy(dx); // trackpad horizontal scroll / tilt wheel
+                    } else if (e.shiftKey) {
+                        this.panBy(dy);
+                    } else if (dy !== 0) {
+                        this.zoomBy(Math.exp(dy * 0.002), x);
                     }
-                } else if (Math.abs(dx) > Math.abs(dy)) {
-                    this.panBy(dx); // trackpad horizontal scroll / tilt wheel
-                } else if (e.shiftKey) {
-                    this.panBy(dy);
-                } else if (dy !== 0) {
-                    this.zoomBy(Math.exp(dy * 0.002), x);
-                }
-            }, { passive: false });
+                },
+                { passive: false },
+            );
         }
 
         // Click = seek; drag on a track = delegated (contour editing).
         for (const t of this.tracks) {
-            t.canvas.addEventListener('pointerdown', e => {
+            t.canvas.addEventListener('pointerdown', (e) => {
                 const pos = this.#trackPos(t, e);
                 if (this.opts.onTrackDrag?.(t, pos, 'start')) {
                     t.canvas.setPointerCapture(e.pointerId);
@@ -446,10 +457,10 @@ export class Timeline {
                     t.pendingSeek = pos.sample;
                 }
             });
-            t.canvas.addEventListener('pointermove', e => {
+            t.canvas.addEventListener('pointermove', (e) => {
                 if (t.dragging) this.opts.onTrackDrag(t, this.#trackPos(t, e), 'move');
             });
-            t.canvas.addEventListener('pointerup', e => {
+            t.canvas.addEventListener('pointerup', (e) => {
                 if (t.dragging) {
                     this.opts.onTrackDrag(t, this.#trackPos(t, e), 'end');
                     t.dragging = false;
@@ -459,7 +470,7 @@ export class Timeline {
                 }
             });
         }
-        this.rulerCanvas.addEventListener('click', e => {
+        this.rulerCanvas.addEventListener('click', (e) => {
             const rect = this.rulerCanvas.getBoundingClientRect();
             const s = this.sampleAtX(e.clientX - rect.left);
             this.opts.onSeek?.(Math.max(0, Math.min(s, this.total)));

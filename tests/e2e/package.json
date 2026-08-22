@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "gen": "node gen-tone.mjs",
-    "test": "node gen-tone.mjs && node run.mjs && node ui.mjs && node deny.mjs"
+    "test": "prettier --check '../../ui/*.js' './*.mjs' && node gen-tone.mjs && node run.mjs && node ui.mjs && node deny.mjs",
+    "fmt": "prettier --write '../../ui/*.js' './*.mjs'"
   },
   "devDependencies": {
-    "playwright": "1.61.1"
+    "playwright": "1.61.1",
+    "prettier": "3.9.6"
   }
 }

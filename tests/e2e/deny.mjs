@@ -21,7 +21,9 @@ try {
   });
   const page = await (await browser.newContext()).newPage();
   await page.goto(`http://localhost:${PORT}/?e2e`, { waitUntil: 'load' });
-  await page.waitForFunction(() => !document.getElementById('record-btn').disabled, { timeout: 20000 });
+  await page.waitForFunction(() => !document.getElementById('record-btn').disabled, {
+    timeout: 20000,
+  });
   await page.click('#record-btn');
   await sleep(2500);
   const status = await page.evaluate(() => document.getElementById('status').textContent);

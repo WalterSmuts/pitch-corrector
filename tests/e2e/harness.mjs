@@ -20,12 +20,20 @@ export function findChrome() {
     '/usr/bin/google-chrome',
     '/opt/google/chrome/chrome',
   ].filter(Boolean);
-  const found = cands.find(p => { try { return fs.existsSync(p); } catch { return false; } });
+  const found = cands.find((p) => {
+    try {
+      return fs.existsSync(p);
+    } catch {
+      return false;
+    }
+  });
   if (!found) throw new Error('No Chromium found; set PW_CHROME=/path/to/chrome');
   return found;
 }
 
-export function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+export function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
 
 /**
  * Start server + browser + page. Returns { page, ctx, errors, close }.
@@ -53,8 +61,10 @@ export async function launch({ port, wav = toneWav }) {
   const page = await ctx.newPage();
 
   const errors = [];
-  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
-  page.on('pageerror', e => errors.push('pageerror: ' + e.message));
+  page.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text());
+  });
+  page.on('pageerror', (e) => errors.push('pageerror: ' + e.message));
 
   return {
     page,

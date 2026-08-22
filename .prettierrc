@@ -1,0 +1,11 @@
+{
+    "printWidth": 100,
+    "singleQuote": true,
+    "tabWidth": 4,
+    "overrides": [
+        {
+            "files": "tests/e2e/*.mjs",
+            "options": { "tabWidth": 2 }
+        }
+    ]
+}

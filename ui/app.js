@@ -39,7 +39,7 @@ const EDIT_COLOR = 'rgb(255,80,200)';
 // monophonic detector on the mixed output): 3rd, 5th, octave.
 const HARMONY_COLORS = ['rgba(90,190,255,0.9)', 'rgba(200,130,255,0.9)', 'rgba(255,220,90,0.9)'];
 
-const $ = id => document.getElementById(id);
+const $ = (id) => document.getElementById(id);
 const els = {
     status: $('status'),
     recordBtn: $('record-btn'),
@@ -58,13 +58,23 @@ const els = {
 
 const timeline = new Timeline($('timeline'), {
     tracks: [
-        { id: 'input', label: 'Input', views: ['waveform', 'pitch', 'spectrogram'], view: 'waveform' },
-        { id: 'output', label: 'Output', views: ['waveform', 'pitch', 'spectrogram'], view: 'waveform' },
+        {
+            id: 'input',
+            label: 'Input',
+            views: ['waveform', 'pitch', 'spectrogram'],
+            view: 'waveform',
+        },
+        {
+            id: 'output',
+            label: 'Output',
+            views: ['waveform', 'pitch', 'spectrogram'],
+            view: 'waveform',
+        },
     ],
     renderTrack,
     // Spectrogram columns cost an FFT each; budget them per frame so big
     // repaints stay off the long-task radar. Other views are cheap.
-    renderBudget: (t) => t.view === 'spectrogram' ? 128 : Infinity,
+    renderBudget: (t) => (t.view === 'spectrogram' ? 128 : Infinity),
     onSeek: seekTo,
     onViewChange: () => updatePostCorrectionVisibility(),
     onTrackDrag: contourDrag,
@@ -107,10 +117,24 @@ function renderTrack(track, canvas, vp, x0, x1) {
             const start = vp.s0 + x0 * vp.spp;
             if (isInput) {
                 corrector.draw_input_spectrogram_range(
-                    canvas, x0, w, start, vp.spp, vzoom.spec.lo, vzoom.spec.hi);
+                    canvas,
+                    x0,
+                    w,
+                    start,
+                    vp.spp,
+                    vzoom.spec.lo,
+                    vzoom.spec.hi,
+                );
             } else {
                 corrector.draw_output_spectrogram_range(
-                    canvas, x0, w, start, vp.spp, vzoom.spec.lo, vzoom.spec.hi);
+                    canvas,
+                    x0,
+                    w,
+                    start,
+                    vp.spp,
+                    vzoom.spec.lo,
+                    vzoom.spec.hi,
+                );
             }
             break;
         }
@@ -121,16 +145,37 @@ function renderTrack(track, canvas, vp, x0, x1) {
                 root: parseInt($('root-select').value),
             });
             if (isInput) {
-                drawPitchTrack(ctx, corrector.input_pitch_track(), pitchHop, vp, INPUT_COLOR, pitchScale);
+                drawPitchTrack(
+                    ctx,
+                    corrector.input_pitch_track(),
+                    pitchHop,
+                    vp,
+                    INPUT_COLOR,
+                    pitchScale,
+                );
             } else {
                 // Harmony voices first (dimmer, underneath), main on top.
                 for (let v = 1; v <= 3; v++) {
                     const track = corrector.harmony_pitch_track(v);
-                    if (track.some(f => f > 0)) {
-                        drawPitchTrack(ctx, track, vocoderHop, vp, HARMONY_COLORS[v - 1], pitchScale);
+                    if (track.some((f) => f > 0)) {
+                        drawPitchTrack(
+                            ctx,
+                            track,
+                            vocoderHop,
+                            vp,
+                            HARMONY_COLORS[v - 1],
+                            pitchScale,
+                        );
                     }
                 }
-                drawPitchTrack(ctx, corrector.output_pitch_track(), vocoderHop, vp, OUTPUT_COLOR, pitchScale);
+                drawPitchTrack(
+                    ctx,
+                    corrector.output_pitch_track(),
+                    vocoderHop,
+                    vp,
+                    OUTPUT_COLOR,
+                    pitchScale,
+                );
                 if (postCorrectionActive && editedContour) {
                     drawEditedContour(ctx, vp);
                 }
@@ -141,8 +186,15 @@ function renderTrack(track, canvas, vp, x0, x1) {
             const fetchPeaks = isInput
                 ? (a, b, n) => corrector.input_peaks(a, b, n)
                 : (a, b, n) => corrector.output_peaks(a, b, n);
-            drawWaveform(ctx, fetchPeaks, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR, x0, x1,
-                vzoom.waveformGain);
+            drawWaveform(
+                ctx,
+                fetchPeaks,
+                vp,
+                isInput ? INPUT_COLOR : OUTPUT_COLOR,
+                x0,
+                x1,
+                vzoom.waveformGain,
+            );
             break;
         }
     }
@@ -193,8 +245,14 @@ function verticalZoom(track, factor, yFrac) {
             const anchor = vzoom.spec.hi - yFrac * (vzoom.spec.hi - vzoom.spec.lo);
             let hi = anchor + yFrac * span;
             let lo = hi - span;
-            if (lo < 0) { hi -= lo; lo = 0; }
-            if (hi > 1) { lo -= hi - 1; hi = 1; }
+            if (lo < 0) {
+                hi -= lo;
+                lo = 0;
+            }
+            if (hi > 1) {
+                lo -= hi - 1;
+                hi = 1;
+            }
             vzoom.spec = { lo, hi };
             break;
         }
@@ -285,7 +343,8 @@ function setState(newState) {
     els.status.textContent = s[state];
     els.recordBtn.disabled = state === 'recording' || state === 'playing';
     els.stopBtn.disabled = state !== 'recording';
-    els.playBtn.disabled = !(state === 'stopped' || state === 'paused' || state === 'playing') || totalSamples === 0;
+    els.playBtn.disabled =
+        !(state === 'stopped' || state === 'paused' || state === 'playing') || totalSamples === 0;
     els.playBtn.textContent = state === 'playing' ? '⏸ Pause' : '▶ Play';
     const hasRecording = totalSamples > 0 && (state === 'stopped' || state === 'paused');
     els.downloadBtn.disabled = !hasRecording;
@@ -298,8 +357,7 @@ function checkBrowserSupport() {
     if (typeof WebAssembly === 'undefined') missing.push('WebAssembly');
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia))
         missing.push('microphone access (getUserMedia)');
-    if (!(window.AudioContext || window.webkitAudioContext))
-        missing.push('Web Audio');
+    if (!(window.AudioContext || window.webkitAudioContext)) missing.push('Web Audio');
     return missing;
 }
 
@@ -308,7 +366,11 @@ function describeStartError(e) {
     const hay = s.toLowerCase();
     if (hay.includes('notallowed') || hay.includes('permission') || hay.includes('denied'))
         return 'Microphone permission denied. Allow mic access in your browser, then click Record again.';
-    if (hay.includes('notfound') || hay.includes('no input device') || hay.includes('devicesnotfound'))
+    if (
+        hay.includes('notfound') ||
+        hay.includes('no input device') ||
+        hay.includes('devicesnotfound')
+    )
         return 'No microphone found. Connect a microphone and click Record again.';
     if (hay.includes('notreadable') || hay.includes('in use'))
         return 'Microphone is in use by another application. Close it and retry.';
@@ -357,7 +419,8 @@ async function startRecording() {
     const missing = checkBrowserSupport();
     if (missing.length) {
         els.status.textContent =
-            'Unsupported browser — missing ' + missing.join(', ') +
+            'Unsupported browser — missing ' +
+            missing.join(', ') +
             '. Try a recent Chrome, Edge, or Firefox over HTTPS.';
         return;
     }
@@ -379,7 +442,7 @@ async function startRecording() {
             // with the now-granted permission.
             els.status.textContent = 'Waiting for microphone permission…';
             const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
-            probe.getTracks().forEach(t => t.stop());
+            probe.getTracks().forEach((t) => t.stop());
         }
         newCorrector();
         resetSession();
@@ -468,10 +531,16 @@ els.playBtn.addEventListener('click', () => {
     if (state === 'playing') pausePlayback();
     else if (state === 'stopped' || state === 'paused') startPlayback();
 });
-window.addEventListener('keydown', e => {
-    if (e.code !== 'Space' || e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
-    if (state === 'playing') { e.preventDefault(); pausePlayback(); }
-    else if (state === 'stopped' || state === 'paused') { e.preventDefault(); startPlayback(); }
+window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Space' || e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT')
+        return;
+    if (state === 'playing') {
+        e.preventDefault();
+        pausePlayback();
+    } else if (state === 'stopped' || state === 'paused') {
+        e.preventDefault();
+        startPlayback();
+    }
 });
 
 // --- Harmony controls ---
@@ -490,12 +559,13 @@ function applyHarmony() {
 const harmonyOffBtn = $('harmony-off');
 harmonyOffBtn.addEventListener('click', () => {
     harmonyMask = 0;
-    document.querySelectorAll('#harmony-controls button[data-hvoice]')
-        .forEach(b => b.classList.remove('active'));
+    document
+        .querySelectorAll('#harmony-controls button[data-hvoice]')
+        .forEach((b) => b.classList.remove('active'));
     harmonyOffBtn.classList.add('active');
     applyHarmony();
 });
-document.querySelectorAll('#harmony-controls button[data-hvoice]').forEach(btn => {
+document.querySelectorAll('#harmony-controls button[data-hvoice]').forEach((btn) => {
     btn.addEventListener('click', () => {
         harmonyMask ^= 1 << parseInt(btn.dataset.hvoice);
         btn.classList.toggle('active');
@@ -503,10 +573,11 @@ document.querySelectorAll('#harmony-controls button[data-hvoice]').forEach(btn =
         applyHarmony();
     });
 });
-document.querySelectorAll('#harmony-controls button[data-hmode]').forEach(btn => {
+document.querySelectorAll('#harmony-controls button[data-hmode]').forEach((btn) => {
     btn.addEventListener('click', () => {
-        document.querySelectorAll('#harmony-controls button[data-hmode]')
-            .forEach(b => b.classList.remove('active'));
+        document
+            .querySelectorAll('#harmony-controls button[data-hmode]')
+            .forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
         harmonyInKey = btn.dataset.hmode === 'key';
         applyHarmony();
@@ -517,7 +588,7 @@ document.querySelectorAll('#harmony-controls button[data-hmode]').forEach(btn =>
 
 const noteNames = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 let currentScale = 'pentatonic';
-let customBits = 0xFFF;
+let customBits = 0xfff;
 
 const noteGrid = $('note-grid');
 noteNames.forEach((name, i) => {
@@ -528,8 +599,8 @@ noteNames.forEach((name, i) => {
     btn.addEventListener('click', () => {
         btn.classList.toggle('active');
         customBits = 0;
-        noteGrid.querySelectorAll('button.active').forEach(b => {
-            customBits |= (1 << parseInt(b.dataset.note));
+        noteGrid.querySelectorAll('button.active').forEach((b) => {
+            customBits |= 1 << parseInt(b.dataset.note);
         });
         if (corrector && currentScale === 'custom') {
             corrector.set_scale(customBits);
@@ -550,9 +621,11 @@ function applyScale() {
     invalidatePitchViews(); // grid emphasis and labels follow the scale
 }
 
-document.querySelectorAll('#scale-buttons button').forEach(btn => {
+document.querySelectorAll('#scale-buttons button').forEach((btn) => {
     btn.addEventListener('click', () => {
-        document.querySelectorAll('#scale-buttons button').forEach(b => b.classList.remove('active'));
+        document
+            .querySelectorAll('#scale-buttons button')
+            .forEach((b) => b.classList.remove('active'));
         btn.classList.add('active');
         currentScale = btn.dataset.scale;
         $('custom-notes').style.display = currentScale === 'custom' ? 'block' : 'none';
@@ -591,7 +664,8 @@ els.postCorrectionCb.addEventListener('change', () => {
             viewSelect.value = 'pitch';
             applySharedView();
         }
-        els.status.textContent = 'Post-correction: drag on the output pitch track to edit the melody, then Play.';
+        els.status.textContent =
+            'Post-correction: drag on the output pitch track to edit the melody, then Play.';
     }
     timeline.invalidate('output');
 });
@@ -642,11 +716,11 @@ async function uploadRecording(file) {
     // Process offline in chunks, yielding so the page stays responsive.
     const chunk = sampleRate; // ~1s of audio per slice
     for (let offset = 0; offset < samples.length;) {
-        els.status.textContent = `Processing… ${Math.round(offset / samples.length * 100)}%`;
+        els.status.textContent = `Processing… ${Math.round((offset / samples.length) * 100)}%`;
         offset += corrector.process_offline(samples.subarray(offset), chunk);
         totalSamples = corrector.analyze();
         timeline.setTotal(totalSamples);
-        await new Promise(r => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(r, 0));
     }
     totalSamples = corrector.analyze();
     timeline.setTotal(totalSamples);
@@ -675,7 +749,8 @@ if (!splitCb.checked) applySharedView();
     const missing = checkBrowserSupport();
     if (missing.length) {
         els.status.textContent =
-            'This browser is missing ' + missing.join(', ') +
+            'This browser is missing ' +
+            missing.join(', ') +
             '. Use a recent Chrome, Edge, or Firefox over HTTPS.';
         els.recordBtn.disabled = true;
         return;
