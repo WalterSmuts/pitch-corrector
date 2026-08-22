@@ -72,9 +72,9 @@ const midiToFreq = m => 440 * 2 ** ((m - 69) / 12);
 
 const SCALE_DEFAULT_LO = 36;  // C2
 const SCALE_DEFAULT_HI = 84;  // C6
-const SCALE_PAD_ST = 3;       // buffer on each side of the data
-const SCALE_MIN_SPAN_ST = 24; // never tighter than 2 octaves
-const SCALE_SHRINK_SLACK = 5; // shrink only when this much slack per side
+const SCALE_PAD_ST = 2;       // buffer on each side of the data
+const SCALE_MIN_SPAN_ST = 12; // never tighter than 1 octave
+const SCALE_SHRINK_SLACK = 4; // shrink only when this much slack per side
 const SCALE_ABS_LO = 12;      // C0
 const SCALE_ABS_HI = 108;     // C8
 
