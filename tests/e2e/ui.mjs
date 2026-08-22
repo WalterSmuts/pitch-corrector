@@ -83,6 +83,17 @@ try {
   await page.click('.tl-zoom-btn:nth-child(1)'); // −
   const zoomedOut = await page.evaluate(() => window.__tl.spp);
   check(zoomedOut > zoomed, `zoom-out button works (spp ${Math.round(zoomed)} -> ${Math.round(zoomedOut)})`);
+
+  // Horizontal scroll (trackpad swipe / tilt wheel) pans the viewport.
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2); // over the track, not the zoom button
+  const s0Before = await page.evaluate(() => window.__tl.s0);
+  await page.mouse.wheel(300, 0);
+  const s0Right = await page.evaluate(() => window.__tl.s0);
+  check(s0Right > s0Before, `horizontal scroll pans right (s0 ${Math.round(s0Before)} -> ${Math.round(s0Right)})`);
+  await page.mouse.wheel(-100000, 0); // hard left: must clamp at 0
+  const s0Clamped = await page.evaluate(() => window.__tl.s0);
+  check(s0Clamped === 0, `horizontal scroll clamps at the start (s0=${s0Clamped})`);
+
   await page.click('.tl-zoom-btn:nth-child(3)'); // Fit
   const fitAgain = await page.evaluate(() => ({ s0: window.__tl.s0, spp: window.__tl.spp }));
   check(fitAgain.s0 === 0 && fitAgain.spp === null, 'Fit button restores full view');

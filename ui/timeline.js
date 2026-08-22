@@ -388,12 +388,18 @@ export class Timeline {
         for (const c of surfaces) {
             c.addEventListener('wheel', e => {
                 e.preventDefault();
+                // Normalize line-mode deltas (Firefox) to ~px.
+                const k = e.deltaMode === 1 ? 16 : 1;
+                const dx = e.deltaX * k;
+                const dy = e.deltaY * k;
                 const rect = c.getBoundingClientRect();
                 const x = e.clientX - rect.left;
-                if (e.shiftKey) {
-                    this.panBy(e.deltaY);
-                } else {
-                    this.zoomBy(Math.exp(e.deltaY * 0.002), x);
+                if (Math.abs(dx) > Math.abs(dy)) {
+                    this.panBy(dx); // trackpad horizontal scroll / tilt wheel
+                } else if (e.shiftKey) {
+                    this.panBy(dy);
+                } else if (dy !== 0) {
+                    this.zoomBy(Math.exp(dy * 0.002), x);
                 }
             }, { passive: false });
         }
