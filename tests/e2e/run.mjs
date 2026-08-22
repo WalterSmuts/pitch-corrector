@@ -75,6 +75,9 @@ try {
     args: [
       '--headless=new',
       '--use-fake-ui-for-media-stream',
+      // Required for --use-file-for-fake-audio-capture to take effect;
+      // without it Chromium ignores the WAV and the mic delivers silence.
+      '--use-fake-device-for-media-stream',
       `--use-file-for-fake-audio-capture=${WAV}`,
       '--autoplay-policy=no-user-gesture-required',
     ],
