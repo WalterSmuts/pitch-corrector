@@ -47,19 +47,25 @@ const EDIT_COLOR = 'rgb(255,80,200)';
 const HARMONY_COLORS = ['rgba(90,190,255,0.9)', 'rgba(200,130,255,0.9)', 'rgba(255,220,90,0.9)'];
 
 const $ = (id) => document.getElementById(id);
+/** @returns {HTMLButtonElement} */
+const $btn = (id) => /** @type {HTMLButtonElement} */ ($(id));
+/** @returns {HTMLInputElement} */
+const $input = (id) => /** @type {HTMLInputElement} */ ($(id));
+/** @returns {HTMLSelectElement} */
+const $select = (id) => /** @type {HTMLSelectElement} */ ($(id));
 const els = {
     status: $('status'),
-    recordBtn: $('record-btn'),
-    stopBtn: $('stop-btn'),
-    playBtn: $('play-btn'),
-    passthroughBtn: $('passthrough-btn'),
-    dryBtn: $('dry-btn'),
-    downloadBtn: $('download-btn'),
-    debugBtn: $('debug-btn'),
-    uploadBtn: $('upload-btn'),
-    uploadInput: $('upload-input'),
+    recordBtn: $btn('record-btn'),
+    stopBtn: $btn('stop-btn'),
+    playBtn: $btn('play-btn'),
+    passthroughBtn: $btn('passthrough-btn'),
+    dryBtn: $btn('dry-btn'),
+    downloadBtn: $btn('download-btn'),
+    debugBtn: $btn('debug-btn'),
+    uploadBtn: $btn('upload-btn'),
+    uploadInput: $input('upload-input'),
     postCorrectionLabel: $('post-correction-label'),
-    postCorrectionCb: $('post-correction-cb'),
+    postCorrectionCb: $input('post-correction-cb'),
 };
 
 // --- Timeline ---
@@ -91,15 +97,16 @@ const timeline = new Timeline($('timeline'), {
 });
 // E2E test hook: expose the timeline for viewport assertions.
 if (new URLSearchParams(location.search).has('e2e')) {
-    window.__tl = timeline;
-    window.__scale = pitchScale;
-    window.__amp = ampScale;
+    const w = /** @type {any} */ (window);
+    w.__tl = timeline;
+    w.__scale = pitchScale;
+    w.__amp = ampScale;
 }
 
 // --- View selection: one shared dropdown by default, split on demand ---
 
-const viewSelect = $('view-select');
-const splitCb = $('split-views-cb');
+const viewSelect = $select('view-select');
+const splitCb = $input('split-views-cb');
 
 function applySharedView() {
     timeline.setView('input', viewSelect.value);
@@ -151,7 +158,7 @@ function renderTrack(track, canvas, vp, x0, x1) {
             // Cheap enough to always repaint fully.
             drawPitchGrid(ctx, vp.w, vp.h, vp.dpr, pitchScale, {
                 noteBits: corrector.get_scale(),
-                root: parseInt($('root-select').value),
+                root: parseInt($select('root-select').value),
             });
             if (isInput) {
                 drawPitchTrack(
@@ -381,7 +388,8 @@ function checkBrowserSupport() {
     if (typeof WebAssembly === 'undefined') missing.push('WebAssembly');
     if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia))
         missing.push('microphone access (getUserMedia)');
-    if (!(window.AudioContext || window.webkitAudioContext)) missing.push('Web Audio');
+    if (!(window.AudioContext || /** @type {any} */ (window).webkitAudioContext))
+        missing.push('Web Audio');
     return missing;
 }
 
@@ -407,7 +415,7 @@ function waitForAudioReady(c, timeoutMs = 6000) {
     return new Promise((resolve) => {
         const t0 = performance.now();
         (function poll() {
-            if (c.is_audio_ready() || performance.now() - t0 > timeoutMs) resolve();
+            if (c.is_audio_ready() || performance.now() - t0 > timeoutMs) resolve(undefined);
             else setTimeout(poll, 30);
         })();
     });
@@ -422,7 +430,8 @@ function newCorrector() {
     corrector = new WebPitchCorrector();
     // E2E test hook: expose the corrector so Playwright can inspect the
     // captured buffers. Only when ?e2e is set.
-    if (new URLSearchParams(location.search).has('e2e')) window.__pc = corrector;
+    if (new URLSearchParams(location.search).has('e2e'))
+        /** @type {any} */ (window).__pc = corrector;
     sampleRate = corrector.sample_rate();
     pitchHop = corrector.pitch_hop();
     vocoderHop = corrector.vocoder_hop();
@@ -569,7 +578,8 @@ els.playBtn.addEventListener('click', () => {
 window.addEventListener('keydown', (e) => {
     if (e.code === 'Space') {
         // Don't fight a focused control (Space also activates buttons).
-        if (e.target.tagName === 'BUTTON' || e.target.tagName === 'SELECT') return;
+        const tag = /** @type {HTMLElement} */ (e.target).tagName;
+        if (tag === 'BUTTON' || tag === 'SELECT') return;
         if (state === 'playing') {
             e.preventDefault();
             pausePlayback();
@@ -611,7 +621,7 @@ function applyHarmony() {
     corrector.set_harmony_in_key(harmonyInKey);
 }
 
-const harmonyOffBtn = $('harmony-off');
+const harmonyOffBtn = $btn('harmony-off');
 harmonyOffBtn.addEventListener('click', () => {
     harmonyMask = 0;
     document
@@ -620,7 +630,9 @@ harmonyOffBtn.addEventListener('click', () => {
     harmonyOffBtn.classList.add('active');
     applyHarmony();
 });
-document.querySelectorAll('#harmony-controls button[data-hvoice]').forEach((btn) => {
+/** @type {NodeListOf<HTMLButtonElement>} */ (
+    document.querySelectorAll('#harmony-controls button[data-hvoice]')
+).forEach((btn) => {
     btn.addEventListener('click', () => {
         harmonyMask ^= 1 << parseInt(btn.dataset.hvoice);
         btn.classList.toggle('active');
@@ -628,7 +640,9 @@ document.querySelectorAll('#harmony-controls button[data-hvoice]').forEach((btn)
         applyHarmony();
     });
 });
-document.querySelectorAll('#harmony-controls button[data-hmode]').forEach((btn) => {
+/** @type {NodeListOf<HTMLButtonElement>} */ (
+    document.querySelectorAll('#harmony-controls button[data-hmode]')
+).forEach((btn) => {
     btn.addEventListener('click', () => {
         document
             .querySelectorAll('#harmony-controls button[data-hmode]')
@@ -649,12 +663,14 @@ const noteGrid = $('note-grid');
 noteNames.forEach((name, i) => {
     const btn = document.createElement('button');
     btn.textContent = name;
-    btn.dataset.note = i;
+    btn.dataset.note = String(i);
     btn.classList.add('active');
     btn.addEventListener('click', () => {
         btn.classList.toggle('active');
         customBits = 0;
-        noteGrid.querySelectorAll('button.active').forEach((b) => {
+        /** @type {NodeListOf<HTMLButtonElement>} */ (
+            noteGrid.querySelectorAll('button.active')
+        ).forEach((b) => {
             customBits |= 1 << parseInt(b.dataset.note);
         });
         if (corrector && currentScale === 'custom') {
@@ -667,7 +683,7 @@ noteNames.forEach((name, i) => {
 
 function applyScale() {
     if (!corrector) return;
-    const root = parseInt($('root-select').value);
+    const root = parseInt($select('root-select').value);
     if (currentScale === 'custom') {
         corrector.set_scale(customBits);
     } else {
@@ -676,7 +692,9 @@ function applyScale() {
     invalidatePitchViews(); // grid emphasis and labels follow the scale
 }
 
-document.querySelectorAll('#scale-buttons button').forEach((btn) => {
+/** @type {NodeListOf<HTMLButtonElement>} */ (
+    document.querySelectorAll('#scale-buttons button')
+).forEach((btn) => {
     btn.addEventListener('click', () => {
         document
             .querySelectorAll('#scale-buttons button')
@@ -688,9 +706,9 @@ document.querySelectorAll('#scale-buttons button').forEach((btn) => {
     });
 });
 
-$('root-select').addEventListener('change', applyScale);
+$select('root-select').addEventListener('change', applyScale);
 
-const slider = $('shift-slider');
+const slider = $input('shift-slider');
 const shiftDisplay = $('shift-display');
 function updateShiftDisplay() {
     const v = parseFloat(slider.value);
@@ -748,8 +766,9 @@ els.debugBtn.addEventListener('click', () => {
 
 els.uploadBtn.addEventListener('click', () => els.uploadInput.click());
 els.uploadInput.addEventListener('change', (e) => {
-    if (e.target.files[0]) uploadRecording(e.target.files[0]);
-    e.target.value = '';
+    const input = /** @type {HTMLInputElement} */ (e.target);
+    if (input.files[0]) uploadRecording(input.files[0]);
+    input.value = '';
 });
 
 async function uploadRecording(file) {
@@ -775,7 +794,7 @@ async function uploadRecording(file) {
         offset += corrector.process_offline(samples.subarray(offset), chunk);
         totalSamples = corrector.analyze();
         timeline.setTotal(totalSamples);
-        await new Promise((r) => setTimeout(r, 0));
+        await new Promise((r) => setTimeout(() => r(undefined), 0));
     }
     totalSamples = corrector.analyze();
     timeline.setTotal(totalSamples);
