@@ -228,6 +228,22 @@ try {
   check(sppDeep < 0.5, `deep zoom reaches sub-sample spp (${sppDeep})`);
   check((await probe(0, 'orange')) > 50, 'sample-level waveform renders points and lines');
 
+  // The waveform gain auto-fits to the (quietish) tone like the pitch axis.
+  const autoGain = await page.evaluate(() => ({
+    gain: window.__amp.gain,
+    manual: window.__amp.manual,
+  }));
+  check(
+    autoGain.gain > 1.2 && !autoGain.manual,
+    `waveform gain auto-fits the data (gain ${autoGain.gain.toFixed(2)}x, auto)`,
+  );
+  // Ctrl+scroll on the waveform pins the gain manual; Fit resumes auto.
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.keyboard.down('Control');
+  await page.mouse.wheel(0, -200);
+  await page.keyboard.up('Control');
+  check(await page.evaluate(() => window.__amp.manual), 'ctrl+scroll pins waveform gain manual');
+
   await page.click('.tl-zoom-btn:nth-child(3)'); // Fit
   const fitAgain = await page.evaluate(() => ({ s0: window.__tl.s0, spp: window.__tl.spp }));
   check(fitAgain.s0 === 0 && fitAgain.spp === null, 'Fit button restores full view');
@@ -351,8 +367,8 @@ try {
 
   await page.click('.tl-zoom-btn:nth-child(3)'); // restore Fit
   check(
-    await page.evaluate(() => !window.__scale.manual),
-    'Fit resets the manual vertical zoom back to auto-fit',
+    await page.evaluate(() => !window.__scale.manual && !window.__amp.manual),
+    'Fit resets the manual vertical zooms (pitch + waveform) back to auto-fit',
   );
 
   // --- Post-correction: an edit lands (pink) at the clicked x — the drag,

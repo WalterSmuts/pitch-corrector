@@ -1,6 +1,12 @@
 import init, { WebPitchCorrector, warmup } from '../pkg/pitch_corrector.js';
 import { Timeline } from './timeline.js';
-import { drawPitchGrid, drawPitchTrack, drawWaveform, PitchScale } from './views.js';
+import {
+    AmplitudeScale,
+    drawPitchGrid,
+    drawPitchTrack,
+    drawWaveform,
+    PitchScale,
+} from './views.js';
 import { encodeWav, decodeWav, downloadBlob } from './wav.js';
 
 // --- State ---
@@ -23,13 +29,14 @@ let postCorrectionActive = false;
 const pitchScale = new PitchScale();
 
 // Vertical-axis zoom state (ctrl+scroll), shared between the two tracks so
-// they stay comparable: amplitude gain for waveforms, log-frequency window
-// (fractions of the full axis) for spectrograms. Pitch zoom lives on
-// pitchScale itself.
+// they stay comparable: the spectrogram's log-frequency window (fractions
+// of the full axis). Waveform gain lives on ampScale, pitch on pitchScale.
 const vzoom = {
-    waveformGain: 1,
     spec: { lo: 0, hi: 1 },
 };
+
+// Auto-fitting waveform gain, shared by both tracks (like the pitch axis).
+const ampScale = new AmplitudeScale();
 
 const INPUT_COLOR = 'rgb(255,150,50)';
 const OUTPUT_COLOR = 'rgb(50,255,120)';
@@ -85,6 +92,7 @@ const timeline = new Timeline($('timeline'), {
 if (new URLSearchParams(location.search).has('e2e')) {
     window.__tl = timeline;
     window.__scale = pitchScale;
+    window.__amp = ampScale;
 }
 
 // --- View selection: one shared dropdown by default, split on demand ---
@@ -193,7 +201,7 @@ function renderTrack(track, canvas, vp, x0, x1) {
                 isInput ? INPUT_COLOR : OUTPUT_COLOR,
                 x0,
                 x1,
-                vzoom.waveformGain,
+                ampScale.gain,
             );
             break;
         }
@@ -222,10 +230,10 @@ function drawEditedContour(ctx, vp) {
 
 // Fit shows everything: restore the vertical axes alongside the timeline.
 function resetVerticalZoom() {
-    vzoom.waveformGain = 1;
     vzoom.spec = { lo: 0, hi: 1 };
     pitchScale.reset();
-    updatePitchScale(); // auto-fit is back: refit to the data now
+    ampScale.reset();
+    updateViewScales(); // auto-fit is back: refit to the data now
     timeline.invalidate();
 }
 
@@ -237,8 +245,7 @@ function verticalZoom(track, factor, yFrac) {
             pitchScale.zoomBy(factor, yFrac);
             break;
         case 'waveform':
-            // Wheel-up (factor < 1) zooms in = more gain.
-            vzoom.waveformGain = Math.min(Math.max(vzoom.waveformGain / factor, 1), 64);
+            ampScale.zoomBy(factor); // pins manual; Fit resumes auto
             break;
         case 'spectrogram': {
             const span = Math.min(Math.max((vzoom.spec.hi - vzoom.spec.lo) * factor, 0.05), 1);
@@ -284,18 +291,31 @@ function invalidatePitchViews() {
     }
 }
 
-// Refit the shared pitch axis to the current data; on a real change (the
-// scale has hysteresis) repaint any visible pitch views.
-function updatePitchScale() {
+// Refit the shared view scales (pitch axis, waveform gain) to the current
+// data; on a real change (both have hysteresis) repaint the affected views.
+function updateViewScales() {
     if (!corrector) return;
-    const changed = pitchScale.update([
+    const pitchChanged = pitchScale.update([
         corrector.input_pitch_track(),
         corrector.output_pitch_track(),
         corrector.harmony_pitch_track(1),
         corrector.harmony_pitch_track(2),
         corrector.harmony_pitch_track(3),
     ]);
-    if (changed) invalidatePitchViews();
+    if (pitchChanged) invalidatePitchViews();
+
+    if (totalSamples > 0) {
+        const bins = 512;
+        const ampChanged = ampScale.update([
+            corrector.input_peaks(0, totalSamples, bins),
+            corrector.output_peaks(0, totalSamples, bins),
+        ]);
+        if (ampChanged) {
+            for (const id of ['input', 'output']) {
+                if (timeline.getTrack(id).view === 'waveform') timeline.invalidate(id);
+            }
+        }
+    }
 }
 
 // --- Render loop ---
@@ -305,7 +325,7 @@ function loop() {
     requestAnimationFrame(loop);
     if (!corrector) return;
     if (state === 'recording' || state === 'playing') {
-        if (++scaleThrottle % 15 === 0) updatePitchScale(); // ~4x/s is plenty
+        if (++scaleThrottle % 15 === 0) updateViewScales(); // ~4x/s is plenty
         totalSamples = corrector.analyze();
         timeline.setTotal(totalSamples);
         // The output lags the input by the pipeline latency (and regrows
@@ -481,7 +501,7 @@ function stopRecording() {
         return;
     }
     targetContour = Array.from(corrector.take_target_pitch_contour());
-    updatePitchScale();
+    updateViewScales();
     timeline.follow(false);
     timeline.fit();
     timeline.setPlayhead(0);
@@ -745,7 +765,7 @@ async function uploadRecording(file) {
     totalSamples = corrector.analyze();
     timeline.setTotal(totalSamples);
     targetContour = Array.from(corrector.take_target_pitch_contour());
-    updatePitchScale();
+    updateViewScales();
     timeline.fit();
     timeline.setPlayhead(0);
     corrector.seek(0);

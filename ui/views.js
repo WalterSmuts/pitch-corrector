@@ -286,6 +286,57 @@ export function drawPitchTrack(ctx, track, hopSamples, vp, color, scale) {
 // --- Waveform view: linear amplitude, one point per sample ---
 
 /**
+ * The y gain for waveform views, auto-fitted like the pitch axis: one
+ * instance shared by both tracks so they stay comparable.
+ *
+ * update() fits the 99th-percentile peak (outlier rejection: stray
+ * transients may clip visually rather than squashing everything) to ~90%
+ * of the track height, with hysteresis: back off immediately when data
+ * would clip, grow only when less than ~65% of the height is used.
+ * Ctrl+scroll pins it manual; reset() (Fit / new session) resumes auto.
+ */
+export class AmplitudeScale {
+    constructor() {
+        this.gain = 1;
+        this.manual = false;
+    }
+
+    /** Manual vertical zoom; wheel-up (factor < 1) means more gain. */
+    zoomBy(factor) {
+        this.gain = Math.min(Math.max(this.gain / factor, 1), 64);
+        this.manual = true;
+    }
+
+    /** Back to auto-fit. */
+    reset() {
+        this.manual = false;
+    }
+
+    /** peakLists: arrays of [min,max]-interleaved bins (from the peaks
+     *  APIs). Returns true if the applied gain changed. */
+    update(peakLists) {
+        if (this.manual) return false;
+        const mags = [];
+        for (const peaks of peakLists) {
+            for (let i = 0; i < peaks.length / 2; i++) {
+                const m = Math.max(-peaks[i * 2], peaks[i * 2 + 1]);
+                if (m > 1e-4) mags.push(m);
+            }
+        }
+        if (mags.length < 16) return false;
+        mags.sort((a, b) => a - b);
+        const p99 = mags[Math.min(mags.length - 1, Math.floor(mags.length * 0.99))];
+        const desired = Math.min(Math.max(0.9 / p99, 1), 64);
+
+        const clips = p99 * this.gain > 1.0; // shrink eagerly
+        const underused = desired > this.gain * 1.4; // grow lazily
+        if (!clips && !underused) return false;
+        this.gain = desired;
+        return true;
+    }
+}
+
+/**
  * Draw a waveform for the viewport. fetchPeaks(start, end, bins) returns
  * bins*2 floats interleaved [min, max] (from Rust). Dense zoom renders the
  * min/max envelope incrementally over device-px columns [x0, x1); sparse
