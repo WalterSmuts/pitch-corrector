@@ -87,19 +87,17 @@ function renderTrack(track, canvas, vp, x0, x1) {
             // Cheap enough to always repaint fully.
             drawPitchGrid(ctx, vp.w, vp.h, vp.dpr);
             const data = isInput ? corrector.input_pitch_track() : corrector.output_pitch_track();
-            drawPitchTrack(ctx, data, pitchHop, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR, vp.dpr);
+            drawPitchTrack(ctx, data, pitchHop, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR);
             if (!isInput && postCorrectionActive && editedContour) {
                 drawEditedContour(ctx, vp);
             }
             break;
         }
         case 'waveform': {
-            const bins = x1 - x0;
-            const start = vp.s0 + x0 * vp.spp;
-            const peaks = isInput
-                ? corrector.input_peaks(start, start + bins * vp.spp, bins)
-                : corrector.output_peaks(start, start + bins * vp.spp, bins);
-            drawWaveform(ctx, peaks, x0, bins, vp.h, isInput ? INPUT_COLOR : OUTPUT_COLOR);
+            const fetchPeaks = isInput
+                ? (a, b, n) => corrector.input_peaks(a, b, n)
+                : (a, b, n) => corrector.output_peaks(a, b, n);
+            drawWaveform(ctx, fetchPeaks, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR, x0, x1);
             break;
         }
     }

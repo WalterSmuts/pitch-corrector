@@ -66,6 +66,20 @@ try {
   check(second.tlTotal === second.total && second.s0 === 0,
     'timeline reset and refit for the second take');
 
+  // Pixel-probe helper: count pixels matching a signature color.
+  const probe = (sel, test) => page.evaluate(([sel, test]) => {
+    const c = document.querySelectorAll('.tl-track-canvas')[sel];
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    const fns = {
+      orange: (r, g, b) => r > 200 && g > 100 && g < 200 && b < 100,
+      green: (r, g, b) => g > 200 && r < 150,
+      hot: (r, g, b) => r + g + b > 250 && !(r === 255 && g === 255 && b === 255),
+    };
+    for (let i = 0; i < d.length; i += 4) if (fns[test](d[i], d[i + 1], d[i + 2])) n++;
+    return n;
+  }, [sel, test]);
+
   // --- Wheel zoom in at the track center halves samples-per-px ---
   const track = page.locator('.tl-track-canvas').first();
   const box = await track.boundingBox();
@@ -94,6 +108,13 @@ try {
   const s0Clamped = await page.evaluate(() => window.__tl.s0);
   check(s0Clamped === 0, `horizontal scroll clamps at the start (s0=${s0Clamped})`);
 
+  // Deep zoom reaches the sample level; the waveform switches from the
+  // min/max envelope to points joined by thin lines and still renders.
+  await page.evaluate(() => window.__tl.zoomBy(1e-9, 200));
+  const sppDeep = await page.evaluate(() => window.__tl.spp);
+  check(sppDeep < 0.5, `deep zoom reaches sub-sample spp (${sppDeep})`);
+  check(await probe(0, 'orange') > 50, 'sample-level waveform renders points and lines');
+
   await page.click('.tl-zoom-btn:nth-child(3)'); // Fit
   const fitAgain = await page.evaluate(() => ({ s0: window.__tl.s0, spp: window.__tl.spp }));
   check(fitAgain.s0 === 0 && fitAgain.spp === null, 'Fit button restores full view');
@@ -110,19 +131,6 @@ try {
     `playhead aligns with the click (at ${seek.playheadLeft.toFixed(0)}px, expected ~${expectedX.toFixed(0)}px)`);
 
   // --- View switching: shared dropdown drives both tracks; split opts out ---
-  const probe = (sel, test) => page.evaluate(([sel, test]) => {
-    const c = document.querySelectorAll('.tl-track-canvas')[sel];
-    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
-    let n = 0;
-    const fns = {
-      orange: (r, g, b) => r > 200 && g > 100 && g < 200 && b < 100,
-      green: (r, g, b) => g > 200 && r < 150,
-      hot: (r, g, b) => r + g + b > 250 && !(r === 255 && g === 255 && b === 255),
-    };
-    for (let i = 0; i < d.length; i += 4) if (fns[test](d[i], d[i + 1], d[i + 2])) n++;
-    return n;
-  }, [sel, test]);
-
   check(await probe(0, 'orange') > 100, 'default view is the waveform (orange peaks)');
   const perTrackVisible = () => page.evaluate(() =>
     [...document.querySelectorAll('.tl-view-select')].map(s => s.style.display !== 'none'));

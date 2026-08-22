@@ -8,7 +8,7 @@
 // render (incremental columns while following a recording, full repaints on
 // zoom/pan), and handles DPR, resize, zoom, pan, follow mode, and seeking.
 
-const MIN_SPP = 16;          // max zoom in: ~0.3ms per px at 48kHz
+const MIN_SPP = 0.125;       // max zoom in: 8px per sample (sample-level view)
 const HEAD_W = 110;          // css px, track header column
 
 export class Timeline {
@@ -266,12 +266,15 @@ export class Timeline {
     #continuation = null;
 
     #renderTrack(t, spp) {
-        const vp = { s0: this.s0, spp, w: t.canvas.width, h: t.canvas.height, dpr: this.dpr };
-        const r = t.rendered;
         // The repaint watermark stops at the track's real data end (the
         // output lags the input by the pipeline latency); columns painted
         // before their data existed get repainted when it arrives.
         const dataEnd = Math.min(t.dataEnd ?? this.total, this.total);
+        const vp = {
+            s0: this.s0, spp, w: t.canvas.width, h: t.canvas.height,
+            dpr: this.dpr, end: dataEnd,
+        };
+        const r = t.rendered;
         const end = Math.min(dataEnd, this.s0 + vp.w * spp);
 
         // Budget per frame: spectrogram columns cost an FFT each, so a full
@@ -353,7 +356,9 @@ export class Timeline {
             const x = (t * this.sampleRate - this.s0) / spp;
             ctx.moveTo(x, h * 0.4);
             ctx.lineTo(x, h);
-            const label = step >= 1 ? `${Math.round(t)}s` : `${t.toFixed(step >= 0.1 ? 1 : 2)}s`;
+            const label = step >= 1 ? `${Math.round(t)}s`
+                : step >= 0.01 ? `${t.toFixed(step >= 0.1 ? 1 : 2)}s`
+                : `${(t * 1000).toFixed(step >= 0.001 ? 0 : 1)}ms`;
             ctx.fillText(label, x + 3 * this.dpr, h * 0.55);
         }
         // Minor ticks.
