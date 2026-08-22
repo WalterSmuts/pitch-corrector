@@ -232,10 +232,7 @@ mod tests {
         assert_eq!(all.track().len(), expected_hops);
         // Skip the first few hops (detector warm-up/gate) then expect 220Hz.
         for (i, &f) in all.track().iter().enumerate().skip(3) {
-            assert!(
-                (f - 220.0).abs() < 3.0,
-                "hop {i}: expected ~220Hz, got {f}"
-            );
+            assert!((f - 220.0).abs() < 3.0, "hop {i}: expected ~220Hz, got {f}");
         }
 
         // Incremental analysis over growing buffers must agree exactly.
@@ -279,7 +276,9 @@ mod tests {
     #[test]
     fn waveform_peaks_min_max() {
         // Alternating +1/-1: every bin must see min=-1, max=+1.
-        let samples: Vec<f32> = (0..1000).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let samples: Vec<f32> = (0..1000)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
         let peaks = waveform_peaks(&samples, 0.0, 1000.0, 10);
         assert_eq!(peaks.len(), 20);
         for pair in peaks.chunks_exact(2) {

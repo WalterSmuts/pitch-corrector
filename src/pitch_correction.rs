@@ -343,8 +343,7 @@ impl PitchCorrector {
             let ratio = *prev * shift_ratio;
             // Log what this voice actually produces this hop (detected pitch
             // times the applied ratio; 0 when unvoiced).
-            let _ = controls_clone.voice_pitch_log[0]
-                .push(detected.map_or(0.0, |f| f * ratio));
+            let _ = controls_clone.voice_pitch_log[0].push(detected.map_or(0.0, |f| f * ratio));
             ratio
         });
         let processor = PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn);
@@ -407,8 +406,7 @@ impl Harmonizer {
         let hop_bus = main.hop_bus.clone();
 
         let hop_period = HOP_SIZE as f32 / sample_rate;
-        let smoothing_alpha =
-            1.0 - (-hop_period / PitchCorrector::SMOOTHING_TAU_SECONDS).exp();
+        let smoothing_alpha = 1.0 - (-hop_period / PitchCorrector::SMOOTHING_TAU_SECONDS).exp();
 
         let mut voice_idx = 0usize;
         let voices = HARMONY_VOICES.map(|(degrees, abs_semitones)| {
@@ -507,7 +505,11 @@ impl StreamProcessor for Harmonizer {
             let h = v.pop_sample().unwrap_or(0.0);
             // Fade voices in only while enabled AND the signal is voiced —
             // harmonizing breath noise just doubles it.
-            let target = if mask & (1 << i) != 0 && voiced { 1.0 } else { 0.0 };
+            let target = if mask & (1 << i) != 0 && voiced {
+                1.0
+            } else {
+                0.0
+            };
             gains[i] += self.gain_alpha * (target - gains[i]);
             out += h * gains[i] * HARMONY_GAIN;
             norm += gains[i] * HARMONY_GAIN;
@@ -580,7 +582,9 @@ mod tests {
             let spectrum = tail.to_vec().real_fft();
             let bins = spectrum.get_frequency_bins();
             let bin = (freq * n as f32 / SAMPLE_RATE as f32).round() as usize;
-            (bin - 1..=bin + 1).map(|b| bins[b].norm()).fold(0.0, f32::max)
+            (bin - 1..=bin + 1)
+                .map(|b| bins[b].norm())
+                .fold(0.0, f32::max)
         };
 
         let run = |in_key: bool| -> Vec<f32> {
@@ -621,7 +625,10 @@ mod tests {
 
         // And the main voice is still there.
         let a3 = bin_mag(&diatonic, 220.0);
-        assert!(a3 > d_c4 * 0.5, "main voice should remain dominant (A3={a3:.1})");
+        assert!(
+            a3 > d_c4 * 0.5,
+            "main voice should remain dominant (A3={a3:.1})"
+        );
     }
 
     /// The edited contour is addressed by absolute hop index: playback that

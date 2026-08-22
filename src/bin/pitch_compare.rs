@@ -97,8 +97,7 @@ fn main() {
     eprintln!("  pyin-rs: {} voiced frames", pyin_results.len());
 
     // Write CSVs
-    let mut f_ours =
-        File::create("/home/ANT.AMAZON.COM/wssmts/Documents/pitch_ours.csv").unwrap();
+    let mut f_ours = File::create("/home/ANT.AMAZON.COM/wssmts/Documents/pitch_ours.csv").unwrap();
     writeln!(f_ours, "time_s,frequency_hz").unwrap();
     for (t, f) in &ours {
         writeln!(f_ours, "{:.4},{:.2}", t, f).unwrap();

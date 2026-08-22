@@ -497,23 +497,47 @@ mod tests {
     fn degree_above_walks_the_scale() {
         let cmaj = Scale::major(Note::C);
         // Diatonic third above C4 is E4 (major); above D4 is F4 (minor).
-        assert_eq!(cmaj.degree_above(Pitch::new(Note::C, 4), 2), Pitch::new(Note::E, 4));
-        assert_eq!(cmaj.degree_above(Pitch::new(Note::D, 4), 2), Pitch::new(Note::F, 4));
+        assert_eq!(
+            cmaj.degree_above(Pitch::new(Note::C, 4), 2),
+            Pitch::new(Note::E, 4)
+        );
+        assert_eq!(
+            cmaj.degree_above(Pitch::new(Note::D, 4), 2),
+            Pitch::new(Note::F, 4)
+        );
         // Crossing the octave: third above B3 is D4.
-        assert_eq!(cmaj.degree_above(Pitch::new(Note::B, 3), 2), Pitch::new(Note::D, 4));
+        assert_eq!(
+            cmaj.degree_above(Pitch::new(Note::B, 3), 2),
+            Pitch::new(Note::D, 4)
+        );
         // Diatonic fifth above F4 is C5.
-        assert_eq!(cmaj.degree_above(Pitch::new(Note::F, 4), 4), Pitch::new(Note::C, 5));
+        assert_eq!(
+            cmaj.degree_above(Pitch::new(Note::F, 4), 4),
+            Pitch::new(Note::C, 5)
+        );
         // 7 steps = a full octave in a 7-note scale.
-        assert_eq!(cmaj.degree_above(Pitch::new(Note::G, 4), 7), Pitch::new(Note::G, 5));
+        assert_eq!(
+            cmaj.degree_above(Pitch::new(Note::G, 4), 7),
+            Pitch::new(Note::G, 5)
+        );
 
         // Pentatonic C (C D E G A): "third" (2 steps) above A3 is D4.
         let pent = Scale::pentatonic(Note::C);
-        assert_eq!(pent.degree_above(Pitch::new(Note::A, 3), 2), Pitch::new(Note::D, 4));
+        assert_eq!(
+            pent.degree_above(Pitch::new(Note::A, 3), 2),
+            Pitch::new(Note::D, 4)
+        );
 
         // Out-of-scale start walks to in-scale targets all the same.
-        assert_eq!(cmaj.degree_above(Pitch::new(Note::CS, 4), 2), Pitch::new(Note::E, 4));
+        assert_eq!(
+            cmaj.degree_above(Pitch::new(Note::CS, 4), 2),
+            Pitch::new(Note::E, 4)
+        );
         // Empty scale: unchanged.
-        assert_eq!(Scale::empty().degree_above(Pitch::new(Note::A, 4), 2), Pitch::new(Note::A, 4));
+        assert_eq!(
+            Scale::empty().degree_above(Pitch::new(Note::A, 4), 2),
+            Pitch::new(Note::A, 4)
+        );
     }
     use super::*;
 

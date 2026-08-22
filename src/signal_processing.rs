@@ -1085,7 +1085,6 @@ impl YinPitchDetector {
         }
         None
     }
-
 }
 
 fn parabolic_interpolation(cmnd: &[f32], tau: usize) -> f32 {

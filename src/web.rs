@@ -321,13 +321,9 @@ impl WebPitchCorrector {
                             }
                         }
                     }
-                    if missed > 0
-                        && fed
-                        && output_playback.pipeline_primed.load(Ordering::Relaxed)
+                    if missed > 0 && fed && output_playback.pipeline_primed.load(Ordering::Relaxed)
                     {
-                        log::warn!(
-                            "Output callback: underrun — inserted {missed} silent samples"
-                        );
+                        log::warn!("Output callback: underrun — inserted {missed} silent samples");
                     }
                 },
                 |err| log::error!("Output error: {}", err),
@@ -427,7 +423,9 @@ impl WebPitchCorrector {
         self.analysis.lock().unwrap().reset(&self.pipeline.controls);
         self.pipeline.controls.clear_target_pitch_contour();
         self.pipeline.controls.clear_contour();
-        self.playback.pipeline_primed.store(false, Ordering::Relaxed);
+        self.playback
+            .pipeline_primed
+            .store(false, Ordering::Relaxed);
         self.playback.input_active.store(true, Ordering::Relaxed);
         self.input_stream
             .play()
@@ -504,7 +502,9 @@ impl WebPitchCorrector {
         // The edited contour lives on the absolute hop timeline; align its
         // cursor with where playback starts.
         self.pipeline.controls.seek_contour(pos / HOP_SIZE);
-        self.playback.pipeline_primed.store(false, Ordering::Relaxed);
+        self.playback
+            .pipeline_primed
+            .store(false, Ordering::Relaxed);
         self.playback.playing.store(true, Ordering::Relaxed);
         let _ = self.output_stream.play();
         Ok(())
