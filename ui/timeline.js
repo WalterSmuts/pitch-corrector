@@ -220,6 +220,22 @@ export class Timeline {
         return this.tracks.find(t => t.id === id);
     }
 
+    /** Programmatically switch a track's view (keeps its selector in sync). */
+    setView(trackId, view) {
+        const t = this.getTrack(trackId);
+        if (!t || t.view === view) return;
+        t.view = view;
+        t.viewSelect.value = view;
+        this.invalidate(t.id);
+        this.opts.onViewChange?.(t);
+    }
+
+    /** Show or hide the per-track view selectors (hidden when the app
+     *  drives all tracks from one shared dropdown). */
+    showTrackSelectors(show) {
+        for (const t of this.tracks) t.viewSelect.style.display = show ? '' : 'none';
+    }
+
     // --- Rendering ---
 
     /** Render everything that is out of date. Cheap when nothing changed. */

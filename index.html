@@ -129,6 +129,17 @@
         <div id="custom-notes" style="display:none">
             <div class="note-grid" id="note-grid"></div>
         </div>
+        <div class="controls">
+            <span>View:</span>
+            <select id="view-select">
+                <option value="spectrogram" selected>Spectrogram</option>
+                <option value="pitch">Pitch</option>
+                <option value="waveform">Waveform</option>
+            </select>
+            <label style="cursor: pointer;">
+                <input type="checkbox" id="split-views-cb"> Split per track
+            </label>
+        </div>
         <div id="timeline"></div>
     </div>
     <script type="module" src="ui/app.js"></script>

@@ -76,7 +76,7 @@ try {
   check(Math.abs(seek.playheadLeft + 1 - expectedX) < 3,
     `playhead aligns with the click (at ${seek.playheadLeft.toFixed(0)}px, expected ~${expectedX.toFixed(0)}px)`);
 
-  // --- View switching: pixel-probe each view for its signature color ---
+  // --- View switching: shared dropdown drives both tracks; split opts out ---
   const probe = (sel, test) => page.evaluate(([sel, test]) => {
     const c = document.querySelectorAll('.tl-track-canvas')[sel];
     const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
@@ -91,13 +91,27 @@ try {
   }, [sel, test]);
 
   check(await probe(0, 'hot') > 500, 'input spectrogram shows energy');
-  await page.selectOption('.tl-track .tl-view-select', 'pitch');
-  check(await probe(0, 'orange') > 20, 'input pitch view shows detected contour (orange)');
+  const perTrackVisible = () => page.evaluate(() =>
+    [...document.querySelectorAll('.tl-view-select')].map(s => s.style.display !== 'none'));
+  check((await perTrackVisible()).every(v => !v), 'per-track selectors hidden by default');
+
+  await page.selectOption('#view-select', 'pitch');
+  check(await probe(0, 'orange') > 20, 'shared dropdown: input pitch view shows contour (orange)');
+  check(await probe(1, 'green') > 20, 'shared dropdown: output pitch view shows contour (green)');
+
+  await page.check('#split-views-cb');
+  check((await perTrackVisible()).every(v => v), 'split reveals per-track selectors');
+  check(await page.evaluate(() => document.getElementById('view-select').disabled),
+    'shared dropdown disabled while split');
   const outSelect = page.locator('.tl-track .tl-view-select').nth(1);
-  await outSelect.selectOption('pitch');
-  check(await probe(1, 'green') > 20, 'output pitch view shows corrected contour (green)');
   await outSelect.selectOption('waveform');
-  check(await probe(1, 'green') > 100, 'output waveform view shows peaks');
+  check(await probe(1, 'green') > 100, 'split: output waveform view shows peaks');
+  check(await probe(0, 'orange') > 20, 'split: input keeps its own view (pitch)');
+
+  // Un-split re-unifies both tracks to the shared selection.
+  await page.uncheck('#split-views-cb');
+  await page.selectOption('#view-select', 'spectrogram');
+  check(await probe(1, 'hot') > 500, 'un-split re-unifies views (output spectrogram)');
 
   // --- Transport: play, progress advances, pause holds ---
   await page.click('#play-btn');

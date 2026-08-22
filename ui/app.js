@@ -51,6 +51,23 @@ const timeline = new Timeline($('timeline'), {
 // E2E test hook: expose the timeline for viewport assertions.
 if (new URLSearchParams(location.search).has('e2e')) window.__tl = timeline;
 
+// --- View selection: one shared dropdown by default, split on demand ---
+
+const viewSelect = $('view-select');
+const splitCb = $('split-views-cb');
+
+function applySharedView() {
+    timeline.setView('input', viewSelect.value);
+    timeline.setView('output', viewSelect.value);
+}
+viewSelect.addEventListener('change', applySharedView);
+splitCb.addEventListener('change', () => {
+    timeline.showTrackSelectors(splitCb.checked);
+    viewSelect.disabled = splitCb.checked;
+    if (!splitCb.checked) applySharedView(); // re-unify on un-split
+});
+timeline.showTrackSelectors(false);
+
 function renderTrack(track, canvas, vp, x0, x1) {
     const isInput = track.id === 'input';
     const ctx = canvas.getContext('2d');
@@ -388,10 +405,12 @@ els.postCorrectionCb.addEventListener('change', () => {
     postCorrectionActive = els.postCorrectionCb.checked;
     if (postCorrectionActive && !editedContour) editedContour = targetContour.slice();
     if (postCorrectionActive) {
-        const out = timeline.getTrack('output');
-        if (out.view !== 'pitch') {
-            out.view = 'pitch';
-            out.viewSelect.value = 'pitch';
+        // Editing happens on the output pitch view — switch to it.
+        if (splitCb.checked) {
+            timeline.setView('output', 'pitch');
+        } else {
+            viewSelect.value = 'pitch';
+            applySharedView();
         }
         els.status.textContent = 'Post-correction: drag on the output pitch track to edit the melody, then Play.';
     }
