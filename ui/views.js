@@ -63,38 +63,91 @@ function drawLinesAndDots(ctx, pts, spacingCss, dpr, color) {
     ctx.fill();
 }
 
-// --- Pitch view: log-frequency axis, C2..C6 ---
+// --- Pitch axis: dynamic log-frequency scale shared by all pitch views ---
 
-export const PITCH_FMIN = 65.406;   // C2
-export const PITCH_FMAX = 1046.502; // C6
+// Work in MIDI semitones (69 = A4 = 440Hz): linear in log-frequency and
+// directly usable for the note grid.
+const freqToMidi = f => 69 + 12 * Math.log2(f / 440);
+const midiToFreq = m => 440 * 2 ** ((m - 69) / 12);
 
-const LOG_FMIN = Math.log2(PITCH_FMIN);
-const LOG_FMAX = Math.log2(PITCH_FMAX);
+const SCALE_DEFAULT_LO = 36;  // C2
+const SCALE_DEFAULT_HI = 84;  // C6
+const SCALE_PAD_ST = 3;       // buffer on each side of the data
+const SCALE_MIN_SPAN_ST = 24; // never tighter than 2 octaves
+const SCALE_SHRINK_SLACK = 5; // shrink only when this much slack per side
+const SCALE_ABS_LO = 12;      // C0
+const SCALE_ABS_HI = 108;     // C8
 
-/** Frequency (Hz) -> y device px. Top = high pitch. NaN-safe for f<=0. */
-export function freqToY(freq, height) {
-    if (freq <= 0) return -1;
-    const t = (Math.log2(freq) - LOG_FMIN) / (LOG_FMAX - LOG_FMIN);
-    return (1 - t) * height;
-}
+/**
+ * The y axis for pitch views. One instance is shared by the input and
+ * output tracks (and the contour editor) so they can never disagree.
+ *
+ * update() fits the range to the 5th..95th percentile of the voiced hops
+ * (outlier rejection), padded and clamped, and applies it with hysteresis:
+ * expand as soon as padded data crosses the current bounds, shrink only
+ * when there is generous slack — so the axis is not busy while singing.
+ */
+export class PitchScale {
+    constructor() {
+        this.lo = SCALE_DEFAULT_LO;
+        this.hi = SCALE_DEFAULT_HI;
+    }
 
-/** y device px -> frequency (Hz). */
-export function yToFreq(y, height) {
-    const t = 1 - y / height;
-    return 2 ** (LOG_FMIN + t * (LOG_FMAX - LOG_FMIN));
+    /** freqLists: iterable of Float32Arrays (Hz per hop, 0 = unvoiced).
+     *  Returns true if the applied range changed (views need a repaint). */
+    update(freqLists) {
+        const st = [];
+        for (const list of freqLists) {
+            for (const f of list) if (f > 0) st.push(freqToMidi(f));
+        }
+        if (st.length < 8) return false; // not enough data to trust
+        st.sort((a, b) => a - b);
+        const p5 = st[Math.floor(st.length * 0.05)];
+        const p95 = st[Math.min(st.length - 1, Math.floor(st.length * 0.95))];
+
+        let lo = p5 - SCALE_PAD_ST;
+        let hi = p95 + SCALE_PAD_ST;
+        const deficit = SCALE_MIN_SPAN_ST - (hi - lo);
+        if (deficit > 0) {
+            lo -= deficit / 2;
+            hi += deficit / 2;
+        }
+        lo = Math.max(SCALE_ABS_LO, Math.floor(lo));
+        hi = Math.min(SCALE_ABS_HI, Math.ceil(hi));
+
+        const mustExpand = lo < this.lo || hi > this.hi;
+        const canShrink = lo > this.lo + SCALE_SHRINK_SLACK || hi < this.hi - SCALE_SHRINK_SLACK;
+        if (!mustExpand && !canShrink) return false;
+        // Take the fresh fit entirely (it already includes the pad);
+        // unioning with the old range would only ever creep wider.
+        this.lo = lo;
+        this.hi = hi;
+        return true;
+    }
+
+    /** Frequency (Hz) -> y device px. Top = high pitch. -1 for f<=0. */
+    freqToY(freq, height) {
+        if (freq <= 0) return -1;
+        const t = (freqToMidi(freq) - this.lo) / (this.hi - this.lo);
+        return (1 - t) * height;
+    }
+
+    /** y device px -> frequency (Hz). */
+    yToFreq(y, height) {
+        const t = 1 - y / height;
+        return midiToFreq(this.lo + t * (this.hi - this.lo));
+    }
 }
 
 /** Background + semitone/octave grid + note labels for a pitch track. */
-export function drawPitchGrid(ctx, w, h, dpr) {
+export function drawPitchGrid(ctx, w, h, dpr, scale) {
     ctx.fillStyle = BG;
     ctx.fillRect(0, 0, w, h);
 
-    // Semitones C2 (midi 36) .. C6 (midi 84).
-    const semitonePx = h / (4 * 12);
-    for (let midi = 36; midi <= 84; midi++) {
-        const freq = 440 * 2 ** ((midi - 69) / 12);
-        const y = freqToY(freq, h);
-        const note = midi % 12;
+    const semitonePx = h / (scale.hi - scale.lo);
+    for (let midi = Math.ceil(scale.lo); midi <= Math.floor(scale.hi); midi++) {
+        const y = scale.freqToY(midiToFreq(midi), h);
+        const note = ((midi % 12) + 12) % 12;
         if (note === 0) {
             ctx.strokeStyle = 'rgba(255,255,255,0.28)';
         } else if (semitonePx < 5 * dpr && note !== 7) {
@@ -118,7 +171,7 @@ export function drawPitchGrid(ctx, w, h, dpr) {
  * Draw a pitch track (Hz per hop, 0 = unvoiced) for the whole viewport.
  * vp: {s0, spp, w, h, dpr} in samples / device px.
  */
-export function drawPitchTrack(ctx, track, hopSamples, vp, color) {
+export function drawPitchTrack(ctx, track, hopSamples, vp, color, scale) {
     const { s0, spp, w, h, dpr } = vp;
     const spacingCss = hopSamples / spp / dpr;
     const first = Math.max(0, Math.floor(s0 / hopSamples));
@@ -129,7 +182,7 @@ export function drawPitchTrack(ctx, track, hopSamples, vp, color) {
         const cols = [];
         let cur = null;
         for (let i = first; i <= last; i++) {
-            const y = freqToY(track[i], h);
+            const y = scale.freqToY(track[i], h);
             if (y < 0 || y > h) continue;
             const x = Math.floor((i * hopSamples - s0) / spp);
             if (cur && cur.x === x) {
@@ -144,7 +197,7 @@ export function drawPitchTrack(ctx, track, hopSamples, vp, color) {
     } else {
         const pts = [];
         for (let i = first; i <= last; i++) {
-            const y = freqToY(track[i], h);
+            const y = scale.freqToY(track[i], h);
             pts.push(y < 0 || y > h ? null : { x: (i * hopSamples - s0) / spp, y });
         }
         drawLinesAndDots(ctx, pts, spacingCss, dpr, color);

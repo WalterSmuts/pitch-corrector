@@ -144,6 +144,14 @@ try {
   check(await probe(0, 'orange') > 20, 'shared dropdown: input pitch view shows contour (orange)');
   check(await probe(1, 'green') > 20, 'shared dropdown: output pitch view shows contour (green)');
 
+  // Dynamic pitch axis: the 210Hz tone (~midi 56) must have tightened the
+  // scale from the C2..C6 default to the 2-octave minimum span around it.
+  const scale = await page.evaluate(() => ({ lo: window.__scale.lo, hi: window.__scale.hi }));
+  check(scale.hi - scale.lo <= 26 && scale.hi - scale.lo >= 24,
+    `pitch axis tightened around the data (span ${scale.hi - scale.lo} st)`);
+  check(scale.lo <= 56 && 56 <= scale.hi,
+    `pitch axis contains the tone (midi 56 in [${scale.lo}, ${scale.hi}])`);
+
   await page.check('#split-views-cb');
   check((await perTrackVisible()).every(v => v), 'split reveals per-track selectors');
   check(await page.evaluate(() => document.getElementById('view-select').disabled),

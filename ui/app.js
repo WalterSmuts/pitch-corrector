@@ -1,6 +1,6 @@
 import init, { WebPitchCorrector, warmup } from '../pkg/pitch_corrector.js';
 import { Timeline } from './timeline.js';
-import { drawPitchGrid, drawPitchTrack, drawWaveform, freqToY, yToFreq } from './views.js';
+import { drawPitchGrid, drawPitchTrack, drawWaveform, PitchScale } from './views.js';
 import { encodeWav, decodeWav, downloadBlob } from './wav.js';
 
 // --- State ---
@@ -16,6 +16,10 @@ let pitchHop = 1024;
 let targetContour = [];
 let editedContour = null;
 let postCorrectionActive = false;
+
+// One shared y axis for every pitch view (input, output, contour editor),
+// dynamically fitted to the data with hysteresis. See PitchScale.
+const pitchScale = new PitchScale();
 
 const INPUT_COLOR = 'rgb(255,150,50)';
 const OUTPUT_COLOR = 'rgb(50,255,120)';
@@ -51,7 +55,10 @@ const timeline = new Timeline($('timeline'), {
     onTrackDrag: contourDrag,
 });
 // E2E test hook: expose the timeline for viewport assertions.
-if (new URLSearchParams(location.search).has('e2e')) window.__tl = timeline;
+if (new URLSearchParams(location.search).has('e2e')) {
+    window.__tl = timeline;
+    window.__scale = pitchScale;
+}
 
 // --- View selection: one shared dropdown by default, split on demand ---
 
@@ -88,9 +95,9 @@ function renderTrack(track, canvas, vp, x0, x1) {
         }
         case 'pitch': {
             // Cheap enough to always repaint fully.
-            drawPitchGrid(ctx, vp.w, vp.h, vp.dpr);
+            drawPitchGrid(ctx, vp.w, vp.h, vp.dpr, pitchScale);
             const data = isInput ? corrector.input_pitch_track() : corrector.output_pitch_track();
-            drawPitchTrack(ctx, data, pitchHop, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR);
+            drawPitchTrack(ctx, data, pitchHop, vp, isInput ? INPUT_COLOR : OUTPUT_COLOR, pitchScale);
             if (!isInput && postCorrectionActive && editedContour) {
                 drawEditedContour(ctx, vp);
             }
@@ -115,7 +122,7 @@ function drawEditedContour(ctx, vp) {
     for (let i = first; i <= last; i++) {
         const freq = editedContour[i];
         if (freq <= 0) continue;
-        const y = freqToY(freq, vp.h);
+        const y = pitchScale.freqToY(freq, vp.h);
         if (y < 0 || y > vp.h) continue;
         const x = (i / n * totalSamples - vp.s0) / vp.spp;
         ctx.fillRect(x - vp.dpr, y - vp.dpr, 2 * vp.dpr, 2 * vp.dpr);
@@ -132,19 +139,36 @@ function contourDrag(track, pos, phase) {
     const n = editedContour.length;
     const hop = Math.floor(pos.sample / totalSamples * n);
     if (hop < 0 || hop >= n) return true;
-    const freq = yToFreq(pos.y, pos.h);
+    const freq = pitchScale.yToFreq(pos.y, pos.h);
     const noteBits = corrector.get_scale();
     editedContour[hop] = noteBits > 0 ? WebPitchCorrector.snap_to_scale(freq, noteBits) : freq;
     timeline.invalidate('output');
     return true;
 }
 
+// Refit the shared pitch axis to the current data; on a real change (the
+// scale has hysteresis) repaint any visible pitch views.
+function updatePitchScale() {
+    if (!corrector) return;
+    const changed = pitchScale.update([
+        corrector.input_pitch_track(),
+        corrector.output_pitch_track(),
+    ]);
+    if (changed) {
+        for (const id of ['input', 'output']) {
+            if (timeline.getTrack(id).view === 'pitch') timeline.invalidate(id);
+        }
+    }
+}
+
 // --- Render loop ---
 // One always-on rAF loop; Timeline.render() early-outs when nothing changed.
+let scaleThrottle = 0;
 function loop() {
     requestAnimationFrame(loop);
     if (!corrector) return;
     if (state === 'recording' || state === 'playing') {
+        if (++scaleThrottle % 15 === 0) updatePitchScale(); // ~4x/s is plenty
         totalSamples = corrector.analyze();
         timeline.setTotal(totalSamples);
         // The output lags the input by the pipeline latency (and regrows
@@ -292,6 +316,7 @@ function stopRecording() {
         return;
     }
     targetContour = Array.from(corrector.take_target_pitch_contour());
+    updatePitchScale();
     timeline.follow(false);
     timeline.fit();
     timeline.setPlayhead(0);
@@ -471,6 +496,7 @@ async function uploadRecording(file) {
     totalSamples = corrector.analyze();
     timeline.setTotal(totalSamples);
     targetContour = Array.from(corrector.take_target_pitch_contour());
+    updatePitchScale();
     timeline.fit();
     timeline.setPlayhead(0);
     corrector.seek(0);
