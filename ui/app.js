@@ -31,6 +31,7 @@ const els = {
     recordBtn: $('record-btn'),
     stopBtn: $('stop-btn'),
     playBtn: $('play-btn'),
+    passthroughBtn: $('passthrough-btn'),
     downloadBtn: $('download-btn'),
     debugBtn: $('debug-btn'),
     uploadBtn: $('upload-btn'),
@@ -308,6 +309,7 @@ async function startRecording() {
         resetSession();
         applyScale();
         corrector.set_shift(parseFloat(slider.value));
+        corrector.set_monitor(passthroughOn);
         corrector.start_recording();
 
         els.status.textContent = 'Initializing audio…';
@@ -375,6 +377,15 @@ function seekTo(sample) {
 }
 
 els.recordBtn.addEventListener('click', startRecording);
+
+// Live passthrough: hear the corrected output while recording. Off by
+// default — the DSP and visuals run either way, only the speakers gate.
+let passthroughOn = false;
+els.passthroughBtn.addEventListener('click', () => {
+    passthroughOn = !passthroughOn;
+    els.passthroughBtn.classList.toggle('active', passthroughOn);
+    if (corrector) corrector.set_monitor(passthroughOn);
+});
 els.stopBtn.addEventListener('click', stopRecording);
 els.playBtn.addEventListener('click', () => {
     if (state === 'playing') pausePlayback();

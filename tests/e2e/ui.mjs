@@ -40,6 +40,19 @@ try {
   });
   check(followState.follow, 'follow mode active during recording');
   check(followState.s0 > 0, `follow scrolled past the start (s0=${Math.round(followState.s0)})`);
+
+  // Passthrough defaults off, yet the output is still captured for the
+  // visuals — the mute only gates the speakers.
+  const pt = await page.evaluate(() => ({
+    active: document.getElementById('passthrough-btn').classList.contains('active'),
+    outLen: window.__pc.output_len(),
+  }));
+  check(!pt.active, 'passthrough defaults to off');
+  check(pt.outLen > 0, `output still captured while passthrough is off (${pt.outLen} samples)`);
+  await page.click('#passthrough-btn');
+  check(await page.evaluate(() => document.getElementById('passthrough-btn').classList.contains('active')),
+    'passthrough toggles on');
+  await page.click('#passthrough-btn');
   // The recording grows between the render and this readback, so allow
   // ~100ms of audio of slack on the pin check.
   const rightEdge = followState.s0 + followState.w * followState.spp;

@@ -78,6 +78,9 @@ struct PlaybackState {
     /// it starts drawing — avoids the async worklet setup janking mid-draw.
     input_started: AtomicBool,
     output_started: AtomicBool,
+    /// Audible live passthrough while recording. Off by default: hearing
+    /// yourself corrected is opt-in (and speakers feeding the mic loop).
+    monitor: AtomicBool,
     /// True once the DSP pipeline has produced its first output sample
     /// since the last (re)start of a feed; underruns before that are the
     /// expected warm-up gap, not a problem worth logging.
@@ -206,6 +209,7 @@ impl WebPitchCorrector {
             playing: AtomicBool::new(false),
             input_started: AtomicBool::new(false),
             output_started: AtomicBool::new(false),
+            monitor: AtomicBool::new(false),
             pipeline_primed: AtomicBool::new(false),
         });
 
@@ -267,6 +271,11 @@ impl WebPitchCorrector {
                                 .store(p as u32, Ordering::Relaxed);
                         }
                     }
+                    // While recording live, route audio to the speakers only
+                    // with passthrough on; the pipeline still runs and the
+                    // output is still captured for the visuals either way.
+                    let live_muted = output_playback.input_active.load(Ordering::Relaxed)
+                        && !output_playback.monitor.load(Ordering::Relaxed);
                     let mut missed = 0usize;
                     for frame in data.chunks_exact_mut(output_channels) {
                         match output_processor.pop_sample() {
@@ -274,7 +283,7 @@ impl WebPitchCorrector {
                                 output_playback
                                     .pipeline_primed
                                     .store(true, Ordering::Relaxed);
-                                frame.fill(s);
+                                frame.fill(if live_muted { 0.0 } else { s });
                                 // Capture the produced audio both while
                                 // recording live and while re-processing
                                 // during playback (playback truncates the
@@ -407,6 +416,12 @@ impl WebPitchCorrector {
             .play()
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         Ok(())
+    }
+
+    /// Audible live passthrough while recording (default off). Playback is
+    /// always audible; this only gates what reaches the speakers live.
+    pub fn set_monitor(&self, on: bool) {
+        self.playback.monitor.store(on, Ordering::Relaxed);
     }
 
     pub fn recording_len(&self) -> usize {
