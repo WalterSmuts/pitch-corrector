@@ -4,23 +4,29 @@ use cpal::StreamConfig;
 use cpal::{BufferSize, Stream};
 use cpal::{InputCallbackInfo, OutputCallbackInfo};
 use cpal::{Sample, SizedSample};
+use crossbeam_queue::ArrayQueue;
 use log::{debug, error, info};
 use std::sync::Arc;
 
 const SAMPLE_RATE: u32 = 44100;
 
-pub fn setup_passthrough_processor<T>(processor: T) -> (Stream, Stream)
+pub fn setup_passthrough_processor<T>(mut processor: T) -> (Stream, Stream)
 where
-    T: StreamProcessor + Send + Sync + 'static,
+    T: StreamProcessor + Send + 'static,
 {
     info!("Setting up hardware");
 
-    let input_passthrough_processor = Arc::new(processor);
-    let output_passthrough_processor = input_passthrough_processor.clone();
+    // The output callback is the processor's single owner (`&mut`, no
+    // locks). The input callback only captures: mic samples cross to the
+    // owner through a lock-free ring.
+    let mic_ring = Arc::new(ArrayQueue::<f32>::new(BUFFER_SIZE * 8));
+    let mic_ring_in = mic_ring.clone();
 
     let input_stream = get_input_stream(move |data: &[f32], _| {
         for datum in data {
-            input_passthrough_processor.push_sample(*datum);
+            if mic_ring_in.push(*datum).is_err() {
+                log::warn!("Input callback: mic ring overflow — dropping sample");
+            }
         }
     });
 
@@ -30,8 +36,11 @@ where
     }
 
     let output_stream = get_output_stream(move |data: &mut [f32], _| {
+        while let Some(s) = mic_ring.pop() {
+            processor.push_sample(s);
+        }
         for sample in data.iter_mut() {
-            match output_passthrough_processor.pop_sample() {
+            match processor.pop_sample() {
                 Some(s) => *sample = s,
                 None => {
                     log::warn!("Output callback: underrun — inserting silence");

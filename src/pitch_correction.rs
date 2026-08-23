@@ -114,7 +114,7 @@ impl NoteSnapper {
     }
 }
 
-type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
+type RatioFn = Box<dyn FnMut(&[f32]) -> f32 + Send>;
 
 /// One-pole smoothing of a correction ratio with gap-reset semantics,
 /// shared by the main voice and every harmony voice.
@@ -427,11 +427,11 @@ impl PitchCorrector {
 }
 
 impl StreamProcessor for PitchCorrector {
-    fn push_sample(&self, sample: f32) {
+    fn push_sample(&mut self, sample: f32) {
         self.processor.push_sample(sample);
     }
 
-    fn pop_sample(&self) -> Option<f32> {
+    fn pop_sample(&mut self) -> Option<f32> {
         self.processor.pop_sample()
     }
 }
@@ -532,23 +532,23 @@ impl Harmonizer {
 }
 
 impl StreamProcessor for Harmonizer {
-    fn push_sample(&self, sample: f32) {
+    fn push_sample(&mut self, sample: f32) {
         // Main first: its hop publishes the analysis the voices read when
         // their (same-position) hop fires.
         self.main.push_sample(sample);
-        for v in &self.voices {
+        for v in &mut self.voices {
             v.push_sample(sample);
         }
     }
 
-    fn pop_sample(&self) -> Option<f32> {
+    fn pop_sample(&mut self) -> Option<f32> {
         let main = self.main.pop_sample()?;
         let mask = self.controls.harmony_mask.load(Ordering::Relaxed);
         let voiced = self.hop_bus.voiced() && !self.controls.bypass.load(Ordering::Relaxed);
         let mut gains = self.gains.lock().unwrap();
         let mut out = main;
         let mut norm = 1.0;
-        for (i, v) in self.voices.iter().enumerate() {
+        for (i, v) in self.voices.iter_mut().enumerate() {
             // Identical pipelines fed in lockstep emit in lockstep; treat a
             // (theoretical) miss as silence rather than stalling the mix.
             let h = v.pop_sample().unwrap_or(0.0);
@@ -637,7 +637,7 @@ mod tests {
         };
 
         let run = |in_key: bool| -> Vec<f32> {
-            let h = Harmonizer::with_sample_rate(SAMPLE_RATE as f32);
+            let mut h = Harmonizer::with_sample_rate(SAMPLE_RATE as f32);
             let c = h.controls();
             c.set_scale(Scale::major(Note::C));
             c.set_harmony(0b001); // 3rd only
@@ -696,10 +696,10 @@ mod tests {
         // Contour: hops 0..200 target A3 (unison for an A3 input),
         // hops 200.. target A4 (octave up).
         let mut contour: Vec<Option<Pitch>> = vec![Some(a3); 200];
-        contour.extend(std::iter::repeat(Some(a4)).take(800));
+        contour.extend(std::iter::repeat_n(Some(a4), 800));
 
         let run = |seek_hop: usize| -> f32 {
-            let corrector = PitchCorrector::with_sample_rate(sr);
+            let mut corrector = PitchCorrector::with_sample_rate(sr);
             let c = corrector.controls();
             c.set_contour(contour.clone());
             c.seek_contour(HopIdx(seek_hop));
@@ -740,7 +740,7 @@ mod tests {
         // not allocate on the real-time thread, or long voiced passages cause
         // heap growth and glitches. A steady G3 keeps detection (and the
         // target-pitch contour path) active during the measured window.
-        let corrector = PitchCorrector::new();
+        let mut corrector = PitchCorrector::new();
         let freq = 196.0; // G3
 
         let warmup = BUFFER_SIZE * 16;
@@ -762,7 +762,7 @@ mod tests {
 
     #[test]
     fn pitch_corrector_produces_output() {
-        let corrector = PitchCorrector::new();
+        let mut corrector = PitchCorrector::new();
 
         let num_samples = BUFFER_SIZE * 10;
         for i in 0..num_samples {
@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn perf_pitch_corrector_off_is_transparent_for_sweep() {
-        let corrector = PitchCorrector::with_scale(Scale::empty());
+        let mut corrector = PitchCorrector::with_scale(Scale::empty());
 
         let num_samples = BUFFER_SIZE * 16;
         let mut phase = 0.0f32;
@@ -846,7 +846,7 @@ mod tests {
     fn perf_pitch_corrector_snaps_descending_sweep_to_scale() {
         use crate::signal_processing::YinPitchDetector;
 
-        let corrector = PitchCorrector::with_scale(Scale::pentatonic(Note::C));
+        let mut corrector = PitchCorrector::with_scale(Scale::pentatonic(Note::C));
 
         // Descending sweep 200Hz -> 50Hz
         let num_samples = BUFFER_SIZE * 80;
@@ -915,7 +915,7 @@ mod tests {
     fn perf_pitch_corrector_tracking_bandwidth() {
         use crate::signal_processing::YinPitchDetector;
 
-        let corrector = PitchCorrector::with_scale(Scale::pentatonic(Note::C));
+        let mut corrector = PitchCorrector::with_scale(Scale::pentatonic(Note::C));
 
         // Swing between G3 and A3 — adjacent pentatonic notes
         let g3 = Pitch::new(Note::G, 3).to_freq();
@@ -1034,7 +1034,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(0x51173);
 
         for &noise_amp in &levels {
-            let corrector = PitchCorrector::with_scale(pentatonic_c);
+            let mut corrector = PitchCorrector::with_scale(pentatonic_c);
 
             let mut phase = 0.0f32;
             let mut input = Vec::with_capacity(samples_per_level);

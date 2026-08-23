@@ -3,6 +3,7 @@ use crate::pitch_correction::{Harmonizer, HarmonyMode, PitchCorrector, PitchCorr
 use crate::session::{waveform_peaks, PitchTrack, SpectrogramRenderer, PITCH_HOP, SPEC_WINDOW};
 use crate::signal_processing::{SpectralFreeze, StreamProcessor, BUFFER_SIZE, HOP_SIZE};
 use crate::units::{HopIdx, SampleIdx};
+use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
 
 // Audio-thread cells must never hit AtomicCell's seqlock fallback.
@@ -27,7 +28,7 @@ pub fn warmup() {
     let _ = vec![0.0f32; SPEC_WINDOW].real_fft();
     // Run a few silent hops through a throwaway corrector so the phase
     // vocoder's plans/scratch and the OLA buffers are all allocated/primed.
-    let corrector = PitchCorrector::new();
+    let mut corrector = PitchCorrector::new();
     for _ in 0..(BUFFER_SIZE * 4) {
         corrector.push_sample(0.0);
         while corrector.pop_sample().is_some() {}
@@ -49,30 +50,6 @@ fn spin_lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// The DSP chain plus its control handle, independent of audio I/O.
-pub struct Pipeline {
-    processor: Arc<dyn StreamProcessor + Send + Sync>,
-    controls: Arc<PitchCorrectorControls>,
-}
-
-impl Pipeline {
-    pub fn new(sample_rate: f32) -> Self {
-        let harmonizer = Harmonizer::with_sample_rate(sample_rate);
-        let controls = harmonizer.controls();
-        Pipeline {
-            processor: Arc::new(harmonizer),
-            controls,
-        }
-    }
-
-    pub fn processor(&self) -> &Arc<dyn StreamProcessor + Send + Sync> {
-        &self.processor
-    }
-
-    pub fn controls(&self) -> &Arc<PitchCorrectorControls> {
-        &self.controls
-    }
-}
-
 struct PlaybackState {
     input_active: AtomicBool,
     recording: Mutex<Vec<f32>>,
@@ -182,7 +159,8 @@ impl Analysis {
 pub struct WebPitchCorrector {
     input_stream: cpal::Stream,
     output_stream: cpal::Stream,
-    pipeline: Pipeline,
+    processor: Arc<Mutex<Harmonizer>>,
+    controls: Arc<PitchCorrectorControls>,
     playback: Arc<PlaybackState>,
     analysis: Mutex<Analysis>,
     sample_rate: f32,
@@ -227,9 +205,17 @@ impl WebPitchCorrector {
         let input_channels = input_config.channels() as usize;
         let output_channels = output_config.channels() as usize;
 
-        let pipeline = Pipeline::new(sample_rate);
-        let input_processor = pipeline.processor().clone();
-        let output_processor = pipeline.processor().clone();
+        // The DSP pipeline has single-owner (`&mut`) semantics; no locks
+        // inside. It has exactly two *serialized* drivers — the output
+        // callback (live) and process_offline (upload, streams paused) —
+        // expressed as one boundary Mutex that is uncontended by
+        // construction. The input callback never touches it: mic samples
+        // cross to the driver through a lock-free ring.
+        let processor = Arc::new(Mutex::new(Harmonizer::with_sample_rate(sample_rate)));
+        let controls = processor.lock().unwrap().controls();
+        let mic_ring = Arc::new(ArrayQueue::<f32>::new(BUFFER_SIZE * 8));
+        let mic_ring_in = mic_ring.clone();
+        let output_processor = processor.clone();
 
         let playback = Arc::new(PlaybackState {
             input_active: AtomicBool::new(true),
@@ -257,7 +243,9 @@ impl WebPitchCorrector {
                     let mut rec = input_playback.recording.try_lock().ok();
                     for frame in data.chunks_exact(input_channels) {
                         let s = frame.iter().sum::<f32>() / input_channels as f32;
-                        input_processor.push_sample(s);
+                        if mic_ring_in.push(s).is_err() {
+                            log::warn!("Input callback: mic ring overflow — dropping sample");
+                        }
                         if let Some(rec) = rec.as_mut() {
                             rec.push(s);
                         }
@@ -310,15 +298,34 @@ impl WebPitchCorrector {
                         }
                     }
 
+                    // Single boundary lock per callback; only contended
+                    // while process_offline runs, and the streams are
+                    // paused then — treat it as an underrun if it ever is.
+                    let Ok(mut processor) = output_processor.try_lock() else {
+                        for frame in data.chunks_exact_mut(output_channels) {
+                            frame.fill(0.0);
+                        }
+                        return;
+                    };
                     let fed = output_playback.playing.load(Ordering::Relaxed)
                         || output_playback.input_active.load(Ordering::Relaxed);
                     let frames = data.len() / output_channels;
+                    if output_playback.input_active.load(Ordering::Relaxed) {
+                        // Live: drain captured mic samples into the pipeline.
+                        while let Some(s) = mic_ring.pop() {
+                            processor.push_sample(s);
+                        }
+                    } else {
+                        // Not recording: discard any stale capture residue so
+                        // it can't pollute the next playback re-process.
+                        while mic_ring.pop().is_some() {}
+                    }
                     if output_playback.playing.load(Ordering::Relaxed) {
                         if let Ok(rec) = output_playback.recording.try_lock() {
                             let mut p = output_playback.playback_pos.load().0;
                             for _ in 0..frames {
                                 if p < rec.len() {
-                                    output_processor.push_sample(rec[p]);
+                                    processor.push_sample(rec[p]);
                                     p += 1;
                                 }
                             }
@@ -335,7 +342,7 @@ impl WebPitchCorrector {
                         && !output_playback.monitor.load(Ordering::Relaxed);
                     let mut missed = 0usize;
                     for frame in data.chunks_exact_mut(output_channels) {
-                        match output_processor.pop_sample() {
+                        match processor.pop_sample() {
                             Some(s) => {
                                 output_playback
                                     .pipeline_primed
@@ -381,7 +388,8 @@ impl WebPitchCorrector {
         Ok(WebPitchCorrector {
             input_stream,
             output_stream,
-            pipeline,
+            processor,
+            controls,
             playback,
             analysis: Mutex::new(Analysis::new(sample_rate)),
             sample_rate,
@@ -408,13 +416,11 @@ impl WebPitchCorrector {
         let s = semitones.round() as i32;
         let octaves = s.div_euclid(12) as i8;
         let simple = SimpleInterval::ALL[s.rem_euclid(12) as usize];
-        self.pipeline
-            .controls
-            .set_shift(Interval::compound(simple, octaves));
+        self.controls.set_shift(Interval::compound(simple, octaves));
     }
 
     pub fn get_shift(&self) -> f32 {
-        self.pipeline.controls.get_shift().semitones() as f32
+        self.controls.get_shift().semitones() as f32
     }
 
     /// Returns the recorded target pitch contour and clears it. One entry
@@ -423,8 +429,7 @@ impl WebPitchCorrector {
     /// the underlying log is bounded and may be shorter than the recording
     /// (missing tail), but every entry it does have is hop-true.
     pub fn take_target_pitch_contour(&self) -> Vec<f32> {
-        self.pipeline
-            .controls
+        self.controls
             .take_target_pitch_contour()
             .iter()
             .map(|p| p.map_or(0.0, |p| p.to_freq()))
@@ -432,15 +437,15 @@ impl WebPitchCorrector {
     }
 
     pub fn clear_target_pitch_contour(&self) {
-        self.pipeline.controls.clear_target_pitch_contour();
+        self.controls.clear_target_pitch_contour();
     }
 
     pub fn set_scale(&self, bits: u16) {
-        self.pipeline.controls.set_scale(Scale::from_bits(bits));
+        self.controls.set_scale(Scale::from_bits(bits));
     }
 
     pub fn get_scale(&self) -> u16 {
-        self.pipeline.controls.get_scale().bits()
+        self.controls.get_scale().bits()
     }
 
     pub fn stop(&self) {
@@ -460,9 +465,9 @@ impl WebPitchCorrector {
         spin_lock(&self.playback.recording).clear();
         spin_lock(&self.playback.output_recording).clear();
         self.playback.playback_pos.store(SampleIdx(0));
-        self.analysis.lock().unwrap().reset(&self.pipeline.controls);
-        self.pipeline.controls.clear_target_pitch_contour();
-        self.pipeline.controls.clear_contour();
+        self.analysis.lock().unwrap().reset(&self.controls);
+        self.controls.clear_target_pitch_contour();
+        self.controls.clear_contour();
         self.playback
             .pipeline_primed
             .store(false, Ordering::Relaxed);
@@ -478,13 +483,13 @@ impl WebPitchCorrector {
 
     /// Enabled harmony voices: bit0 = 3rd, bit1 = 5th, bit2 = octave.
     pub fn set_harmony(&self, mask: u8) {
-        self.pipeline.controls.set_harmony(mask);
+        self.controls.set_harmony(mask);
     }
 
     /// Diatonic (walk the selected scale) vs absolute (fixed semitones).
     /// (Bool at the wasm boundary; typed HarmonyMode inside.)
     pub fn set_harmony_in_key(&self, in_key: bool) {
-        self.pipeline.controls.set_harmony_mode(if in_key {
+        self.controls.set_harmony_mode(if in_key {
             HarmonyMode::InKey
         } else {
             HarmonyMode::Absolute
@@ -494,7 +499,7 @@ impl WebPitchCorrector {
     /// Dry bypass (A/B): hear the uncorrected voice. Applies live, during
     /// both recording and playback re-processing.
     pub fn set_bypass(&self, on: bool) {
-        self.pipeline.controls.set_bypass(on);
+        self.controls.set_bypass(on);
     }
 
     /// Sustain the sound at `position` (samples on the output timeline)
@@ -553,16 +558,19 @@ impl WebPitchCorrector {
         spin_lock(&self.playback.output_recording).clear();
         self.playback.playback_pos.store(SampleIdx(0));
         self.playback.input_active.store(false, Ordering::Relaxed);
-        self.analysis.lock().unwrap().reset(&self.pipeline.controls);
+        self.analysis.lock().unwrap().reset(&self.controls);
         let _ = self.input_stream.pause();
         let _ = self.output_stream.pause();
     }
 
     pub fn process_offline(&self, samples: &[f32], count: usize) -> usize {
+        // Streams are paused here (load_recording), so this never contends
+        // with the output callback.
+        let mut processor = spin_lock(&self.processor);
         let n = samples.len().min(count);
         for &s in &samples[..n] {
-            self.pipeline.processor.push_sample(s);
-            while let Some(o) = self.pipeline.processor.pop_sample() {
+            processor.push_sample(s);
+            while let Some(o) = processor.pop_sample() {
                 spin_lock(&self.playback.output_recording).push(o);
             }
         }
@@ -589,8 +597,7 @@ impl WebPitchCorrector {
         }
         // The edited contour lives on the absolute hop timeline; align its
         // cursor with where playback starts.
-        self.pipeline
-            .controls
+        self.controls
             .seek_contour(HopIdx::containing(SampleIdx(pos)));
         self.playback
             .pipeline_primed
@@ -628,8 +635,7 @@ impl WebPitchCorrector {
                 out.truncate(pos);
                 out.resize(pos, 0.0);
             }
-            self.pipeline
-                .controls
+            self.controls
                 .seek_contour(HopIdx::containing(SampleIdx(pos)));
         }
     }
@@ -663,12 +669,12 @@ impl WebPitchCorrector {
                 }
             })
             .collect();
-        self.pipeline.controls.set_contour(pitches);
+        self.controls.set_contour(pitches);
     }
 
     /// Restore the default NoteSnapper target.
     pub fn clear_contour(&self) {
-        self.pipeline.controls.clear_contour();
+        self.controls.clear_contour();
     }
 
     // --- Session data APIs (timeline UI renders from these) ---
@@ -683,7 +689,7 @@ impl WebPitchCorrector {
     /// nothing new arrived. Returns the input length in samples.
     pub fn analyze(&self) -> f64 {
         let mut a = self.analysis.lock().unwrap();
-        a.sync(&self.playback, &self.pipeline.controls);
+        a.sync(&self.playback, &self.controls);
         a.input_samples.len() as f64
     }
 

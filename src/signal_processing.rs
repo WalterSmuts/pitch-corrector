@@ -40,17 +40,21 @@ const SAMPLE_RATE: usize = 44100;
 // intact while leaving genuine harmonics (well above this floor) untouched.
 const PEAK_REL_THRESHOLD: f32 = 1e-3;
 
+/// A stateful stream transformer with single-owner semantics: the audio
+/// thread owns the processor and drives it through `&mut self`. Sharing
+/// (with the UI, or across callbacks) happens at the boundary via
+/// lock-free queues and atomic cells — never inside a processor.
 pub trait StreamProcessor {
-    fn push_sample(&self, sample: f32);
-    fn pop_sample(&self) -> Option<f32>;
+    fn push_sample(&mut self, sample: f32);
+    fn pop_sample(&mut self) -> Option<f32>;
 }
 
 pub trait BlockProcessor {
-    fn process(&self, buffer: &mut [f32]);
+    fn process(&mut self, buffer: &mut [f32]);
 }
 
 pub trait FrequencyDomainBlockProcessor {
-    fn process(&self, buffer: &mut DynRealDft<f32>);
+    fn process(&mut self, buffer: &mut DynRealDft<f32>);
 }
 
 pub struct NaivePitchShifter {
@@ -69,7 +73,7 @@ pub struct FrequencyDomainPitchShifter {
     scaling_ratio: f32,
 }
 
-pub struct PhaseVocoderPitchShifter<F: Fn(&[f32]) -> f32 + Send + Sync> {
+pub struct PhaseVocoderPitchShifter<F: FnMut(&[f32]) -> f32 + Send> {
     ratio_fn: F,
     hop_size: usize,
     input_buffer: ArrayQueue<f32>,
@@ -184,7 +188,7 @@ impl<T> BlockProcessor for TimeToFrequencyDomainBlockProcessorConverter<T>
 where
     T: FrequencyDomainBlockProcessor,
 {
-    fn process(&self, buffer: &mut [f32]) {
+    fn process(&mut self, buffer: &mut [f32]) {
         let mut spectrum_opt = self.spectrum.lock().unwrap();
         let spectrum = spectrum_opt.as_mut().unwrap();
         buffer.real_fft_using(spectrum);
@@ -204,13 +208,13 @@ where
     F: StreamProcessor,
     S: StreamProcessor,
 {
-    fn push_sample(&self, sample: f32) {
+    fn push_sample(&mut self, sample: f32) {
         self.first.push_sample(sample);
         while let Some(sample) = self.first.pop_sample() {
             self.second.push_sample(sample);
         }
     }
-    fn pop_sample(&self) -> Option<f32> {
+    fn pop_sample(&mut self) -> Option<f32> {
         self.second.pop_sample()
     }
 }
@@ -252,11 +256,11 @@ impl<T> StreamProcessor for Segmenter<T>
 where
     T: BlockProcessor,
 {
-    fn pop_sample(&self) -> Option<f32> {
+    fn pop_sample(&mut self) -> Option<f32> {
         self.output_buffer.pop()
     }
 
-    fn push_sample(&self, sample: f32) {
+    fn push_sample(&mut self, sample: f32) {
         if self.input_buffer.push(sample).is_err() {
             log::warn!("Segmenter: input buffer overflow — dropping sample");
         }
@@ -298,13 +302,13 @@ impl<const I: usize> DisplayProcessor<I> {
 }
 
 impl<const I: usize> StreamProcessor for DisplayProcessor<I> {
-    fn push_sample(&self, sample: f32) {
+    fn push_sample(&mut self, sample: f32) {
         if self.buffer.push(sample).is_err() {
             log::warn!("DisplayProcessor: buffer overflow — dropping sample");
         }
     }
 
-    fn pop_sample(&self) -> Option<f32> {
+    fn pop_sample(&mut self) -> Option<f32> {
         let sample = self.buffer.pop()?;
         let mut back = self.back_buffer.lock().unwrap();
         let idx = self.write_index.load(Ordering::Relaxed);
@@ -345,7 +349,7 @@ macro_rules! pipeline {
 pub use pipeline;
 
 impl BlockProcessor for NaivePitchShifter {
-    fn process(&self, buffer: &mut [f32]) {
+    fn process(&mut self, buffer: &mut [f32]) {
         let mut output_buffer = [0.0; BUFFER_SIZE];
         for (index, sample) in output_buffer.iter_mut().enumerate() {
             *sample = (index as f32 * self.scaling_ratio) % (BUFFER_SIZE as f32 - 1.0);
@@ -394,7 +398,7 @@ impl HighPassFilter {
 }
 
 impl FrequencyDomainBlockProcessor for HighPassFilter {
-    fn process(&self, spectrum: &mut DynRealDft<f32>) {
+    fn process(&mut self, spectrum: &mut DynRealDft<f32>) {
         let resp_bins = self.frequency_response.get_frequency_bins();
         for (s, r) in spectrum.get_frequency_bins_mut().iter_mut().zip(resp_bins) {
             *s *= r;
@@ -426,7 +430,7 @@ impl LowPassFilter {
 }
 
 impl FrequencyDomainBlockProcessor for LowPassFilter {
-    fn process(&self, spectrum: &mut DynRealDft<f32>) {
+    fn process(&mut self, spectrum: &mut DynRealDft<f32>) {
         let resp_bins = self.frequency_response.get_frequency_bins();
         for (s, r) in spectrum.get_frequency_bins_mut().iter_mut().zip(resp_bins) {
             *s *= r;
@@ -443,7 +447,7 @@ impl FrequencyDomainPitchShifter {
 }
 
 impl FrequencyDomainBlockProcessor for FrequencyDomainPitchShifter {
-    fn process(&self, spectrum: &mut DynRealDft<f32>) {
+    fn process(&mut self, spectrum: &mut DynRealDft<f32>) {
         let interpolation_clone = spectrum.clone();
 
         spectrum
@@ -465,14 +469,12 @@ impl FrequencyDomainBlockProcessor for FrequencyDomainPitchShifter {
 }
 
 impl PhaseVocoderPitchShifter<fn(&[f32]) -> f32> {
-    pub fn new(
-        scaling_ratio: f32,
-    ) -> PhaseVocoderPitchShifter<impl Fn(&[f32]) -> f32 + Send + Sync> {
+    pub fn new(scaling_ratio: f32) -> PhaseVocoderPitchShifter<impl FnMut(&[f32]) -> f32 + Send> {
         PhaseVocoderPitchShifter::with_ratio_fn(move |_: &[f32]| scaling_ratio)
     }
 }
 
-impl<F: Fn(&[f32]) -> f32 + Send + Sync> PhaseVocoderPitchShifter<F> {
+impl<F: FnMut(&[f32]) -> f32 + Send> PhaseVocoderPitchShifter<F> {
     pub fn with_ratio_fn(ratio_fn: F) -> Self {
         info!("Creating new PhaseVocoderPitchShifter with dynamic ratio");
         let hop_size = HOP_SIZE;
@@ -815,8 +817,8 @@ impl SpectralFreeze {
     }
 }
 
-impl<F: Fn(&[f32]) -> f32 + Send + Sync> StreamProcessor for PhaseVocoderPitchShifter<F> {
-    fn push_sample(&self, sample: f32) {
+impl<F: FnMut(&[f32]) -> f32 + Send> StreamProcessor for PhaseVocoderPitchShifter<F> {
+    fn push_sample(&mut self, sample: f32) {
         if self.input_buffer.push(sample).is_err() {
             log::warn!("PhaseVocoder: input buffer overflow — dropping sample");
         }
@@ -859,7 +861,7 @@ impl<F: Fn(&[f32]) -> f32 + Send + Sync> StreamProcessor for PhaseVocoderPitchSh
         }
     }
 
-    fn pop_sample(&self) -> Option<f32> {
+    fn pop_sample(&mut self) -> Option<f32> {
         self.output_buffer.pop()
     }
 }
@@ -868,7 +870,7 @@ impl<T> BlockProcessor for OverlapAndAddProcessor<T>
 where
     T: BlockProcessor,
 {
-    fn process(&self, buffer: &mut [f32]) {
+    fn process(&mut self, buffer: &mut [f32]) {
         let mut scratch = self.scratch.lock().unwrap();
         let previous_clean_half_buffer = &mut self.previous_clean_half_buffer.lock().unwrap();
 
@@ -1311,7 +1313,7 @@ mod tests {
     struct PassthroughBlockProcessor;
 
     impl BlockProcessor for PassthroughBlockProcessor {
-        fn process(&self, _buffer: &mut [f32]) {
+        fn process(&mut self, _buffer: &mut [f32]) {
             // Do nothing to buffer
         }
     }
@@ -1319,7 +1321,7 @@ mod tests {
     struct AmplitudeHalvingBlockProcessor;
 
     impl BlockProcessor for AmplitudeHalvingBlockProcessor {
-        fn process(&self, buffer: &mut [f32]) {
+        fn process(&mut self, buffer: &mut [f32]) {
             for sample in buffer.iter_mut() {
                 *sample /= 2.0;
             }
@@ -1328,7 +1330,7 @@ mod tests {
 
     #[test]
     fn overlap_and_add_processor_is_transparent() {
-        let passthrough_stream_processor =
+        let mut passthrough_stream_processor =
             Segmenter::new(OverlapAndAddProcessor::new(PassthroughBlockProcessor));
         let queue = ArrayQueue::new(BUFFER_SIZE * 4);
         for _ in 0..TEST_SAMPLE_SIZE {
@@ -1361,7 +1363,7 @@ mod tests {
 
     #[test]
     fn overlap_and_add_processor_and_amplitude_halver_works_as_expected() {
-        let passthrough_stream_processor =
+        let mut passthrough_stream_processor =
             Segmenter::new(OverlapAndAddProcessor::new(AmplitudeHalvingBlockProcessor));
         let queue = ArrayQueue::new(BUFFER_SIZE * 4);
         for _ in 0..TEST_SAMPLE_SIZE {
@@ -1410,7 +1412,7 @@ mod tests {
 
     #[test]
     fn segmenter_is_transparent() {
-        let passthrough_stream_processor = Segmenter::new(PassthroughBlockProcessor);
+        let mut passthrough_stream_processor = Segmenter::new(PassthroughBlockProcessor);
         let queue = ArrayQueue::new(BUFFER_SIZE * 4);
         for _ in 0..TEST_SAMPLE_SIZE {
             let x = rand::random::<f32>();
@@ -1426,7 +1428,7 @@ mod tests {
     #[test]
     fn low_pass_filter_no_discontinuities_with_ola() {
         let freq = 100.0;
-        let processor = Segmenter::new(OverlapAndAddProcessor::new(
+        let mut processor = Segmenter::new(OverlapAndAddProcessor::new(
             TimeToFrequencyDomainBlockProcessorConverter::new(LowPassFilter::new(440)),
         ));
 
@@ -1466,7 +1468,7 @@ mod tests {
 
         // Feed a signal with DC offset through the filter
         let mut buffer: [f32; BUFFER_SIZE] = [0.5; BUFFER_SIZE];
-        let converter = TimeToFrequencyDomainBlockProcessorConverter::new(filter);
+        let mut converter = TimeToFrequencyDomainBlockProcessorConverter::new(filter);
         converter.process(&mut buffer);
 
         let mean: f32 = buffer.iter().sum::<f32>() / buffer.len() as f32;
@@ -1482,7 +1484,7 @@ mod tests {
     fn frequency_domain_pitch_shifter_no_distortion() {
         let input_freq = 440.0;
         let expected_freq = input_freq * 0.5;
-        let processor = Segmenter::new(OverlapAndAddProcessor::new(
+        let mut processor = Segmenter::new(OverlapAndAddProcessor::new(
             TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new(
                 0.5,
             )),
@@ -1545,7 +1547,7 @@ mod tests {
         let input_freq = 220.0;
         let scaling_ratio = 2.0;
         let expected_freq = input_freq * scaling_ratio;
-        let processor = Segmenter::new(OverlapAndAddProcessor::new(
+        let mut processor = Segmenter::new(OverlapAndAddProcessor::new(
             TimeToFrequencyDomainBlockProcessorConverter::new(FrequencyDomainPitchShifter::new(
                 scaling_ratio,
             )),
@@ -1601,7 +1603,7 @@ mod tests {
     #[test]
     fn perf_phase_vocoder_unity_ratio_is_transparent() {
         let input_freq = 440.0;
-        let processor = PhaseVocoderPitchShifter::new(1.0);
+        let mut processor = PhaseVocoderPitchShifter::new(1.0);
 
         let num_samples = BUFFER_SIZE * 40;
         let input: Vec<f32> = (0..num_samples)
@@ -1648,7 +1650,7 @@ mod tests {
     #[test]
     fn phase_vocoder_pitch_shifter_produces_output() {
         let input_freq = 440.0;
-        let processor = PhaseVocoderPitchShifter::new(0.5);
+        let mut processor = PhaseVocoderPitchShifter::new(0.5);
 
         let num_samples = BUFFER_SIZE * 10;
         for i in 0..num_samples {
@@ -1999,7 +2001,7 @@ mod tests {
         const ANALYSIS_SIZE: usize = 8192;
         let input_freq = 440.0;
         let ratio = 2.0; // octave up -> a single tone at 880 Hz is ideal
-        let processor = PhaseVocoderPitchShifter::new(ratio);
+        let mut processor = PhaseVocoderPitchShifter::new(ratio);
 
         let num_samples = BUFFER_SIZE * 32;
         let mut output = Vec::new();
@@ -2074,7 +2076,7 @@ mod tests {
     /// a clean fundamental; smearing spreads energy out and lowers it.
     fn downshift_glide_concentration() -> f32 {
         const ANALYSIS: usize = 4096;
-        let processor = PhaseVocoderPitchShifter::new(0.5);
+        let mut processor = PhaseVocoderPitchShifter::new(0.5);
 
         // ~1.5 s exponential glide across 100 -> 200 Hz. The fast rate drives
         // strong FM sidebands, so each analysis frame has many low-level peaks.
@@ -2152,7 +2154,7 @@ mod tests {
     /// which resolves the period to well under a cent at these frequencies.
     fn shift_error_cents(base_freq: f32, cents: f32) -> f32 {
         let ratio = 2f32.powf(cents / 1200.0);
-        let processor = PhaseVocoderPitchShifter::new(ratio);
+        let mut processor = PhaseVocoderPitchShifter::new(ratio);
         let num_samples = BUFFER_SIZE * 48;
         let mut output = Vec::new();
         for i in 0..num_samples {
@@ -2349,7 +2351,7 @@ mod tests {
         const ANALYSIS_SIZE: usize = 4096;
         let input_freq = 440.0;
         let expected_freq = input_freq * scaling_ratio;
-        let processor = PhaseVocoderPitchShifter::new(scaling_ratio);
+        let mut processor = PhaseVocoderPitchShifter::new(scaling_ratio);
 
         // Feed enough signal to reach steady state; skip=len/2 leaves ~8
         // buffers of warmup before the single analysis block.
@@ -2465,7 +2467,7 @@ mod tests {
 
         let ratio = Arc::new(AtomicU32::new(ratio_before.to_bits()));
         let ratio_clone = ratio.clone();
-        let processor = PhaseVocoderPitchShifter::with_ratio_fn(move |_: &[f32]| {
+        let mut processor = PhaseVocoderPitchShifter::with_ratio_fn(move |_: &[f32]| {
             f32::from_bits(ratio_clone.load(Ordering::Relaxed))
         });
 
@@ -2581,7 +2583,7 @@ mod tests {
 
     #[test]
     fn perf_phase_vocoder_no_alloc_after_warmup() {
-        let processor = PhaseVocoderPitchShifter::new(0.5);
+        let mut processor = PhaseVocoderPitchShifter::new(0.5);
 
         // Warmup: let it allocate internal buffers and easyfft thread-local scratch
         let warmup = BUFFER_SIZE * 10;
@@ -2620,7 +2622,8 @@ mod tests {
         });
 
         // Now test our converter wrapper with LowPassFilter
-        let converter = TimeToFrequencyDomainBlockProcessorConverter::new(LowPassFilter::new(440));
+        let mut converter =
+            TimeToFrequencyDomainBlockProcessorConverter::new(LowPassFilter::new(440));
         let mut buf2 = [0.0f32; BUFFER_SIZE];
         converter.process(&mut buf2);
         converter.process(&mut buf2);

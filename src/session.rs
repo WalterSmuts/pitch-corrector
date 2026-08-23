@@ -250,7 +250,7 @@ mod tests {
         let sr = 48_000.0;
         // Voiced then silence: the silent tail must come back 0.0.
         let mut samples = sine(220.0, sr, 24_000);
-        samples.extend(std::iter::repeat(0.0).take(24_000));
+        samples.extend(std::iter::repeat_n(0.0, 24_000));
         let mut pt = PitchTrack::new(sr);
         pt.analyze(&samples);
         let track = pt.track();
