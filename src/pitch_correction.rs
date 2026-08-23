@@ -428,14 +428,18 @@ impl PitchCorrector {
                     None
                 }
             };
-            let target_pitch = contour_override.or_else(|| {
+            let snapped = {
                 let scale = controls_clone.get_scale();
                 detected.and_then(|freq| snapper.snap(freq, scale))
-            });
+            };
+            let target_pitch = contour_override.or(snapped);
 
+            // Log the *snapper's* choice, not the effective target: the
+            // nearest-note series is a pure function of the input and must
+            // not repaint as the override it is being overridden by.
             // Lock-free, alloc-free log on the real-time audio thread. Drops
             // the entry if the bounded queue is full rather than allocating.
-            let _ = controls_clone.target_pitch_contour.push(target_pitch);
+            let _ = controls_clone.target_pitch_contour.push(snapped);
 
             // Publish this hop's analysis for the harmony voices (parallel
             // pipelines fed in lockstep; they read these in their own
@@ -832,6 +836,35 @@ mod tests {
             produced.iter().all(|&f| f == 0.0),
             "stale-voiced blip after reset: {:?}",
             &produced[..produced.len().min(6)]
+        );
+    }
+
+    #[test]
+    fn target_log_stays_the_snapper_under_an_override() {
+        // The nearest-note series is input-derived: an installed override
+        // steers the correction but must not rewrite what the nearest
+        // note *is*.
+        let g3 = Pitch::from_freq(196.0);
+        let mut corrector = PitchCorrector::with_scale(Scale::major(Note::C));
+        corrector.controls().set_contour(vec![Some(g3); 4096]);
+        let (produced, _) = pitch_logs_for_tone(&mut corrector, OFF_SCALE_HZ);
+        assert!(
+            cents(steady_state(&produced), 196.0).abs() < 8.0,
+            "override drives correction"
+        );
+
+        let logged: Vec<f32> = corrector
+            .controls()
+            .take_target_pitch_contour()
+            .iter()
+            .filter_map(|p| p.map(|p| p.to_freq()))
+            .collect();
+        assert!(logged.len() > 20);
+        let tail = &logged[logged.len() - logged.len() / 4..];
+        let avg = tail.iter().sum::<f32>() / tail.len() as f32;
+        assert!(
+            cents(avg, B3_HZ).abs() < 8.0,
+            "target log must stay the snapper's B3, got {avg:.1} Hz"
         );
     }
 

@@ -401,10 +401,10 @@ try {
     `nearest-note target is drawn without post-correction (${withoutTarget} -> ${withTarget} gray px)`,
   );
 
-  // --- Merged lane repaints while the output regrows during playback:
-  // mid-playback the target/output are truncated at the regrow point (no
-  // purple beyond the playhead), and by the end the full-width target is
-  // back. Both sides fail if the input-hosted merged lane never repaints. ---
+  // --- Playback behavior of the merged lane: the nearest-note target is
+  // input-derived and must persist through a replay (no clear-and-regrow),
+  // while the output series truncates and regrows — which only renders if
+  // the input-hosted merged lane repaints during playback. ---
   const purpleRight = () =>
     page.evaluate(() => {
       const c = document.querySelectorAll('.tl-track-canvas')[0];
@@ -425,7 +425,7 @@ try {
     await page.evaluate(() => window.__pc.is_playing()),
     'playback running for the merged-repaint check',
   );
-  check(midPlay < 20, `mid-playback: no stale target beyond the regrow point (${midPlay} px)`);
+  check(midPlay > 50, `mid-playback: nearest-note target persists through replay (${midPlay} px)`);
   await page.waitForFunction(() => !window.__pc.is_playing(), { timeout: 15000 });
   await sleep(300);
   // The corrected output sits exactly on the target note, so the regrown

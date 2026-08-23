@@ -150,12 +150,18 @@ impl Analysis {
             controls.drain_voice_pitch(voice, track);
         }
         controls.drain_aim_pitch(&mut self.aim_pitch);
-        self.target_pitch.extend(
-            controls
-                .take_target_pitch_contour()
-                .iter()
-                .map(|p| p.map_or(0.0, |p| p.to_freq())),
-        );
+        // The nearest-note target depends only on the input, which playback
+        // does not change: re-processing logs the same values again, so the
+        // replayed entries are drained and discarded, and the mirror is
+        // never truncated by output rewrites — no clear-and-regrow flicker.
+        let target_entries = controls.take_target_pitch_contour();
+        if !playback.playing.load(Ordering::Relaxed) {
+            self.target_pitch.extend(
+                target_entries
+                    .iter()
+                    .map(|p| p.map_or(0.0, |p| p.to_freq())),
+            );
+        }
         if let Some(len) = self.output.catch_up(&playback.output) {
             // Output rewrite (playback seek): drop derived pitch past it.
             let hops: HopIdx<HOP_SIZE> = HopIdx::containing(SampleIdx(len));
@@ -163,7 +169,6 @@ impl Analysis {
                 track.truncate(hops.0);
             }
             self.aim_pitch.truncate(hops.0);
-            self.target_pitch.truncate(hops.0);
         }
         self.input_pitch.analyze(self.input.samples());
     }
