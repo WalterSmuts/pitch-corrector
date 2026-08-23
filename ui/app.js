@@ -431,17 +431,19 @@ function contourDrag(track, pos, phase) {
     if (state !== 'stopped' && state !== 'paused') return false;
     if (phase === 'end') return true;
 
-    // Overrides only make sense on voiced audio: forcing a pitch onto an
-    // unvoiced stretch makes the vocoder shift noise/breath, which sounds
-    // like artifacts. Consume the drag without editing there.
-    const pitchTrack = corrector.input_pitch_track();
-    const pitchIdx = Math.floor(pos.sample / pitchHop);
-    if (!(pitchTrack[pitchIdx] > 0)) return true;
+    const hop = Math.floor(pos.sample / vocoderHop);
+    // Overrides only make sense where the DSP found a nearest note: forcing
+    // a pitch onto an unvoiced stretch makes the vocoder shift noise and
+    // breath. Gate on the DSP's own per-hop nearest-note log — the earlier
+    // gate used the UI-side input pitch track, whose coarser (1024-sample)
+    // bins can read voiced at boundaries where this exact 512-sample hop is
+    // not, letting overrides land on unvoiced hops.
+    const nearest = corrector.target_pitch_track()[hop] || 0;
+    if (nearest === 0) return true;
 
     if (!overrideContour) {
         overrideContour = new Array(Math.ceil(totalSamples / vocoderHop) + 1).fill(0);
     }
-    const hop = Math.floor(pos.sample / vocoderHop);
     if (hop < 0 || hop >= overrideContour.length) return true;
     const freq = pitchScale.yToFreq(pos.y, pos.h);
     const noteBits = corrector.get_scale();
@@ -449,8 +451,7 @@ function contourDrag(track, pos, phase) {
     // Dragging onto the nearest note is not an override — it's what the
     // snapper does anyway. Clear the point instead, so dragging back to
     // the nearest note resets it.
-    const nearest = corrector.target_pitch_track()[hop] || 0;
-    const isNearest = nearest > 0 && Math.abs(1200 * Math.log2(snapped / nearest)) < 1;
+    const isNearest = Math.abs(1200 * Math.log2(snapped / nearest)) < 1;
     overrideContour[hop] = isNearest ? 0 : snapped;
     updateLegendOverride();
     timeline.invalidate(pitchMerged() ? 'input' : 'output');
