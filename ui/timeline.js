@@ -71,6 +71,7 @@ export class Timeline {
         this.bodyEl = el('div', 'tl-body', this.root);
         for (const t of this.tracks) {
             const row = el('div', 'tl-row tl-track', this.bodyEl);
+            t.row = row;
             const head = el('div', 'tl-head', row);
             el('div', 'tl-label', head).textContent = t.label;
             const sel = el('select', 'tl-view-select', head);
@@ -98,6 +99,19 @@ export class Timeline {
     }
 
     // --- Geometry ---
+
+    /**
+     * Collapse the timeline to a single (taller) track, or restore all
+     * tracks with `null`. Used by merged views that overlay every series
+     * in one lane.
+     */
+    collapseTo(id) {
+        for (const t of this.tracks) {
+            t.row.style.display = id && t.id !== id ? 'none' : '';
+            t.row.classList.toggle('tl-tall', !!id && t.id === id);
+        }
+        this.#resize();
+    }
 
     /** Device-px width of the track canvases. */
     get w() {
@@ -268,6 +282,9 @@ export class Timeline {
     #continuation = null;
 
     #renderTrack(t, spp) {
+        // Collapsed-away tracks have zero-area canvases; skip them (blitting
+        // from a 0x0 canvas throws).
+        if (t.canvas.width === 0 || t.canvas.height === 0) return false;
         // The repaint watermark stops at the track's real data end (the
         // output lags the input by the pipeline latency); columns painted
         // before their data existed get repainted when it arrives.

@@ -40,6 +40,8 @@ const ampScale = new AmplitudeScale();
 
 const INPUT_COLOR = 'rgb(255,150,50)';
 const OUTPUT_COLOR = 'rgb(50,255,120)';
+// Merged pitch view: which series are drawn (legend toggles).
+const pitchVis = { input: true, output: true, aim: true, h1: true, h2: true, h3: true };
 // The aim line (post-smoothing, full strength): output green, dimmed.
 const AIM_COLOR = 'rgba(50,255,120,0.35)';
 const EDIT_COLOR = 'rgb(255,80,200)';
@@ -110,16 +112,59 @@ if (new URLSearchParams(location.search).has('e2e')) {
 const viewSelect = $select('view-select');
 const splitCb = $input('split-views-cb');
 
+// The shared pitch view merges every series into one tall lane with a
+// legend; split-per-track does not apply to it (each lane would only
+// duplicate the merged content), so the checkbox hides while it is active.
+function pitchMerged() {
+    return !splitCb.checked && viewSelect.value === 'pitch';
+}
+function updatePitchMerge() {
+    timeline.collapseTo(pitchMerged() ? 'input' : null);
+    legendEl.style.display = pitchMerged() ? '' : 'none';
+    splitLabel.style.display = viewSelect.value === 'pitch' ? 'none' : '';
+}
 function applySharedView() {
     timeline.setView('input', viewSelect.value);
     timeline.setView('output', viewSelect.value);
+    updatePitchMerge();
 }
 viewSelect.addEventListener('change', applySharedView);
 splitCb.addEventListener('change', () => {
     timeline.showTrackSelectors(splitCb.checked);
     viewSelect.disabled = splitCb.checked;
     if (!splitCb.checked) applySharedView(); // re-unify on un-split
+    updatePitchMerge();
 });
+
+// Legend: top-right overlay on the merged pitch lane, one switch per series.
+const splitLabel = /** @type {HTMLElement} */ (splitCb.parentElement);
+const legendEl = document.createElement('div');
+legendEl.className = 'pitch-legend';
+legendEl.style.display = 'none';
+for (const [key, label, color] of [
+    ['input', 'Input', INPUT_COLOR],
+    ['output', 'Output', OUTPUT_COLOR],
+    ['aim', 'Aim', AIM_COLOR],
+    ['h1', '3rd', HARMONY_COLORS[0]],
+    ['h2', '5th', HARMONY_COLORS[1]],
+    ['h3', 'Octave', HARMONY_COLORS[2]],
+]) {
+    const row = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = pitchVis[key];
+    cb.dataset.series = key;
+    cb.addEventListener('change', () => {
+        pitchVis[key] = cb.checked;
+        timeline.invalidate('input');
+    });
+    const swatch = document.createElement('span');
+    swatch.className = 'swatch';
+    swatch.style.background = color;
+    row.append(cb, swatch, document.createTextNode(label));
+    legendEl.appendChild(row);
+}
+timeline.getTrack('input').canvas.parentElement.appendChild(legendEl);
 
 function renderTrack(track, canvas, vp, x0, x1) {
     const isInput = track.id === 'input';
@@ -162,7 +207,56 @@ function renderTrack(track, canvas, vp, x0, x1) {
                 noteBits: corrector.get_scale(),
                 root: parseInt($select('root-select').value),
             });
-            if (isInput) {
+            if (pitchMerged()) {
+                // One lane, every series overlaid; the legend gates each.
+                for (let v = 1; v <= 3; v++) {
+                    if (!pitchVis['h' + v]) continue;
+                    const track = corrector.harmony_pitch_track(v);
+                    if (track.some((f) => f > 0)) {
+                        drawPitchTrack(
+                            ctx,
+                            track,
+                            vocoderHop,
+                            vp,
+                            HARMONY_COLORS[v - 1],
+                            pitchScale,
+                        );
+                    }
+                }
+                if (pitchVis.aim) {
+                    drawPitchTrack(
+                        ctx,
+                        corrector.aim_pitch_track(),
+                        vocoderHop,
+                        vp,
+                        AIM_COLOR,
+                        pitchScale,
+                    );
+                }
+                if (pitchVis.input) {
+                    drawPitchTrack(
+                        ctx,
+                        corrector.input_pitch_track(),
+                        pitchHop,
+                        vp,
+                        INPUT_COLOR,
+                        pitchScale,
+                    );
+                }
+                if (pitchVis.output) {
+                    drawPitchTrack(
+                        ctx,
+                        corrector.output_pitch_track(),
+                        vocoderHop,
+                        vp,
+                        OUTPUT_COLOR,
+                        pitchScale,
+                    );
+                }
+                if (postCorrectionActive && editedContour) {
+                    drawEditedContour(ctx, vp);
+                }
+            } else if (isInput) {
                 drawPitchTrack(
                     ctx,
                     corrector.input_pitch_track(),
@@ -293,7 +387,10 @@ function verticalZoom(track, factor, yFrac) {
 
 // Drag on the output pitch view edits the target contour.
 function contourDrag(track, pos, phase) {
-    if (track.id !== 'output' || track.view !== 'pitch') return false;
+    if (track.view !== 'pitch') return false;
+    // Editing lives on the output lane, or on the merged lane (which is
+    // hosted by the input track) when the pitch view is unified.
+    if (track.id !== 'output' && !pitchMerged()) return false;
     if (!postCorrectionActive || !editedContour || totalSamples === 0) return false;
     if (state !== 'stopped' && state !== 'paused') return false;
     if (phase === 'end') return true;
@@ -303,7 +400,7 @@ function contourDrag(track, pos, phase) {
     const freq = pitchScale.yToFreq(pos.y, pos.h);
     const noteBits = corrector.get_scale();
     editedContour[hop] = noteBits > 0 ? WebPitchCorrector.snap_to_scale(freq, noteBits) : freq;
-    timeline.invalidate('output');
+    timeline.invalidate(pitchMerged() ? 'input' : 'output');
     return true;
 }
 
@@ -774,7 +871,7 @@ els.postCorrectionCb.addEventListener('change', () => {
             applySharedView();
         }
         els.status.textContent =
-            'Post-correction: drag on the output pitch track to edit the melody, then Play.';
+            'Post-correction: drag on the pitch view to edit the melody, then Play.';
     }
     timeline.invalidate('output');
 });
@@ -854,6 +951,7 @@ updateShiftDisplay();
 timeline.showTrackSelectors(splitCb.checked);
 viewSelect.disabled = splitCb.checked;
 if (!splitCb.checked) applySharedView();
+updatePitchMerge();
 
 // Gate on browser support, then pre-warm the audio engine.
 

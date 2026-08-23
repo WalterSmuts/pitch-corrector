@@ -166,6 +166,35 @@
             .tl-track .tl-canvas-wrap {
                 height: 340px;
             }
+            /* Merged view: one lane takes the height of both. */
+            .tl-track.tl-tall .tl-canvas-wrap {
+                height: 688px;
+            }
+            .pitch-legend {
+                position: absolute;
+                top: 8px;
+                right: 8px;
+                background: rgba(20, 20, 20, 0.85);
+                border: 1px solid #444;
+                border-radius: 4px;
+                padding: 6px 10px;
+                line-height: 1.6;
+                font-size: 12px;
+                z-index: 3;
+            }
+            .pitch-legend label {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                cursor: pointer;
+                white-space: nowrap;
+            }
+            .pitch-legend .swatch {
+                display: inline-block;
+                width: 14px;
+                height: 3px;
+                border-radius: 1px;
+            }
             /* Slight gap between the tracks; the playhead spans across it. */
             .tl-track + .tl-track {
                 margin-top: 8px;

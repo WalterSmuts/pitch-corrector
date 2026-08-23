@@ -341,11 +341,35 @@ try {
   );
 
   await page.selectOption('#view-select', 'pitch');
+  check((await probe(0, 'orange')) > 20, 'merged pitch view shows the input contour (orange)');
+  check((await probe(0, 'green')) > 20, 'merged pitch view overlays the output contour (green)');
   check(
-    (await probe(0, 'orange')) > 20,
-    'shared dropdown: input pitch view shows contour (orange)',
+    await page.evaluate(() => {
+      const rows = document.querySelectorAll('.tl-row.tl-track');
+      return (
+        rows[1].style.display === 'none' &&
+        document.querySelector('.pitch-legend').style.display !== 'none'
+      );
+    }),
+    'pitch view collapses to one lane with the legend visible',
   );
-  check((await probe(1, 'green')) > 20, 'shared dropdown: output pitch view shows contour (green)');
+  check(
+    await page.evaluate(
+      () => document.querySelector('#split-views-cb').parentElement.style.display === 'none',
+    ),
+    'split checkbox hidden on the merged pitch view',
+  );
+
+  // Legend switches gate their series.
+  const orangeBefore = await probe(0, 'orange');
+  await page.uncheck('.pitch-legend input[data-series="input"]');
+  const orangeOff = await probe(0, 'orange');
+  check(
+    orangeBefore > 20 && orangeOff < orangeBefore / 4,
+    `legend toggle hides the input series (${orangeBefore} -> ${orangeOff} orange px)`,
+  );
+  await page.check('.pitch-legend input[data-series="input"]');
+  check((await probe(0, 'orange')) > 20, 'legend toggle restores the input series');
 
   // Dynamic pitch axis: it must tighten well below the C2..C6 default
   // (48 st) and contain the dominant detected pitch.
@@ -372,6 +396,7 @@ try {
     `detected pitch matches the real tone (midi ${scale.median.toFixed(1)}, expect ~56.2)`,
   );
 
+  await page.selectOption('#view-select', 'waveform'); // split does not apply to pitch
   await page.check('#split-views-cb');
   check(
     (await perTrackVisible()).every((v) => v),
@@ -381,10 +406,9 @@ try {
     await page.evaluate(() => document.getElementById('view-select').disabled),
     'shared dropdown disabled while split',
   );
-  const outSelect = page.locator('.tl-track .tl-view-select').nth(1);
-  await outSelect.selectOption('waveform');
+  await page.locator('.tl-track .tl-view-select').nth(0).selectOption('pitch');
   check((await probe(1, 'green')) > 100, 'split: output waveform view shows peaks');
-  check((await probe(0, 'orange')) > 20, 'split: input keeps its own view (pitch)');
+  check((await probe(0, 'orange')) > 20, 'split: input lane runs its own pitch view');
 
   // Un-split re-unifies both tracks to the shared selection.
   await page.uncheck('#split-views-cb');
@@ -439,12 +463,12 @@ try {
   // --- Post-correction: an edit lands (pink) at the clicked x — the drag,
   // draw, and playback paths all address the contour by absolute hop, so
   // a round-trip through them must not shift position ---
-  await page.check('#post-correction-cb'); // auto-switches to the pitch views
-  const outBox = await page.locator('.tl-track-canvas').nth(1).boundingBox();
+  await page.check('#post-correction-cb'); // auto-switches to the merged pitch view
+  const outBox = await page.locator('.tl-track-canvas').nth(0).boundingBox();
   const editX = outBox.x + outBox.width * 0.6;
   await page.mouse.click(editX, outBox.y + outBox.height * 0.3);
   const pink = await page.evaluate(() => {
-    const c = document.querySelectorAll('.tl-track-canvas')[1];
+    const c = document.querySelectorAll('.tl-track-canvas')[0];
     const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
     const xs = [];
     for (let i = 0; i < d.length; i += 4) {
