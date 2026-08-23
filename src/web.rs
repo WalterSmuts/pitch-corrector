@@ -168,9 +168,12 @@ impl Analysis {
         self.input_pitch.analyze(self.input.samples());
     }
 
-    fn reset(&mut self, controls: &PitchCorrectorControls) {
-        self.input.clear();
-        self.output.clear();
+    fn reset(&mut self, playback: &PlaybackState, controls: &PitchCorrectorControls) {
+        // Adopt the tracks' current state (consuming any pending rewrite
+        // marks): entries logged after this reset must not be truncated by
+        // a rewrite that happened before it.
+        self.input.resync(&playback.input);
+        self.output.resync(&playback.output);
         self.input_pitch.reset();
         for (voice, track) in self.voice_pitch.iter_mut().enumerate() {
             track.clear();
@@ -492,7 +495,10 @@ impl WebPitchCorrector {
         self.playback.input.clear();
         self.playback.output.clear();
         self.playback.playback_pos.store(SampleIdx(0));
-        self.analysis.lock().unwrap().reset(&self.controls);
+        self.analysis
+            .lock()
+            .unwrap()
+            .reset(&self.playback, &self.controls);
         self.controls.clear_target_pitch_contour();
         self.controls.clear_contour();
         self.playback
@@ -597,7 +603,10 @@ impl WebPitchCorrector {
         self.playback.output.clear();
         self.playback.playback_pos.store(SampleIdx(0));
         self.playback.input_active.store(false, Ordering::Relaxed);
-        self.analysis.lock().unwrap().reset(&self.controls);
+        self.analysis
+            .lock()
+            .unwrap()
+            .reset(&self.playback, &self.controls);
         let _ = self.input_stream.pause();
         let _ = self.output_stream.pause();
     }

@@ -153,6 +153,16 @@ impl Mirror {
         self.samples.clear();
     }
 
+    /// Forget everything and adopt the track's current state as the new
+    /// baseline: consumes any pending rewrite mark, so a rewrite that
+    /// happened *before* this reset cannot retroactively truncate entries
+    /// appended after it (a session reset already discards everything the
+    /// mark was protecting against).
+    pub fn resync(&mut self, track: &Track) {
+        spin_lock(&track.state).rewritten = None;
+        self.samples.clear();
+    }
+
     /// Pull new samples from the track (one brief lock). If the track's
     /// timeline was rewritten since the last catch-up, the mirror discards
     /// its stale tail first and the rewrite position is returned so the
@@ -234,6 +244,22 @@ mod tests {
         track.rewrite_from(1);
         assert_eq!(mirror.catch_up(&track), Some(1));
         assert_eq!(mirror.samples(), &[1.0]);
+    }
+
+    #[test]
+    fn resync_consumes_a_pending_rewrite() {
+        // A rewrite followed by a mirror reset must not truncate data
+        // appended after the rewrite (the web upload path: load_recording
+        // rewrites the tracks, Analysis::reset resyncs, then offline
+        // processing appends — the first catch_up used to consume the
+        // stale mark and wipe the fresh entries).
+        let track = Track::new();
+        let mut mirror = Mirror::new();
+        track.replace(&[1.0, 2.0]);
+        mirror.resync(&track);
+        track.writer().unwrap().extend_from_slice(&[3.0, 4.0]);
+        assert_eq!(mirror.catch_up(&track), None, "stale mark must be gone");
+        assert_eq!(mirror.samples(), &[1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
