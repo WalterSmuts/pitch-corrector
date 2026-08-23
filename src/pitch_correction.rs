@@ -422,7 +422,12 @@ impl PitchCorrector {
                             Err(actual) => hop = actual,
                         }
                     }
-                    contour[hop.0.min(contour.len() - 1)]
+                    // Past the contour's end there is no override — under
+                    // the old full-replacement semantics this clamped to the
+                    // last entry ('hold the final target'), which under
+                    // sparse-override semantics would leak a final-hop
+                    // override into every hop after the contour ends.
+                    contour.get(hop.0).copied().flatten()
                 } else {
                     None
                 }
@@ -864,6 +869,26 @@ mod tests {
         assert!(
             cents(avg, B3_HZ).abs() < 8.0,
             "target log must stay the snapper's B3, got {avg:.1} Hz"
+        );
+    }
+
+    #[test]
+    fn override_on_the_final_hop_does_not_leak_past_the_contour() {
+        // A short contour whose LAST entry is an override: hops beyond the
+        // contour's end must fall through to the snapper (B3), not hold the
+        // final override (G3) — the old clamp-to-last read did the latter.
+        let g3 = Pitch::from_freq(196.0);
+        let mut contour = vec![None; 40];
+        contour[39] = Some(g3);
+        let mut corrector = PitchCorrector::with_scale(Scale::major(Note::C));
+        corrector.controls().set_contour(contour);
+        let (produced, _) = pitch_logs_for_tone(&mut corrector, OFF_SCALE_HZ);
+
+        // Steady state lands long after hop 40: must be the snapper's B3.
+        assert!(
+            cents(steady_state(&produced), B3_HZ).abs() < 8.0,
+            "final-hop override leaked past the contour end (got {:.1} Hz)",
+            steady_state(&produced)
         );
     }
 
