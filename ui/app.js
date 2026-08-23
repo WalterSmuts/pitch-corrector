@@ -424,6 +424,13 @@ function contourDrag(track, pos, phase) {
     if (state !== 'stopped' && state !== 'paused') return false;
     if (phase === 'end') return true;
 
+    // Overrides only make sense on voiced audio: forcing a pitch onto an
+    // unvoiced stretch makes the vocoder shift noise/breath, which sounds
+    // like artifacts. Consume the drag without editing there.
+    const pitchTrack = corrector.input_pitch_track();
+    const pitchIdx = Math.floor(pos.sample / pitchHop);
+    if (!(pitchTrack[pitchIdx] > 0)) return true;
+
     if (!overrideContour) {
         overrideContour = new Array(Math.ceil(totalSamples / vocoderHop) + 1).fill(0);
     }
