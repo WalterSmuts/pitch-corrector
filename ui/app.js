@@ -40,6 +40,8 @@ const ampScale = new AmplitudeScale();
 
 const INPUT_COLOR = 'rgb(255,150,50)';
 const OUTPUT_COLOR = 'rgb(50,255,120)';
+// The aim line (post-smoothing, full strength): output green, dimmed.
+const AIM_COLOR = 'rgba(50,255,120,0.35)';
 const EDIT_COLOR = 'rgb(255,80,200)';
 // Harmony voices get their own contours on the output pitch view (their
 // pitch comes from the DSP's per-voice logs, never from running a
@@ -183,6 +185,18 @@ function renderTrack(track, canvas, vp, x0, x1) {
                             pitchScale,
                         );
                     }
+                }
+                // The corrector's aim (post-smoothing, full strength):
+                // only distinct from the output when strength < 1.
+                if (parseFloat(strengthSlider.value) < 100) {
+                    drawPitchTrack(
+                        ctx,
+                        corrector.aim_pitch_track(),
+                        vocoderHop,
+                        vp,
+                        AIM_COLOR,
+                        pitchScale,
+                    );
                 }
                 drawPitchTrack(
                     ctx,

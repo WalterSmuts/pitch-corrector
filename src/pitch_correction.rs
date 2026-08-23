@@ -196,6 +196,12 @@ pub struct PitchCorrectorControls {
     /// these directly: the DSP knows what each voice produces, and running
     /// a monophonic detector on the mixed output would garble.
     voice_pitch_log: [ArrayQueue<f32>; 4],
+    /// Per-hop aim of the main voice: the post-smoothing, full-strength
+    /// landing pitch (detected x smoothed ratio x shift; Hz, 0 = unvoiced).
+    /// Distinct from `voice_pitch_log[0]` once strength < 1 — the produced
+    /// pitch stops short of this on purpose, and at strength 0 the produced
+    /// output carries no trace of the aim at all.
+    aim_pitch_log: ArrayQueue<f32>,
     /// Diatonic (walk the scale) vs absolute (fixed semitones) harmony.
     harmony_mode: AtomicCell<HarmonyMode>,
     /// Retune speed: time constant (seconds) of the correction-ratio
@@ -309,6 +315,12 @@ impl PitchCorrectorControls {
 
     /// Drain the produced-pitch log of `voice` (0 = main, 1..=3 harmonies;
     /// Hz per vocoder hop, 0 = silent) into `out`.
+    pub fn drain_aim_pitch(&self, out: &mut Vec<f32>) {
+        while let Some(f) = self.aim_pitch_log.pop() {
+            out.push(f);
+        }
+    }
+
     pub fn drain_voice_pitch(&self, voice: usize, out: &mut Vec<f32>) {
         while let Some(f) = self.voice_pitch_log[voice].pop() {
             out.push(f);
@@ -374,6 +386,7 @@ impl PitchCorrector {
             bypass: AtomicBool::new(false),
             harmony_mask: AtomicU32::new(0),
             voice_pitch_log: std::array::from_fn(|_| ArrayQueue::new(TARGET_CONTOUR_CAPACITY)),
+            aim_pitch_log: ArrayQueue::new(TARGET_CONTOUR_CAPACITY),
             harmony_mode: AtomicCell::new(HarmonyMode::InKey),
             retune_tau: AtomicCell::new(PitchCorrector::SMOOTHING_TAU_SECONDS),
             strength: AtomicCell::new(1.0),
@@ -450,7 +463,14 @@ impl PitchCorrector {
             } else {
                 smoothed.powf(strength)
             };
-            let ratio = corrected * if bypass { 1.0 } else { shift_ratio };
+            let shift_applied = if bypass { 1.0 } else { shift_ratio };
+            let ratio = corrected * shift_applied;
+            // Log the full-strength landing pitch (the smoothed aim before
+            // strength scales it back), so the UI can plot where the
+            // corrector is steering even when strength hides it.
+            let _ = controls_clone
+                .aim_pitch_log
+                .push(detected.map_or(0.0, |f| f * smoothed * shift_applied));
             // Log what this voice actually produces this hop (detected pitch
             // times the applied ratio; 0 when unvoiced).
             let _ = controls_clone.voice_pitch_log[0].push(detected.map_or(0.0, |f| f * ratio));
@@ -632,8 +652,8 @@ mod tests {
     const PERF_MIN_NOISE_TOLERANCE: f32 = 0.3; // amplitude
 
     /// Drive a steady sine through the corrector and return the per-hop
-    /// produced-pitch log of the main voice (Hz; 0 = unvoiced hop).
-    fn produced_pitch_for_tone(corrector: &mut PitchCorrector, freq: f32) -> Vec<f32> {
+    /// (produced, aim) pitch logs of the main voice (Hz; 0 = unvoiced hop).
+    fn pitch_logs_for_tone(corrector: &mut PitchCorrector, freq: f32) -> (Vec<f32>, Vec<f32>) {
         let controls = corrector.controls();
         let mut phase = 0.0f32;
         for _ in 0..BUFFER_SIZE * 60 {
@@ -643,7 +663,17 @@ mod tests {
         }
         let mut produced = Vec::new();
         controls.drain_voice_pitch(0, &mut produced);
-        produced
+        let mut aim = Vec::new();
+        controls.drain_aim_pitch(&mut aim);
+        (produced, aim)
+    }
+
+    /// Steady-state pitch: average of the last quarter of voiced hops.
+    fn steady_state(track: &[f32]) -> f32 {
+        let voiced: Vec<f32> = track.iter().copied().filter(|&f| f > 0.0).collect();
+        assert!(voiced.len() > 20, "too few voiced hops: {}", voiced.len());
+        let tail = &voiced[voiced.len() - voiced.len() / 4..];
+        tail.iter().sum::<f32>() / tail.len() as f32
     }
 
     fn cents(a: f32, b: f32) -> f32 {
@@ -660,15 +690,9 @@ mod tests {
         for (strength, expected_cents) in [(1.0, 49.4), (0.5, 24.7), (0.0, 0.0)] {
             let mut corrector = PitchCorrector::with_scale(Scale::major(Note::C));
             corrector.controls().set_strength(strength);
-            let produced = produced_pitch_for_tone(&mut corrector, OFF_SCALE_HZ);
+            let (produced, _) = pitch_logs_for_tone(&mut corrector, OFF_SCALE_HZ);
 
-            // Steady state: average the last quarter of voiced hops.
-            let voiced: Vec<f32> = produced.iter().copied().filter(|&f| f > 0.0).collect();
-            assert!(voiced.len() > 20, "too few voiced hops: {}", voiced.len());
-            let tail = &voiced[voiced.len() - voiced.len() / 4..];
-            let avg = tail.iter().sum::<f32>() / tail.len() as f32;
-
-            let correction = cents(avg, OFF_SCALE_HZ);
+            let correction = cents(steady_state(&produced), OFF_SCALE_HZ);
             assert!(
                 (correction - expected_cents).abs() < 8.0,
                 "strength {strength}: applied {correction:.1} cents, \
@@ -682,7 +706,7 @@ mod tests {
         let err_after_10_hops = |tau: f32| -> f32 {
             let mut corrector = PitchCorrector::with_scale(Scale::major(Note::C));
             corrector.controls().set_retune_tau_seconds(tau);
-            let produced = produced_pitch_for_tone(&mut corrector, OFF_SCALE_HZ);
+            let (produced, _) = pitch_logs_for_tone(&mut corrector, OFF_SCALE_HZ);
             let first = produced
                 .iter()
                 .position(|&f| f > 0.0)
@@ -701,6 +725,32 @@ mod tests {
         assert!(
             slow > 25.0,
             "slow retune already {slow:.1} cents in after 10 hops"
+        );
+    }
+
+    #[test]
+    fn aim_track_shows_the_landing_pitch_strength_hides() {
+        // At strength 0 the produced pitch carries no trace of the
+        // correction; the aim log must still show the full-strength
+        // landing pitch (the whole point of logging it separately).
+        let mut corrector = PitchCorrector::with_scale(Scale::major(Note::C));
+        corrector.controls().set_strength(0.0);
+        let (produced, aim) = pitch_logs_for_tone(&mut corrector, OFF_SCALE_HZ);
+
+        assert!(cents(steady_state(&produced), OFF_SCALE_HZ).abs() < 5.0);
+        assert!(
+            (cents(steady_state(&aim), B3_HZ)).abs() < 8.0,
+            "aim should settle on B3 regardless of strength (got {:.1} Hz)",
+            steady_state(&aim)
+        );
+
+        // At full strength the two coincide.
+        let mut corrector = PitchCorrector::with_scale(Scale::major(Note::C));
+        let (produced, aim) = pitch_logs_for_tone(&mut corrector, OFF_SCALE_HZ);
+        let diff = cents(steady_state(&produced), steady_state(&aim)).abs();
+        assert!(
+            diff < 1.0,
+            "produced and aim diverge at strength 1: {diff:.2} cents"
         );
     }
 

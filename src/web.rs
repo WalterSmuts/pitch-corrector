@@ -107,6 +107,9 @@ struct Analysis {
     /// pitch view plots these — never a pitch detector over the mixed
     /// output, which is polyphonic once harmonies are enabled.
     voice_pitch: [Vec<f32>; 4],
+    /// Post-smoothing, full-strength aim of the main voice per vocoder hop
+    /// (see `PitchCorrectorControls::aim_pitch_log`).
+    aim_pitch: Vec<f32>,
     spec: SpectrogramRenderer,
     rgba: Vec<u8>,
 }
@@ -118,6 +121,7 @@ impl Analysis {
             output: Mirror::new(),
             input_pitch: PitchTrack::new(sample_rate),
             voice_pitch: std::array::from_fn(|_| Vec::new()),
+            aim_pitch: Vec::new(),
             spec: SpectrogramRenderer::new(),
             rgba: Vec::new(),
         }
@@ -139,12 +143,14 @@ impl Analysis {
         for (voice, track) in self.voice_pitch.iter_mut().enumerate() {
             controls.drain_voice_pitch(voice, track);
         }
+        controls.drain_aim_pitch(&mut self.aim_pitch);
         if let Some(len) = self.output.catch_up(&playback.output) {
             // Output rewrite (playback seek): drop derived pitch past it.
             let hops: HopIdx<HOP_SIZE> = HopIdx::containing(SampleIdx(len));
             for track in &mut self.voice_pitch {
                 track.truncate(hops.0);
             }
+            self.aim_pitch.truncate(hops.0);
         }
         self.input_pitch.analyze(self.input.samples());
     }
@@ -159,6 +165,9 @@ impl Analysis {
             controls.drain_voice_pitch(voice, track);
             track.clear();
         }
+        self.aim_pitch.clear();
+        controls.drain_aim_pitch(&mut self.aim_pitch);
+        self.aim_pitch.clear();
     }
 }
 
@@ -723,6 +732,13 @@ impl WebPitchCorrector {
     /// (possibly polyphonic) mixed output.
     pub fn output_pitch_track(&self) -> Vec<f32> {
         self.analysis.lock().unwrap().voice_pitch[0].clone()
+    }
+
+    /// Post-smoothing, full-strength aim of the main voice per vocoder hop
+    /// (Hz; 0 = unvoiced). Where the output would land at strength 1; equal
+    /// to `output_pitch_track` when strength is 1.
+    pub fn aim_pitch_track(&self) -> Vec<f32> {
+        self.analysis.lock().unwrap().aim_pitch.clone()
     }
 
     /// Produced pitch of harmony voice 1..=3 (3rd, 5th, octave) per vocoder
