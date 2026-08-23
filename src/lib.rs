@@ -17,6 +17,7 @@ pub mod music;
 pub mod pitch_correction;
 pub mod session;
 pub mod signal_processing;
+pub mod track;
 pub mod units;
 
 #[cfg(feature = "native")]

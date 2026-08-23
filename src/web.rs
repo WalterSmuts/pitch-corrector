@@ -16,6 +16,9 @@ use crate::signal_processing::BUFFER_SIZE;
 use crate::signal_processing::HOP_SIZE;
 use crate::signal_processing::SpectralFreeze;
 use crate::signal_processing::StreamProcessor;
+use crate::track::Mirror;
+use crate::track::Track;
+use crate::track::spin_lock;
 use crate::units::HopIdx;
 use crate::units::SampleIdx;
 use crossbeam_queue::ArrayQueue;
@@ -60,21 +63,13 @@ pub fn warmup() {
 /// futex: `Mutex::lock` calls `Atomics.wait` under contention, which throws
 /// on the wasm main thread. The audio callbacks hold these locks for
 /// microseconds, so spinning on `try_lock` is safe and brief.
-fn spin_lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    loop {
-        match m.try_lock() {
-            Ok(g) => return g,
-            Err(std::sync::TryLockError::WouldBlock) => std::hint::spin_loop(),
-            Err(std::sync::TryLockError::Poisoned(p)) => return p.into_inner(),
-        }
-    }
-}
-
 /// The DSP chain plus its control handle, independent of audio I/O.
 struct PlaybackState {
     input_active: AtomicBool,
-    recording: Mutex<Vec<f32>>,
-    output_recording: Mutex<Vec<f32>>,
+    /// The captured input lane (the source timeline).
+    input: Track,
+    /// The produced output lane (what re-processing overwrites).
+    output: Track,
     playback_pos: AtomicCell<SampleIdx>,
     playing: AtomicBool,
     /// Set true the first time each worklet's audio callback runs, so the UI
@@ -104,8 +99,8 @@ struct PlaybackState {
 /// so all long-running work here happens on private mirrors — the shared
 /// buffers are only locked briefly to copy out new samples.
 struct Analysis {
-    input_samples: Vec<f32>,
-    output_samples: Vec<f32>,
+    input: Mirror,
+    output: Mirror,
     input_pitch: PitchTrack,
     /// Produced pitch per vocoder hop for every output voice
     /// ([main, 3rd, 5th, octave]), drained from the DSP's logs. The output
@@ -119,8 +114,8 @@ struct Analysis {
 impl Analysis {
     fn new(sample_rate: f32) -> Self {
         Analysis {
-            input_samples: Vec::new(),
-            output_samples: Vec::new(),
+            input: Mirror::new(),
+            output: Mirror::new(),
             input_pitch: PitchTrack::new(sample_rate),
             voice_pitch: std::array::from_fn(|_| Vec::new()),
             spec: SpectrogramRenderer::new(),
@@ -133,14 +128,10 @@ impl Analysis {
     /// (playback overwriting from the seek position) invalidates and
     /// re-analyzes the tail; a shrunken input recording resets the mirror.
     fn sync(&mut self, playback: &PlaybackState, controls: &PitchCorrectorControls) {
-        {
-            let rec = spin_lock(&playback.recording);
-            if rec.len() < self.input_samples.len() {
-                self.input_samples.clear();
-                self.input_pitch.reset();
-            }
-            let n = self.input_samples.len();
-            self.input_samples.extend_from_slice(&rec[n..]);
+        if self.input.catch_up(&playback.input).is_some() {
+            // Input rewrites are whole-session resets; restart the tracker
+            // (the mirror already discarded its stale tail).
+            self.input_pitch.reset();
         }
         // Drain the DSP's per-voice pitch logs first: entries produced
         // before a playback-seek truncation belong before it on the
@@ -148,24 +139,19 @@ impl Analysis {
         for (voice, track) in self.voice_pitch.iter_mut().enumerate() {
             controls.drain_voice_pitch(voice, track);
         }
-        {
-            let out = spin_lock(&playback.output_recording);
-            if out.len() < self.output_samples.len() {
-                self.output_samples.truncate(out.len());
-                let hops: HopIdx<HOP_SIZE> = HopIdx::containing(SampleIdx(out.len()));
-                for track in &mut self.voice_pitch {
-                    track.truncate(hops.0);
-                }
+        if let Some(len) = self.output.catch_up(&playback.output) {
+            // Output rewrite (playback seek): drop derived pitch past it.
+            let hops: HopIdx<HOP_SIZE> = HopIdx::containing(SampleIdx(len));
+            for track in &mut self.voice_pitch {
+                track.truncate(hops.0);
             }
-            let n = self.output_samples.len();
-            self.output_samples.extend_from_slice(&out[n..]);
         }
-        self.input_pitch.analyze(&self.input_samples);
+        self.input_pitch.analyze(self.input.samples());
     }
 
     fn reset(&mut self, controls: &PitchCorrectorControls) {
-        self.input_samples.clear();
-        self.output_samples.clear();
+        self.input.clear();
+        self.output.clear();
         self.input_pitch.reset();
         for (voice, track) in self.voice_pitch.iter_mut().enumerate() {
             track.clear();
@@ -240,8 +226,8 @@ impl WebPitchCorrector {
 
         let playback = Arc::new(PlaybackState {
             input_active: AtomicBool::new(true),
-            recording: Mutex::new(Vec::new()),
-            output_recording: Mutex::new(Vec::new()),
+            input: Track::new(),
+            output: Track::new(),
             playback_pos: AtomicCell::new(SampleIdx(0)),
             playing: AtomicBool::new(false),
             input_started: AtomicBool::new(false),
@@ -261,7 +247,7 @@ impl WebPitchCorrector {
                     if !input_playback.input_active.load(Ordering::Relaxed) {
                         return;
                     }
-                    let mut rec = input_playback.recording.try_lock().ok();
+                    let mut rec = input_playback.input.writer();
                     for frame in data.chunks_exact(input_channels) {
                         let s = frame.iter().sum::<f32>() / input_channels as f32;
                         if mic_ring_in.push(s).is_err() {
@@ -341,7 +327,7 @@ impl WebPitchCorrector {
                         while mic_ring.pop().is_some() {}
                     }
                     if output_playback.playing.load(Ordering::Relaxed)
-                        && let Ok(rec) = output_playback.recording.try_lock()
+                        && let Some(rec) = output_playback.input.writer()
                     {
                         let mut p = output_playback.playback_pos.load().0;
                         for _ in 0..frames {
@@ -375,7 +361,7 @@ impl WebPitchCorrector {
                                 // appends stay timeline-aligned).
                                 if (output_playback.input_active.load(Ordering::Relaxed)
                                     || output_playback.playing.load(Ordering::Relaxed))
-                                    && let Ok(mut rec) = output_playback.output_recording.try_lock()
+                                    && let Some(mut rec) = output_playback.output.writer()
                                 {
                                     rec.push(s);
                                 }
@@ -480,8 +466,8 @@ impl WebPitchCorrector {
     /// errors, duplicated sample delivery).
     pub fn start_recording(&self) -> Result<(), JsValue> {
         self.playback.playing.store(false, Ordering::Relaxed);
-        spin_lock(&self.playback.recording).clear();
-        spin_lock(&self.playback.output_recording).clear();
+        self.playback.input.clear();
+        self.playback.output.clear();
         self.playback.playback_pos.store(SampleIdx(0));
         self.analysis.lock().unwrap().reset(&self.controls);
         self.controls.clear_target_pitch_contour();
@@ -535,9 +521,9 @@ impl WebPitchCorrector {
         // During/after playback the output only exists up to the playhead
         // (minus pipeline latency), so clamp to what is actually there and
         // a window centered on the cursor would have no second half anyway.
-        let end = (position.max(0.0) as usize).min(a.output_samples.len());
+        let end = (position.max(0.0) as usize).min(a.output.len());
         let center = SampleIdx(end.saturating_sub((BUFFER_SIZE + HOP_SIZE) / 2));
-        match SpectralFreeze::new(&a.output_samples, center) {
+        match SpectralFreeze::new(a.output.samples(), center) {
             Some(fz) => {
                 *spin_lock(&self.playback.freeze) = Some(fz);
                 self.playback.freeze_active.store(true, Ordering::Relaxed);
@@ -564,16 +550,16 @@ impl WebPitchCorrector {
     }
 
     pub fn recording_len(&self) -> usize {
-        spin_lock(&self.playback.recording).len()
+        self.playback.input.len()
     }
 
     pub fn get_recording(&self) -> Vec<f32> {
-        spin_lock(&self.playback.recording).clone()
+        self.playback.input.snapshot()
     }
 
     pub fn load_recording(&self, samples: &[f32]) {
-        *spin_lock(&self.playback.recording) = samples.to_vec();
-        spin_lock(&self.playback.output_recording).clear();
+        self.playback.input.replace(samples);
+        self.playback.output.clear();
         self.playback.playback_pos.store(SampleIdx(0));
         self.playback.input_active.store(false, Ordering::Relaxed);
         self.analysis.lock().unwrap().reset(&self.controls);
@@ -589,18 +575,18 @@ impl WebPitchCorrector {
         for &s in &samples[..n] {
             processor.push_sample(s);
             while let Some(o) = processor.pop_sample() {
-                spin_lock(&self.playback.output_recording).push(o);
+                self.playback.output.locked().push(o);
             }
         }
         n
     }
 
     pub fn get_output_recording(&self) -> Vec<f32> {
-        spin_lock(&self.playback.output_recording).clone()
+        self.playback.output.snapshot()
     }
 
     pub fn play_recording(&self) -> Result<(), JsValue> {
-        if spin_lock(&self.playback.recording).is_empty() {
+        if self.playback.input.is_empty() {
             return Ok(());
         }
         self.playback.input_active.store(false, Ordering::Relaxed);
@@ -608,11 +594,7 @@ impl WebPitchCorrector {
         // drop everything after it (or pad silence up to it) so the
         // callback's appends line up.
         let pos = self.playback.playback_pos.load().0;
-        {
-            let mut out = spin_lock(&self.playback.output_recording);
-            out.truncate(pos);
-            out.resize(pos, 0.0);
-        }
+        self.playback.output.rewrite_from(pos);
         // The edited contour lives on the absolute hop timeline; align its
         // cursor with where playback starts.
         self.controls
@@ -648,11 +630,7 @@ impl WebPitchCorrector {
         self.playback.playback_pos.store(SampleIdx(pos));
         // If we're mid-playback, the output write head must jump with us.
         if self.playback.playing.load(Ordering::Relaxed) {
-            {
-                let mut out = spin_lock(&self.playback.output_recording);
-                out.truncate(pos);
-                out.resize(pos, 0.0);
-            }
+            self.playback.output.rewrite_from(pos);
             self.controls
                 .seek_contour(HopIdx::containing(SampleIdx(pos)));
         }
@@ -708,14 +686,14 @@ impl WebPitchCorrector {
     pub fn analyze(&self) -> f64 {
         let mut a = self.analysis.lock().unwrap();
         a.sync(&self.playback, &self.controls);
-        a.input_samples.len() as f64
+        a.input.len() as f64
     }
 
     /// Analyzed output length in samples. Lags the input by the pipeline
     /// latency during recording; the UI uses it as the repaint watermark
     /// for output tracks.
     pub fn output_len(&self) -> f64 {
-        self.analysis.lock().unwrap().output_samples.len() as f64
+        self.analysis.lock().unwrap().output.len() as f64
     }
 
     /// Detected input pitch per hop (Hz, 0 = unvoiced).
@@ -748,13 +726,13 @@ impl WebPitchCorrector {
     /// `bins` columns; `bins * 2` values interleaved `[min, max]`.
     pub fn input_peaks(&self, start_sample: f64, end_sample: f64, bins: u32) -> Vec<f32> {
         let a = self.analysis.lock().unwrap();
-        waveform_peaks(&a.input_samples, start_sample, end_sample, bins as usize)
+        waveform_peaks(a.input.samples(), start_sample, end_sample, bins as usize)
     }
 
     /// Same as `input_peaks`, for the produced output.
     pub fn output_peaks(&self, start_sample: f64, end_sample: f64, bins: u32) -> Vec<f32> {
         let a = self.analysis.lock().unwrap();
-        waveform_peaks(&a.output_samples, start_sample, end_sample, bins as usize)
+        waveform_peaks(a.output.samples(), start_sample, end_sample, bins as usize)
     }
 
     /// Render `width_px` spectrogram columns of the input recording into
@@ -825,9 +803,9 @@ impl WebPitchCorrector {
         let height = canvas.height();
         let a = &mut *self.analysis.lock().unwrap();
         let samples = if input {
-            &a.input_samples
+            a.input.samples()
         } else {
-            &a.output_samples
+            a.output.samples()
         };
         a.spec.render(
             samples,
