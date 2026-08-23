@@ -370,9 +370,12 @@ try {
           (l) => l.style.display !== 'none',
         ).length,
     );
-  check((await visibleLegend()) === 5, 'legend hides unselected harmony voices');
+  check(
+    (await visibleLegend()) === 4,
+    'legend hides unselected harmony voices and the empty override layer',
+  );
   await page.click('#harmony-controls button[data-hvoice="0"]');
-  check((await visibleLegend()) === 6, 'selecting the 3rd adds its legend entry');
+  check((await visibleLegend()) === 5, 'selecting the 3rd adds its legend entry');
   await page.click('#harmony-controls button[data-hvoice="0"]');
   // The target renders semi-transparent purple, so measure it as the
   // pixel delta of its own legend toggle.
@@ -590,6 +593,41 @@ try {
     override.length > 0 && nearest <= 12,
     `override point lands at the clicked position (nearest px ${nearest}px away)`,
   );
+  const overrideRowVisible = () =>
+    page.evaluate(
+      () =>
+        [...document.querySelectorAll('.pitch-legend label')].filter(
+          (l) => l.style.display !== 'none' && l.textContent.includes('Override'),
+        ).length === 1,
+    );
+  check(await overrideRowVisible(), 'creating an override reveals its legend entry');
+
+  // Dragging back onto the nearest note clears the override (it is not an
+  // override if it is what the snapper does anyway) and hides the entry.
+  const targetY = await page.evaluate((cssX) => {
+    const c = document.querySelectorAll('.tl-track-canvas')[0];
+    const hop = Math.floor(window.__tl.sampleAtX(cssX) / window.__pc.vocoder_hop());
+    const freq = window.__pc.target_pitch_track()[hop];
+    return window.__scale.freqToY(freq, c.height);
+  }, editCanvasX);
+  await page.mouse.click(editX, outBox.y + targetY);
+  const remaining = await page.evaluate(() => {
+    const c = document.querySelectorAll('.tl-track-canvas')[0];
+    const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (
+        Math.abs(d[i] - 170) < 12 &&
+        Math.abs(d[i + 1] - 40) < 12 &&
+        Math.abs(d[i + 2] - 130) < 12
+      ) {
+        n++;
+      }
+    }
+    return n;
+  });
+  check(remaining === 0, `clicking the nearest note resets the override (${remaining} px left)`);
+  check(!(await overrideRowVisible()), 'clearing the last override hides its legend entry');
   await page.selectOption('#view-select', 'waveform');
 
   // --- Spectral freeze: hold h to sustain the frame under the playhead ---

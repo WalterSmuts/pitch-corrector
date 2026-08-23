@@ -183,6 +183,12 @@ for (const [key, label, color] of [
 }
 timeline.getTrack('input').canvas.parentElement.appendChild(legendEl);
 
+// The Override row only appears once at least one override exists.
+function updateLegendOverride() {
+    const any = !!overrideContour && overrideContour.some((f) => f > 0);
+    legendRows.override.style.display = any ? '' : 'none';
+}
+
 // Harmony rows only appear while their voice is selected.
 function updateLegendVoices() {
     for (let v = 1; v <= 3; v++) {
@@ -439,7 +445,14 @@ function contourDrag(track, pos, phase) {
     if (hop < 0 || hop >= overrideContour.length) return true;
     const freq = pitchScale.yToFreq(pos.y, pos.h);
     const noteBits = corrector.get_scale();
-    overrideContour[hop] = noteBits > 0 ? WebPitchCorrector.snap_to_scale(freq, noteBits) : freq;
+    const snapped = noteBits > 0 ? WebPitchCorrector.snap_to_scale(freq, noteBits) : freq;
+    // Dragging onto the nearest note is not an override — it's what the
+    // snapper does anyway. Clear the point instead, so dragging back to
+    // the nearest note resets it.
+    const nearest = corrector.target_pitch_track()[hop] || 0;
+    const isNearest = nearest > 0 && Math.abs(1200 * Math.log2(snapped / nearest)) < 1;
+    overrideContour[hop] = isNearest ? 0 : snapped;
+    updateLegendOverride();
     timeline.invalidate(pitchMerged() ? 'input' : 'output');
     return true;
 }
@@ -602,6 +615,7 @@ function resetSession() {
     totalSamples = 0;
     overrideContour = null;
     resumeAfterFreeze = false;
+    updateLegendOverride();
     timeline.reset();
 }
 
@@ -978,6 +992,7 @@ viewSelect.disabled = splitCb.checked;
 if (!splitCb.checked) applySharedView();
 updatePitchMerge();
 updateLegendVoices();
+updateLegendOverride();
 
 // Gate on browser support, then pre-warm the audio engine.
 
