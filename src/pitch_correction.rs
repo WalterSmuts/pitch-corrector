@@ -8,8 +8,34 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering}
 use std::sync::Arc;
 use std::sync::Mutex;
 
-/// Sentinel for "no target this hop" in `HopBus`'s internal encoding.
-const NO_TARGET: i32 = i32::MIN;
+/// A lock-free `Option<Pitch>` cell for the audio thread. The `None`
+/// encoding (`i32::MIN`, unreachable via `Pitch::to_semitones`) is a
+/// private detail: both sides of the cell speak `Option<Pitch>`.
+struct AtomicOptionPitch(AtomicI32);
+
+impl AtomicOptionPitch {
+    const NONE: i32 = i32::MIN;
+
+    fn new() -> Self {
+        Self(AtomicI32::new(Self::NONE))
+    }
+
+    fn store(&self, pitch: Option<Pitch>) {
+        self.0.store(
+            pitch.map_or(Self::NONE, Pitch::to_semitones),
+            Ordering::Relaxed,
+        );
+    }
+
+    fn load(&self) -> Option<Pitch> {
+        let s = self.0.load(Ordering::Relaxed);
+        (s != Self::NONE).then(|| Pitch::from_semitones(s))
+    }
+
+    fn is_some(&self) -> bool {
+        self.0.load(Ordering::Relaxed) != Self::NONE
+    }
+}
 
 /// Intra-DSP per-hop bus: the main voice publishes its analysis here and
 /// the harmony voices read it when their (same-position) hop fires. This is
@@ -18,25 +44,22 @@ const NO_TARGET: i32 = i32::MIN;
 struct HopBus {
     /// Detected input frequency (f32 bits; 0 = unvoiced this hop).
     detected_bits: AtomicU32,
-    /// Final post-shift target as whole semitones from C0 (NO_TARGET = none).
-    target_semis: AtomicI32,
+    /// Final post-shift target pitch.
+    target: AtomicOptionPitch,
 }
 
 impl HopBus {
     fn new() -> Self {
         Self {
             detected_bits: AtomicU32::new(0),
-            target_semis: AtomicI32::new(NO_TARGET),
+            target: AtomicOptionPitch::new(),
         }
     }
 
     fn publish(&self, detected: Option<f32>, target: Option<Pitch>) {
         self.detected_bits
             .store(detected.unwrap_or(0.0).to_bits(), Ordering::Relaxed);
-        self.target_semis.store(
-            target.map_or(NO_TARGET, |p| p.note as i32 + 12 * p.octave as i32),
-            Ordering::Relaxed,
-        );
+        self.target.store(target);
     }
 
     fn detected(&self) -> Option<f32> {
@@ -45,13 +68,11 @@ impl HopBus {
     }
 
     fn target_pitch(&self) -> Option<Pitch> {
-        let s = self.target_semis.load(Ordering::Relaxed);
-        (s != NO_TARGET)
-            .then(|| Pitch::new(Note::ALL[s.rem_euclid(12) as usize], s.div_euclid(12) as i8))
+        self.target.load()
     }
 
     fn voiced(&self) -> bool {
-        self.target_semis.load(Ordering::Relaxed) != NO_TARGET
+        self.target.is_some()
     }
 }
 

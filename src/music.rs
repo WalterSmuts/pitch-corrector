@@ -70,6 +70,21 @@ impl Pitch {
     }
 
     /// MIDI-style semitone number relative to C0.
+    /// Compact integer encoding: whole semitones from C0. Round-trips with
+    /// `from_semitones`; the single source of truth for pitch <-> integer
+    /// conversions (atomics, buses, interval arithmetic).
+    pub fn to_semitones(self) -> i32 {
+        self.note as i32 + 12 * self.octave as i32
+    }
+
+    /// Inverse of `to_semitones`.
+    pub fn from_semitones(semitones: i32) -> Self {
+        Self::new(
+            Note::ALL[semitones.rem_euclid(12) as usize],
+            semitones.div_euclid(12) as i8,
+        )
+    }
+
     pub fn semitones_from_c0(self) -> f32 {
         self.octave as f32 * 12.0 + self.note as u8 as f32
     }
@@ -390,11 +405,7 @@ impl Scale {
 impl std::ops::Add<Interval> for Pitch {
     type Output = Pitch;
     fn add(self, interval: Interval) -> Pitch {
-        let semis = self.note as i32 + 12 * self.octave as i32 + interval.semitones();
-        Pitch::new(
-            Note::ALL[semis.rem_euclid(12) as usize],
-            semis.div_euclid(12) as i8,
-        )
+        Pitch::from_semitones(self.to_semitones() + interval.semitones())
     }
 }
 
@@ -506,6 +517,19 @@ impl Interval {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn pitch_semitone_encoding_round_trips() {
+        for octave in -1..=8 {
+            for note in Note::ALL {
+                let p = Pitch::new(note, octave);
+                assert_eq!(Pitch::from_semitones(p.to_semitones()), p);
+            }
+        }
+        assert_eq!(Pitch::new(Note::C, 0).to_semitones(), 0);
+        assert_eq!(Pitch::new(Note::A, 4).to_semitones(), 57);
+        assert_eq!(Pitch::from_semitones(-1), Pitch::new(Note::B, -1));
+    }
 
     #[test]
     fn pitch_plus_interval_transposes() {
