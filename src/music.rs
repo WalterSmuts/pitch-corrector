@@ -58,7 +58,12 @@ impl Note {
 }
 
 /// An absolute pitch: a note class plus an octave.
+///
+/// `repr(align(2))` lets `AtomicCell<Option<Pitch>>` back onto a 16-bit
+/// hardware atomic (size alone is not enough — the alignment must match),
+/// so pitches cross the audio-thread boundary lock-free.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(align(2))]
 pub struct Pitch {
     pub note: Note,
     pub octave: i8,
@@ -459,7 +464,10 @@ impl SimpleInterval {
 }
 
 /// A musical interval: a simple interval plus signed octave offset.
+///
+/// `repr(align(2))`: see `Pitch` — enables lock-free `AtomicCell<Interval>`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(align(2))]
 pub struct Interval {
     pub simple: SimpleInterval,
     pub octaves: i8,

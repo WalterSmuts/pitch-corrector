@@ -1,70 +1,56 @@
-use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
+use crate::music::{Interval, Note, Pitch, Scale};
 use crate::signal_processing::{
     PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, HOP_SIZE,
 };
 use crate::units::HopIdx;
 use crossbeam_queue::ArrayQueue;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicUsize, Ordering};
+use crossbeam_utils::atomic::AtomicCell;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
-/// A lock-free `Option<Pitch>` cell for the audio thread. The `None`
-/// encoding (`i32::MIN`, unreachable via `Pitch::to_semitones`) is a
-/// private detail: both sides of the cell speak `Option<Pitch>`.
-struct AtomicOptionPitch(AtomicI32);
+// Domain types cross the audio-thread boundary through AtomicCell<T>,
+// which flattens any small Copy type generically — no per-type encoding.
+// The audio thread must never hit AtomicCell's seqlock fallback for
+// oversized types, so lock-freedom is asserted at compile time.
+const _: () = assert!(AtomicCell::<Option<Pitch>>::is_lock_free());
+const _: () = assert!(AtomicCell::<Detected>::is_lock_free());
+const _: () = assert!(AtomicCell::<Scale>::is_lock_free());
+const _: () = assert!(AtomicCell::<Interval>::is_lock_free());
 
-impl AtomicOptionPitch {
-    const NONE: i32 = i32::MIN;
-
-    fn new() -> Self {
-        Self(AtomicI32::new(Self::NONE))
-    }
-
-    fn store(&self, pitch: Option<Pitch>) {
-        self.0.store(
-            pitch.map_or(Self::NONE, Pitch::to_semitones),
-            Ordering::Relaxed,
-        );
-    }
-
-    fn load(&self) -> Option<Pitch> {
-        let s = self.0.load(Ordering::Relaxed);
-        (s != Self::NONE).then(|| Pitch::from_semitones(s))
-    }
-
-    fn is_some(&self) -> bool {
-        self.0.load(Ordering::Relaxed) != Self::NONE
-    }
-}
+/// `Option<f32>` padded to 8-byte alignment so its cell backs onto a
+/// 64-bit atomic (a bare `Option<f32>` is 8 bytes but only 4-aligned,
+/// which forces AtomicCell's seqlock fallback).
+#[derive(Clone, Copy)]
+#[repr(align(8))]
+struct Detected(Option<f32>);
 
 /// Intra-DSP per-hop bus: the main voice publishes its analysis here and
 /// the harmony voices read it when their (same-position) hop fires. This is
 /// internal wiring of the correction pipeline — deliberately not part of
 /// the UI-facing `PitchCorrectorControls`.
 struct HopBus {
-    /// Detected input frequency (f32 bits; 0 = unvoiced this hop).
-    detected_bits: AtomicU32,
+    /// Detected input frequency in Hz (None = unvoiced this hop).
+    detected: AtomicCell<Detected>,
     /// Final post-shift target pitch.
-    target: AtomicOptionPitch,
+    target: AtomicCell<Option<Pitch>>,
 }
 
 impl HopBus {
     fn new() -> Self {
         Self {
-            detected_bits: AtomicU32::new(0),
-            target: AtomicOptionPitch::new(),
+            detected: AtomicCell::new(Detected(None)),
+            target: AtomicCell::new(None),
         }
     }
 
     fn publish(&self, detected: Option<f32>, target: Option<Pitch>) {
-        self.detected_bits
-            .store(detected.unwrap_or(0.0).to_bits(), Ordering::Relaxed);
+        self.detected.store(Detected(detected));
         self.target.store(target);
     }
 
     fn detected(&self) -> Option<f32> {
-        let f = f32::from_bits(self.detected_bits.load(Ordering::Relaxed));
-        (f > 0.0).then_some(f)
+        self.detected.load().0
     }
 
     fn target_pitch(&self) -> Option<Pitch> {
@@ -72,7 +58,7 @@ impl HopBus {
     }
 
     fn voiced(&self) -> bool {
-        self.target.is_some()
+        self.target.load().is_some()
     }
 }
 
@@ -122,10 +108,10 @@ type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 
 /// Remote control for a `PitchCorrector` that has been moved into a pipeline.
 pub struct PitchCorrectorControls {
-    /// Pitch shift as total semitones, read lock-free on the audio thread.
-    shift_semitones: AtomicI32,
-    /// Scale note-set bitmask (12 bits), read lock-free on the audio thread.
-    scale_bits: AtomicU32,
+    /// Pitch shift, read lock-free on the audio thread.
+    shift: AtomicCell<Interval>,
+    /// Scale note set, read lock-free on the audio thread.
+    scale: AtomicCell<Scale>,
     /// Per-hop target-pitch log, written from the real-time audio thread.
     /// A lock-free bounded queue keeps that write allocation- and lock-free;
     /// it is drained from the UI thread on stop/clear. Entries are dropped if
@@ -157,25 +143,19 @@ pub struct PitchCorrectorControls {
 
 impl PitchCorrectorControls {
     pub fn set_shift(&self, interval: Interval) {
-        self.shift_semitones
-            .store(interval.semitones(), Ordering::Relaxed);
+        self.shift.store(interval);
     }
 
     pub fn get_shift(&self) -> Interval {
-        let s = self.shift_semitones.load(Ordering::Relaxed);
-        Interval::compound(
-            SimpleInterval::ALL[s.rem_euclid(12) as usize],
-            s.div_euclid(12) as i8,
-        )
+        self.shift.load()
     }
 
     pub fn set_scale(&self, scale: Scale) {
-        self.scale_bits
-            .store(scale.bits() as u32, Ordering::Relaxed);
+        self.scale.store(scale);
     }
 
     pub fn get_scale(&self) -> Scale {
-        Scale::from_bits(self.scale_bits.load(Ordering::Relaxed) as u16)
+        self.scale.load()
     }
 
     /// Install an edited target contour. Entries are addressed by absolute
@@ -301,8 +281,8 @@ impl PitchCorrector {
         // target-pitch log to a few minutes of recording.
         const TARGET_CONTOUR_CAPACITY: usize = 32768;
         let controls = Arc::new(PitchCorrectorControls {
-            shift_semitones: AtomicI32::new(Interval::UNISON.semitones()),
-            scale_bits: AtomicU32::new(scale.bits() as u32),
+            shift: AtomicCell::new(Interval::UNISON),
+            scale: AtomicCell::new(scale),
             target_pitch_contour: ArrayQueue::new(TARGET_CONTOUR_CAPACITY),
             bypass: AtomicBool::new(false),
             harmony_mask: AtomicU32::new(0),
@@ -331,8 +311,7 @@ impl PitchCorrector {
                     let hop = controls_clone.contour_hop.fetch_add(1, Ordering::Relaxed);
                     contour[hop.min(contour.len() - 1)]
                 } else {
-                    let scale =
-                        Scale::from_bits(controls_clone.scale_bits.load(Ordering::Relaxed) as u16);
+                    let scale = controls_clone.get_scale();
                     detected.and_then(|freq| snapper.lock().unwrap().snap(freq, scale))
                 }
             };
@@ -562,7 +541,7 @@ impl StreamProcessor for Harmonizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::music::Pitch;
+    use crate::music::{Pitch, SimpleInterval};
     use crate::signal_processing::BUFFER_SIZE;
     use std::f32::consts::TAU;
 
