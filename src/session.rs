@@ -5,9 +5,12 @@
 //! Everything here is pure data-in/data-out (no web-sys), so it compiles and
 //! is unit-tested on native as well as wasm.
 
-use crate::signal_processing::{BUFFER_SIZE, YinPitchDetector};
-use crate::units::{HopIdx, SampleIdx};
-use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
+use crate::signal_processing::BUFFER_SIZE;
+use crate::signal_processing::YinPitchDetector;
+use crate::units::HopIdx;
+use crate::units::SampleIdx;
+use easyfft::dyn_size::realfft::DynRealDft;
+use easyfft::dyn_size::realfft::DynRealFft;
 
 /// Samples between pitch-analysis hops. Each entry of a pitch track covers
 /// one hop; entry `i` is the detection for the window starting at `i * PITCH_HOP`.

@@ -2,8 +2,11 @@
 //! Outputs two CSV files: one for each algorithm.
 
 use hound::WavReader;
-use pitch_corrector::signal_processing::{BUFFER_SIZE, YinPitchDetector};
-use pyin::{Framing, PYINExecutor, PadMode};
+use pitch_corrector::signal_processing::BUFFER_SIZE;
+use pitch_corrector::signal_processing::YinPitchDetector;
+use pyin::Framing;
+use pyin::PYINExecutor;
+use pyin::PadMode;
 use std::env;
 use std::fs::File;
 use std::io::Write;

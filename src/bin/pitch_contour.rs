@@ -4,7 +4,9 @@
 //! (time_seconds, frequency_hz) to stdout. Unvoiced frames are omitted.
 
 use hound::WavReader;
-use pyin::{Framing, PYINExecutor, PadMode};
+use pyin::Framing;
+use pyin::PYINExecutor;
+use pyin::PadMode;
 use std::env;
 use std::process;
 

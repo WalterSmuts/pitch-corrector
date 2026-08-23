@@ -1,7 +1,11 @@
-use crate::music::{Interval, Note, Pitch, Scale};
-use crate::signal_processing::{
-    HOP_SIZE, PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector,
-};
+use crate::music::Interval;
+use crate::music::Note;
+use crate::music::Pitch;
+use crate::music::Scale;
+use crate::signal_processing::HOP_SIZE;
+use crate::signal_processing::PhaseVocoderPitchShifter;
+use crate::signal_processing::StreamProcessor;
+use crate::signal_processing::YinPitchDetector;
 use crate::units::HopIdx;
 
 /// Whether harmony intervals walk the selected scale (diatonic) or are
@@ -15,7 +19,9 @@ use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 
 // Domain types cross the audio-thread boundary through AtomicCell<T>,
 // which flattens any small Copy type generically — no per-type encoding.
@@ -567,7 +573,8 @@ impl StreamProcessor for Harmonizer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::music::{Pitch, SimpleInterval};
+    use crate::music::Pitch;
+    use crate::music::SimpleInterval;
     use crate::signal_processing::BUFFER_SIZE;
     use std::f32::consts::TAU;
 
@@ -1011,7 +1018,9 @@ mod tests {
     #[test]
     fn perf_pitch_corrector_noise_tolerance() {
         use crate::signal_processing::YinPitchDetector;
-        use rand::{Rng, SeedableRng, rngs::StdRng};
+        use rand::Rng;
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
 
         let pentatonic_c = Scale::pentatonic(Note::C);
 

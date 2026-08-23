@@ -75,7 +75,9 @@ fn sinc(x: f32) -> f32 {
 mod test {
     use super::Interpolate;
     use super::InterpolationMethod;
-    use rand::{Rng, SeedableRng, rngs::StdRng};
+    use rand::Rng;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
     use std::f32::consts::TAU;
 
     const BUFFER_SIZE: usize = 1024;

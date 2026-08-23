@@ -1681,7 +1681,9 @@ mod tests {
 
     #[test]
     fn yin_fft_difference_matches_direct_loop() {
-        use rand::{Rng, SeedableRng, rngs::StdRng};
+        use rand::Rng;
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
 
         // A voiced-like signal: a couple of harmonics plus noise, so the
         // difference function has real structure (dips) to compare.
@@ -2246,7 +2248,9 @@ mod tests {
         num: usize,
         seed: u64,
     ) -> (Vec<f32>, Vec<f32>) {
-        use rand::{Rng, SeedableRng, rngs::StdRng};
+        use rand::Rng;
+        use rand::SeedableRng;
+        use rand::rngs::StdRng;
         let mut rng = StdRng::seed_from_u64(seed);
         let sr = SAMPLE_RATE as f32;
         let a_sum: f32 = (1..=n_harm).map(|k| 1.0 / k as f32).sum();
@@ -2456,7 +2460,8 @@ mod tests {
 
     #[test]
     fn perf_phase_vocoder_ratio_transition_distortion() {
-        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::atomic::AtomicU32;
+        use std::sync::atomic::Ordering;
 
         const ANALYSIS_SIZE: usize = 4096;
         let input_freq = 440.0;
@@ -2606,7 +2611,8 @@ mod tests {
 
     #[test]
     fn perf_ola_no_alloc_after_warmup() {
-        use easyfft::dyn_size::realfft::{DynRealFft, DynRealIfft};
+        use easyfft::dyn_size::realfft::DynRealFft;
+        use easyfft::dyn_size::realfft::DynRealIfft;
 
         // Test raw easyfft _using calls
         let buf = vec![0.0f32; BUFFER_SIZE];

@@ -2,7 +2,8 @@ use clap::Parser;
 use cpal::Stream;
 use pitch_corrector::display::UserInterface;
 use pitch_corrector::hardware;
-use pitch_corrector::music::{Interval, SimpleInterval};
+use pitch_corrector::music::Interval;
+use pitch_corrector::music::SimpleInterval;
 use pitch_corrector::pitch_correction;
 use pitch_corrector::signal_processing::FrequencyDomainPitchShifter;
 use pitch_corrector::signal_processing::HighPassFilter;
@@ -124,7 +125,8 @@ fn main() {
         }
         SubCommand::PhaseVocoder { ratio } => phase_vocoder(&mut user_interface, ratio),
         SubCommand::PitchCorrector => {
-            use pitch_corrector::music::{Note, Scale};
+            use pitch_corrector::music::Note;
+            use pitch_corrector::music::Scale;
 
             let corrector = pitch_correction::PitchCorrector::new();
             let controls = corrector.controls();

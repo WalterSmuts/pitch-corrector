@@ -1,11 +1,19 @@
-use crate::signal_processing::{BUFFER_SIZE, StreamProcessor};
+use crate::signal_processing::BUFFER_SIZE;
+use crate::signal_processing::StreamProcessor;
+use cpal::BufferSize;
+use cpal::InputCallbackInfo;
+use cpal::OutputCallbackInfo;
+use cpal::Sample;
+use cpal::SizedSample;
+use cpal::Stream;
 use cpal::StreamConfig;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{BufferSize, Stream};
-use cpal::{InputCallbackInfo, OutputCallbackInfo};
-use cpal::{Sample, SizedSample};
+use cpal::traits::DeviceTrait;
+use cpal::traits::HostTrait;
+use cpal::traits::StreamTrait;
 use crossbeam_queue::ArrayQueue;
-use log::{debug, error, info};
+use log::debug;
+use log::error;
+use log::info;
 use std::sync::Arc;
 
 const SAMPLE_RATE: u32 = 44100;

@@ -1,21 +1,43 @@
-use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
-use crate::pitch_correction::{Harmonizer, HarmonyMode, PitchCorrector, PitchCorrectorControls};
-use crate::session::{PITCH_HOP, PitchTrack, SPEC_WINDOW, SpectrogramRenderer, waveform_peaks};
-use crate::signal_processing::{BUFFER_SIZE, HOP_SIZE, SpectralFreeze, StreamProcessor};
-use crate::units::{HopIdx, SampleIdx};
+use crate::music::Interval;
+use crate::music::Note;
+use crate::music::Pitch;
+use crate::music::Scale;
+use crate::music::SimpleInterval;
+use crate::pitch_correction::Harmonizer;
+use crate::pitch_correction::HarmonyMode;
+use crate::pitch_correction::PitchCorrector;
+use crate::pitch_correction::PitchCorrectorControls;
+use crate::session::PITCH_HOP;
+use crate::session::PitchTrack;
+use crate::session::SPEC_WINDOW;
+use crate::session::SpectrogramRenderer;
+use crate::session::waveform_peaks;
+use crate::signal_processing::BUFFER_SIZE;
+use crate::signal_processing::HOP_SIZE;
+use crate::signal_processing::SpectralFreeze;
+use crate::signal_processing::StreamProcessor;
+use crate::units::HopIdx;
+use crate::units::SampleIdx;
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
 
 // Audio-thread cells must never hit AtomicCell's seqlock fallback.
 const _: () = assert!(AtomicCell::<SampleIdx>::is_lock_free());
 const _: () = assert!(AtomicCell::<f32>::is_lock_free());
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::DeviceTrait;
+use cpal::traits::HostTrait;
+use cpal::traits::StreamTrait;
 use easyfft::dyn_size::realfft::DynRealFft;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
+use web_sys::CanvasRenderingContext2d;
+use web_sys::HtmlCanvasElement;
+use web_sys::ImageData;
 
 /// Prime the expensive, one-time initialization that would otherwise run on
 /// the first `Record` click and jank the main thread (~0.3s): the FFT planner

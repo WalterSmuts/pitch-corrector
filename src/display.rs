@@ -1,4 +1,5 @@
-use crate::signal_processing::{BUFFER_SIZE, DisplayProcessor};
+use crate::signal_processing::BUFFER_SIZE;
+use crate::signal_processing::DisplayProcessor;
 use crossterm::event;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableMouseCapture;
