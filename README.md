@@ -59,7 +59,7 @@ This needs a wasm atomics/threads build and cross-origin isolation:
 ```bash
 rustup toolchain install nightly
 rustup component add rust-src --toolchain nightly
-cargo install wasm-bindgen-cli --version 0.2.106   # match Cargo.lock
+cargo install wasm-bindgen-cli --version 0.2.127   # match Cargo.lock
 
 ./build-worklet.sh          # nightly + -Zbuild-std + atomics, then wasm-bindgen
 python3 serve.py 8888       # serves with COOP/COEP so crossOriginIsolated=true
