@@ -51,6 +51,7 @@ const pitchVis = {
     output: true,
     aim: true,
     target: true,
+    override: true,
     h1: true,
     h2: true,
     h3: true,
@@ -158,6 +159,7 @@ for (const [key, label, color] of [
     ['output', 'Output', OUTPUT_COLOR],
     ['aim', 'Aim', AIM_COLOR],
     ['target', 'Nearest note', TARGET_COLOR],
+    ['override', 'Override', OVERRIDE_COLOR],
     ['h1', '3rd', HARMONY_COLORS[0]],
     ['h2', '5th', HARMONY_COLORS[1]],
     ['h3', 'Octave', HARMONY_COLORS[2]],
@@ -284,7 +286,7 @@ function renderTrack(track, canvas, vp, x0, x1) {
                         pitchScale,
                     );
                 }
-                drawOverridePoints(ctx, vp);
+                if (pitchVis.override) drawOverridePoints(ctx, vp);
             } else if (isInput) {
                 drawPitchTrack(
                     ctx,
@@ -470,6 +472,7 @@ function updateViewScales() {
 // --- Render loop ---
 // One always-on rAF loop; Timeline.render() early-outs when nothing changed.
 let scaleThrottle = 0;
+let lastOutputLen = -1;
 function loop() {
     requestAnimationFrame(loop);
     if (!corrector) return;
@@ -479,7 +482,15 @@ function loop() {
         timeline.setTotal(totalSamples);
         // The output lags the input by the pipeline latency (and regrows
         // from the seek position during playback): repaint from its end.
-        timeline.setDataEnd('output', corrector.output_len());
+        const outputLen = corrector.output_len();
+        timeline.setDataEnd('output', outputLen);
+        // The merged pitch lane is hosted on the input track, whose data-end
+        // watermark never moves during playback — repaint it whenever the
+        // output-side series (target/aim/output/voices) gained hops.
+        if (outputLen !== lastOutputLen) {
+            lastOutputLen = outputLen;
+            if (pitchMerged()) timeline.invalidate('input');
+        }
         if (state === 'recording') {
             timeline.setPlayhead(totalSamples);
         } else {

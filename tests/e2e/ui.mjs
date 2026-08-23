@@ -370,9 +370,9 @@ try {
           (l) => l.style.display !== 'none',
         ).length,
     );
-  check((await visibleLegend()) === 4, 'legend hides unselected harmony voices');
+  check((await visibleLegend()) === 5, 'legend hides unselected harmony voices');
   await page.click('#harmony-controls button[data-hvoice="0"]');
-  check((await visibleLegend()) === 5, 'selecting the 3rd adds its legend entry');
+  check((await visibleLegend()) === 6, 'selecting the 3rd adds its legend entry');
   await page.click('#harmony-controls button[data-hvoice="0"]');
   // The target renders semi-transparent purple, so measure it as the
   // pixel delta of its own legend toggle.
@@ -400,6 +400,49 @@ try {
     withTarget - withoutTarget > 100,
     `nearest-note target is drawn without post-correction (${withoutTarget} -> ${withTarget} gray px)`,
   );
+
+  // --- Merged lane repaints while the output regrows during playback:
+  // mid-playback the target/output are truncated at the regrow point (no
+  // purple beyond the playhead), and by the end the full-width target is
+  // back. Both sides fail if the input-hosted merged lane never repaints. ---
+  const purpleRight = () =>
+    page.evaluate(() => {
+      const c = document.querySelectorAll('.tl-track-canvas')[0];
+      const x0 = Math.floor(c.width * 0.75);
+      const d = c.getContext('2d').getImageData(x0, 0, c.width - x0, c.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const [r, g, b] = [d[i], d[i + 1], d[i + 2]];
+        if (r > 90 && b > 60 && g < r - 30 && r > b) n++;
+      }
+      return n;
+    });
+  await page.evaluate(() => window.__pc.seek(0.05));
+  await page.click('#play-btn');
+  await sleep(900); // progress ~25%: regrow point far left of the 75% probe
+  const midPlay = await purpleRight();
+  check(
+    await page.evaluate(() => window.__pc.is_playing()),
+    'playback running for the merged-repaint check',
+  );
+  check(midPlay < 20, `mid-playback: no stale target beyond the regrow point (${midPlay} px)`);
+  await page.waitForFunction(() => !window.__pc.is_playing(), { timeout: 15000 });
+  await sleep(300);
+  // The corrected output sits exactly on the target note, so the regrown
+  // right region shows green (output over target); probing green proves
+  // the merged lane repainted as the data regrew — without touching the
+  // legend, which would force the repaint we are testing for.
+  const afterPlay = await page.evaluate(() => {
+    const c = document.querySelectorAll('.tl-track-canvas')[0];
+    const x0 = Math.floor(c.width * 0.75);
+    const d = c.getContext('2d').getImageData(x0, 0, c.width - x0, c.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i + 1] > 200 && d[i] < 150) n++;
+    }
+    return n;
+  });
+  check(afterPlay > 50, `output regrows across the full width by the end (${afterPlay} px)`);
 
   // Legend switches gate their series.
   const orangeBefore = await probe(0, 'orange');
