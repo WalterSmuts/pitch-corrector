@@ -405,8 +405,10 @@ impl PitchCorrector {
             let shift_ratio = shift.to_ratio();
             let detected = detector.detect(frame);
 
-            // Check for active contour, otherwise snap to scale
-            let target_pitch = {
+            // The contour is a sparse override layer: a Some entry replaces
+            // the snapper's choice for that hop, a None entry (or no contour
+            // at all) falls through to normal snapping.
+            let contour_override = {
                 let contour = controls_clone.contour.lock().unwrap();
                 if !contour.is_empty() {
                     // Advance the cursor; compare_exchange preserves the
@@ -423,10 +425,13 @@ impl PitchCorrector {
                     }
                     contour[hop.0.min(contour.len() - 1)]
                 } else {
-                    let scale = controls_clone.get_scale();
-                    detected.and_then(|freq| snapper.snap(freq, scale))
+                    None
                 }
             };
+            let target_pitch = contour_override.or_else(|| {
+                let scale = controls_clone.get_scale();
+                detected.and_then(|freq| snapper.snap(freq, scale))
+            });
 
             // Lock-free, alloc-free log on the real-time audio thread. Drops
             // the entry if the bounded queue is full rather than allocating.
@@ -751,6 +756,33 @@ mod tests {
         assert!(
             diff < 1.0,
             "produced and aim diverge at strength 1: {diff:.2} cents"
+        );
+    }
+
+    #[test]
+    fn contour_is_a_sparse_override_over_the_snapper() {
+        // All-None contour: every hop falls through to the snapper. (The
+        // old semantics treated any installed contour as a full replacement,
+        // so None hops got no correction at all — produced would sit on the
+        // 240 Hz input instead of B3.)
+        let mut corrector = PitchCorrector::with_scale(Scale::major(Note::C));
+        corrector.controls().set_contour(vec![None; 4096]);
+        let (produced, _) = pitch_logs_for_tone(&mut corrector, OFF_SCALE_HZ);
+        assert!(
+            cents(steady_state(&produced), B3_HZ).abs() < 8.0,
+            "None entries must fall through to the snapper (got {:.1} Hz)",
+            steady_state(&produced)
+        );
+
+        // Some entries override the snapper: force G3 instead of B3.
+        let g3 = Pitch::from_freq(196.0);
+        let mut corrector = PitchCorrector::with_scale(Scale::major(Note::C));
+        corrector.controls().set_contour(vec![Some(g3); 4096]);
+        let (produced, _) = pitch_logs_for_tone(&mut corrector, OFF_SCALE_HZ);
+        assert!(
+            cents(steady_state(&produced), 196.0).abs() < 8.0,
+            "Some entries must override the snapper (got {:.1} Hz)",
+            steady_state(&produced)
         );
     }
 

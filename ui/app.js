@@ -21,8 +21,10 @@ let vocoderHop = 512;
 // Post-correction: target contour (one entry per phase-vocoder hop, spanning
 // the whole recording) captured at stop, plus the user-edited copy.
 let targetContour = [];
-let editedContour = null;
-let postCorrectionActive = false;
+// Sparse override layer over the snap target: entry i (vocoder hop i) is a
+// forced target frequency, 0/empty = no override (the snapper decides).
+// Created lazily on the first drag; consumed by playback re-processing.
+let overrideContour = null;
 
 // One shared y axis for every pitch view (input, output, contour editor),
 // dynamically fitted to the data with hysteresis. See PitchScale.
@@ -40,8 +42,9 @@ const ampScale = new AmplitudeScale();
 
 const INPUT_COLOR = 'rgb(255,150,50)';
 const OUTPUT_COLOR = 'rgb(50,255,120)';
-// Nearest-note snap target: white-ish steps under everything else.
-const TARGET_COLOR = 'rgba(255,255,255,0.55)';
+// Nearest-note snap target: translucent purple points; dragging one darkens
+// it into an override (OVERRIDE_COLOR).
+const TARGET_COLOR = 'rgba(255,80,200,0.5)';
 // Merged pitch view: which series are drawn (legend toggles).
 const pitchVis = {
     input: true,
@@ -54,7 +57,8 @@ const pitchVis = {
 };
 // The aim line (post-smoothing, full strength): output green, dimmed.
 const AIM_COLOR = 'rgba(50,255,120,0.35)';
-const EDIT_COLOR = 'rgb(255,80,200)';
+// Overridden target points: a darker take on the target purple.
+const OVERRIDE_COLOR = 'rgb(170,40,130)';
 // Harmony voices get their own contours on the output pitch view (their
 // pitch comes from the DSP's per-voice logs, never from running a
 // monophonic detector on the mixed output): 3rd, 5th, octave.
@@ -78,8 +82,6 @@ const els = {
     debugBtn: $btn('debug-btn'),
     uploadBtn: $btn('upload-btn'),
     uploadInput: $input('upload-input'),
-    postCorrectionLabel: $('post-correction-label'),
-    postCorrectionCb: $input('post-correction-cb'),
 };
 
 // --- Timeline ---
@@ -104,7 +106,6 @@ const timeline = new Timeline($('timeline'), {
     // repaints stay off the long-task radar. Other views are cheap.
     renderBudget: (t) => (t.view === 'spectrogram' ? 128 : Infinity),
     onSeek: seekTo,
-    onViewChange: () => updatePostCorrectionVisibility(),
     onTrackDrag: contourDrag,
     onVerticalZoom: verticalZoom,
     onFit: resetVerticalZoom,
@@ -229,7 +230,7 @@ function renderTrack(track, canvas, vp, x0, x1) {
             });
             if (pitchMerged()) {
                 // One lane, every series overlaid; the legend gates each.
-                if (pitchVis.target && !(postCorrectionActive && editedContour)) {
+                if (pitchVis.target) {
                     drawPitchTrack(
                         ctx,
                         corrector.target_pitch_track(),
@@ -283,9 +284,7 @@ function renderTrack(track, canvas, vp, x0, x1) {
                         pitchScale,
                     );
                 }
-                if (postCorrectionActive && editedContour) {
-                    drawEditedContour(ctx, vp);
-                }
+                drawOverridePoints(ctx, vp);
             } else if (isInput) {
                 drawPitchTrack(
                     ctx,
@@ -330,9 +329,7 @@ function renderTrack(track, canvas, vp, x0, x1) {
                     OUTPUT_COLOR,
                     pitchScale,
                 );
-                if (postCorrectionActive && editedContour) {
-                    drawEditedContour(ctx, vp);
-                }
+                drawOverridePoints(ctx, vp);
             }
             break;
         }
@@ -354,23 +351,23 @@ function renderTrack(track, canvas, vp, x0, x1) {
     }
 }
 
-function drawEditedContour(ctx, vp) {
-    // Contour entry i belongs at input sample i * vocoderHop — hop-true,
+function drawOverridePoints(ctx, vp) {
+    // Override entry i belongs at input sample i * vocoderHop — hop-true,
     // exactly like the voice pitch logs. Never rescale by the recording
     // length: the log is bounded, so it may be shorter than the recording,
     // and rescaling would smear every entry off its true position.
-    const n = editedContour.length;
-    if (n === 0) return;
-    ctx.fillStyle = EDIT_COLOR;
+    if (!overrideContour) return;
+    const n = overrideContour.length;
+    ctx.fillStyle = OVERRIDE_COLOR;
     const first = Math.max(0, Math.floor(vp.s0 / vocoderHop));
     const last = Math.min(n - 1, Math.ceil((vp.s0 + vp.w * vp.spp) / vocoderHop));
     for (let i = first; i <= last; i++) {
-        const freq = editedContour[i];
+        const freq = overrideContour[i];
         if (freq <= 0) continue;
         const y = pitchScale.freqToY(freq, vp.h);
         if (y < 0 || y > vp.h) continue;
         const x = (i * vocoderHop - vp.s0) / vp.spp;
-        ctx.fillRect(x - vp.dpr, y - vp.dpr, 2 * vp.dpr, 2 * vp.dpr);
+        ctx.fillRect(x - 1.5 * vp.dpr, y - 1.5 * vp.dpr, 3 * vp.dpr, 3 * vp.dpr);
     }
 }
 
@@ -421,15 +418,18 @@ function contourDrag(track, pos, phase) {
     // Editing lives on the output lane, or on the merged lane (which is
     // hosted by the input track) when the pitch view is unified.
     if (track.id !== 'output' && !pitchMerged()) return false;
-    if (!postCorrectionActive || !editedContour || totalSamples === 0) return false;
+    if (totalSamples === 0) return false;
     if (state !== 'stopped' && state !== 'paused') return false;
     if (phase === 'end') return true;
 
+    if (!overrideContour) {
+        overrideContour = new Array(Math.ceil(totalSamples / vocoderHop) + 1).fill(0);
+    }
     const hop = Math.floor(pos.sample / vocoderHop);
-    if (hop < 0 || hop >= editedContour.length) return true;
+    if (hop < 0 || hop >= overrideContour.length) return true;
     const freq = pitchScale.yToFreq(pos.y, pos.h);
     const noteBits = corrector.get_scale();
-    editedContour[hop] = noteBits > 0 ? WebPitchCorrector.snap_to_scale(freq, noteBits) : freq;
+    overrideContour[hop] = noteBits > 0 ? WebPitchCorrector.snap_to_scale(freq, noteBits) : freq;
     timeline.invalidate(pitchMerged() ? 'input' : 'output');
     return true;
 }
@@ -521,7 +521,6 @@ function setState(newState) {
     const hasRecording = totalSamples > 0 && (state === 'stopped' || state === 'paused');
     els.downloadBtn.disabled = !hasRecording;
     els.debugBtn.disabled = !hasRecording;
-    updatePostCorrectionVisibility();
 }
 
 function checkBrowserSupport() {
@@ -583,9 +582,7 @@ function resetSession() {
     pitchScale.reset(); // manual vertical zoom ends with the session
     totalSamples = 0;
     targetContour = [];
-    editedContour = null;
-    postCorrectionActive = false;
-    els.postCorrectionCb.checked = false;
+    overrideContour = null;
     timeline.reset();
 }
 
@@ -666,8 +663,8 @@ function stopRecording() {
 function startPlayback() {
     if (!corrector || totalSamples === 0) return;
     if (corrector.playback_progress() >= 1.0) corrector.seek(0);
-    if (postCorrectionActive && editedContour) {
-        corrector.set_contour(new Float32Array(editedContour));
+    if (overrideContour && overrideContour.some((f) => f > 0)) {
+        corrector.set_contour(new Float32Array(overrideContour));
     } else {
         corrector.clear_contour();
     }
@@ -883,30 +880,6 @@ function applyStrength() {
 }
 strengthSlider.addEventListener('input', applyStrength);
 
-// --- Post-correction ---
-
-function updatePostCorrectionVisibility() {
-    const show = (state === 'stopped' || state === 'paused') && targetContour.length > 0;
-    els.postCorrectionLabel.style.display = show ? '' : 'none';
-}
-
-els.postCorrectionCb.addEventListener('change', () => {
-    postCorrectionActive = els.postCorrectionCb.checked;
-    if (postCorrectionActive && !editedContour) editedContour = targetContour.slice();
-    if (postCorrectionActive) {
-        // Editing happens on the output pitch view — switch to it.
-        if (splitCb.checked) {
-            timeline.setView('output', 'pitch');
-        } else {
-            viewSelect.value = 'pitch';
-            applySharedView();
-        }
-        els.status.textContent =
-            'Post-correction: drag on the pitch view to edit the melody, then Play.';
-    }
-    timeline.invalidate('output');
-});
-
 // --- WAV download / upload / debug dump ---
 
 els.downloadBtn.addEventListener('click', () => {
@@ -923,7 +896,7 @@ els.debugBtn.addEventListener('click', () => {
         input: Array.from(corrector.get_recording()),
         output: Array.from(corrector.get_output_recording()),
         targetContour: Array.from(targetContour),
-        editedContour: editedContour ? Array.from(editedContour) : null,
+        overrideContour: overrideContour ? Array.from(overrideContour) : null,
     };
     downloadBlob(new Blob([JSON.stringify(dump)], { type: 'application/json' }), 'debug-dump.json');
 });
@@ -977,7 +950,6 @@ async function uploadRecording(file) {
 // Browsers restore form-control values across reloads (the dropdown can
 // say "Pitch" while the tracks still render the waveform default): adopt
 // whatever the DOM says as the initial state instead of assuming defaults.
-els.postCorrectionCb.checked = false; // session-bound; never restorable
 updateShiftDisplay();
 timeline.showTrackSelectors(splitCb.checked);
 viewSelect.disabled = splitCb.checked;

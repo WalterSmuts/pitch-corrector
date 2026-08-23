@@ -374,8 +374,8 @@ try {
   await page.click('#harmony-controls button[data-hvoice="0"]');
   check((await visibleLegend()) === 5, 'selecting the 3rd adds its legend entry');
   await page.click('#harmony-controls button[data-hvoice="0"]');
-  // The target renders semi-transparent white (blends to mid-gray over the
-  // dark background), so measure it as the pixel delta of its own toggle.
+  // The target renders semi-transparent purple, so measure it as the
+  // pixel delta of its own legend toggle.
   const grayish = () =>
     page.evaluate(() => {
       const c = document.querySelectorAll('.tl-track-canvas')[0];
@@ -383,7 +383,7 @@ try {
       let n = 0;
       for (let i = 0; i < d.length; i += 4) {
         const [r, g, b] = [d[i], d[i + 1], d[i + 2]];
-        if (r > 110 && Math.abs(r - g) < 25 && Math.abs(g - b) < 25) n++;
+        if (r > 90 && b > 60 && g < r - 30 && r > b) n++;
       }
       return n;
     });
@@ -501,29 +501,38 @@ try {
     'Fit resets the manual vertical zooms (pitch + waveform) back to auto-fit',
   );
 
-  // --- Post-correction: an edit lands (pink) at the clicked x — the drag,
-  // draw, and playback paths all address the contour by absolute hop, so
-  // a round-trip through them must not shift position ---
-  await page.check('#post-correction-cb'); // auto-switches to the merged pitch view
+  // --- Override editing (always on): a drag on the pitch view lands a
+  // darker override point at the clicked x — the drag, draw, and playback
+  // paths all address the override layer by absolute hop, so a round-trip
+  // through them must not shift position ---
+  await page.selectOption('#view-select', 'pitch');
   const outBox = await page.locator('.tl-track-canvas').nth(0).boundingBox();
   const editX = outBox.x + outBox.width * 0.6;
   await page.mouse.click(editX, outBox.y + outBox.height * 0.3);
-  const pink = await page.evaluate(() => {
+  const override = await page.evaluate(() => {
     const c = document.querySelectorAll('.tl-track-canvas')[0];
     const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
     const xs = [];
+    // OVERRIDE_COLOR is a solid fill — match it exactly-ish, so the
+    // translucent target purple nearby cannot satisfy the probe.
     for (let i = 0; i < d.length; i += 4) {
-      if (d[i] > 200 && d[i + 1] < 140 && d[i + 2] > 150) xs.push((i / 4) % c.width);
+      if (
+        Math.abs(d[i] - 170) < 12 &&
+        Math.abs(d[i + 1] - 40) < 12 &&
+        Math.abs(d[i + 2] - 130) < 12
+      ) {
+        xs.push((i / 4) % c.width);
+      }
     }
     return xs;
   });
   const editCanvasX = editX - outBox.x; // css == device px at dpr 1
-  const nearest = pink.reduce((m, x) => Math.min(m, Math.abs(x - editCanvasX)), Infinity);
+  const nearest = override.reduce((m, x) => Math.min(m, Math.abs(x - editCanvasX)), Infinity);
   check(
-    pink.length > 0 && nearest <= 12,
-    `contour edit lands at the clicked position (nearest pink px ${nearest}px away)`,
+    override.length > 0 && nearest <= 12,
+    `override point lands at the clicked position (nearest px ${nearest}px away)`,
   );
-  await page.uncheck('#post-correction-cb');
+  await page.selectOption('#view-select', 'waveform');
 
   // --- Spectral freeze: hold h to sustain the frame under the playhead ---
   // (Sound quality is covered by the native spectral_freeze test; here we
