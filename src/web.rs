@@ -202,6 +202,10 @@ pub struct WebPitchCorrector {
     controls: Arc<PitchCorrectorControls>,
     playback: Arc<PlaybackState>,
     analysis: Mutex<Analysis>,
+    /// Reused JS-side blit pair for the spectrogram (allocating a fresh
+    /// 1MB+ Uint8ClampedArray + ImageData per repaint showed up as GC and
+    /// memcpy time in profiles). Rebuilt only when the size changes.
+    spec_blit: std::cell::RefCell<Option<(u32, u32, js_sys::Uint8ClampedArray, ImageData)>>,
     sample_rate: f32,
 }
 
@@ -428,6 +432,7 @@ impl WebPitchCorrector {
             controls,
             playback,
             analysis: Mutex::new(Analysis::new(sample_rate)),
+            spec_blit: std::cell::RefCell::new(None),
             sample_rate,
         })
     }
@@ -874,14 +879,22 @@ impl WebPitchCorrector {
             &mut a.rgba,
         );
         // ImageData rejects views into SharedArrayBuffer-backed wasm memory
-        // (the threads build), so copy into a fresh, unshared JS array.
-        let data = js_sys::Uint8ClampedArray::new_with_length(a.rgba.len() as u32);
+        // (the threads build), so copy into an unshared JS array — reused
+        // across repaints while the size is stable (ImageData wraps the
+        // same backing array, so refreshing the array refreshes the blit).
+        let mut blit = self.spec_blit.borrow_mut();
+        let rebuild = !matches!(&*blit, Some((w, h, _, _)) if *w == width_px && *h == height);
+        if rebuild {
+            let data = js_sys::Uint8ClampedArray::new_with_length(a.rgba.len() as u32);
+            let img = ImageData::new_with_js_u8_clamped_array_and_sh(&data, width_px, height)?;
+            *blit = Some((width_px, height, data, img));
+        }
+        let (_, _, data, img) = blit.as_ref().unwrap();
         data.copy_from(&a.rgba);
-        let img = ImageData::new_with_js_u8_clamped_array_and_sh(&data, width_px, height)?;
         let ctx: CanvasRenderingContext2d = canvas
             .get_context("2d")?
             .ok_or_else(|| JsValue::from_str("no 2d context"))?
             .dyn_into()?;
-        ctx.put_image_data(&img, dest_x as f64, 0.0)
+        ctx.put_image_data(img, dest_x as f64, 0.0)
     }
 }

@@ -119,6 +119,19 @@ pub struct SpectrogramRenderer {
     scratch: Vec<f32>,
     spectrum: DynRealDft<f32>,
     hann: Vec<f32>,
+    /// Per-row mapping (lo, hi, frac, weight) — lo/hi index `unique_bins`.
+    /// Identical for every column, so it is computed once per render
+    /// instead of once per pixel.
+    rows: Vec<(u32, u32, f32, f32)>,
+    /// The distinct FFT bins the rows touch (adjacent rows share bins,
+    /// heavily at low frequencies) and their per-column magnitudes: each
+    /// norm is computed once per (column, distinct bin), branch-free.
+    unique_bins: Vec<u32>,
+    mags: Vec<f32>,
+    /// Scratch for the bin-interning pass (bin -> unique_bins slot).
+    interned: Vec<u32>,
+    /// heatmap() is pure over 256 inputs; one table lookup per pixel.
+    heat: [[u8; 3]; 256],
 }
 
 impl Default for SpectrogramRenderer {
@@ -138,6 +151,14 @@ impl SpectrogramRenderer {
             scratch,
             spectrum,
             hann,
+            rows: Vec::new(),
+            unique_bins: Vec::new(),
+            mags: Vec::new(),
+            interned: Vec::new(),
+            heat: std::array::from_fn(|i| {
+                let (r, g, b) = heatmap(i as u8);
+                [r, g, b]
+            }),
         }
     }
 
@@ -160,8 +181,11 @@ impl SpectrogramRenderer {
         f_hi: f32,
         rgba: &mut Vec<u8>,
     ) {
-        rgba.clear();
-        rgba.resize(width * height * 4, 0);
+        // Every pixel below is written, so the buffer only needs the right
+        // size — zero-filling it first was a full-buffer memset for nothing.
+        if rgba.len() != width * height * 4 {
+            rgba.resize(width * height * 4, 0);
+        }
         if width == 0 || height == 0 {
             return;
         }
@@ -169,6 +193,35 @@ impl SpectrogramRenderer {
         let num_bins = self.spectrum.get_frequency_bins().len();
         let log_min = 1.0f32.ln();
         let log_max = (num_bins as f32).ln();
+
+        // The y -> bin mapping does not depend on the column: hoist the
+        // exp/sqrt per pixel out to once per row. `weight` keeps the exact
+        // multiplier (bin_f.sqrt()) the per-pixel path computed.
+        // Map each row to its bin pair, then dedupe the bins actually
+        // touched: `interned[b]` is bin b's slot in `unique_bins`.
+        self.rows.clear();
+        self.unique_bins.clear();
+        self.interned.clear();
+        self.interned.resize(num_bins, u32::MAX);
+        let interned = &mut self.interned;
+        for y in 0..height {
+            let t = 1.0 - (y as f32 / height as f32);
+            let tt = f_lo + t * (f_hi - f_lo);
+            let bin_f = (log_min + tt * (log_max - log_min)).exp();
+            let bin_lo = (bin_f as usize).min(num_bins - 2);
+            let mut intern = |b: usize| {
+                if interned[b] == u32::MAX {
+                    interned[b] = self.unique_bins.len() as u32;
+                    self.unique_bins.push(b as u32);
+                }
+                interned[b]
+            };
+            let lo = intern(bin_lo);
+            let hi = intern(bin_lo + 1);
+            self.rows
+                .push((lo, hi, bin_f - bin_lo as f32, bin_f.sqrt()));
+        }
+        self.mags.resize(self.unique_bins.len(), 0.0);
 
         for x in 0..width {
             let center = start_sample + (x as f64 + 0.5) * samples_per_px;
@@ -185,16 +238,14 @@ impl SpectrogramRenderer {
             self.scratch.real_fft_using(&mut self.spectrum);
             let bins = self.spectrum.get_frequency_bins();
 
-            for y in 0..height {
-                let t = 1.0 - (y as f32 / height as f32);
-                let tt = f_lo + t * (f_hi - f_lo);
-                let bin_f = (log_min + tt * (log_max - log_min)).exp();
-                let bin_lo = (bin_f as usize).min(num_bins - 2);
-                let frac = bin_f - bin_lo as f32;
-                let mag_lo = bins[bin_lo].norm();
-                let mag_hi = bins[bin_lo + 1].norm();
-                let mut mag = (mag_lo * (1.0 - frac) + mag_hi * frac) / SPEC_WINDOW as f32;
-                mag *= bin_f.sqrt();
+            for (m, &b) in self.mags.iter_mut().zip(&self.unique_bins) {
+                *m = bins[b as usize].norm();
+            }
+            for (y, &(lo, hi, frac, weight)) in self.rows.iter().enumerate() {
+                let mut mag = (self.mags[lo as usize] * (1.0 - frac)
+                    + self.mags[hi as usize] * frac)
+                    / SPEC_WINDOW as f32;
+                mag *= weight;
 
                 let power = mag * mag;
                 let db = if power > 1e-20 {
@@ -202,8 +253,8 @@ impl SpectrogramRenderer {
                 } else {
                     -100.0
                 };
-                let intensity = ((db + 100.0) * (255.0 / 80.0)).clamp(0.0, 255.0) as u8;
-                let (r, g, b) = heatmap(intensity);
+                let intensity = ((db + 100.0) * (255.0 / 80.0)).clamp(0.0, 255.0) as usize;
+                let [r, g, b] = self.heat[intensity];
                 let o = (y * width + x) * 4;
                 rgba[o] = r;
                 rgba[o + 1] = g;
@@ -222,6 +273,47 @@ mod tests {
         (0..len)
             .map(|i| (std::f32::consts::TAU * freq * i as f32 / sample_rate).sin() * 0.5)
             .collect()
+    }
+
+    fn bench_audio(len: usize) -> Vec<f32> {
+        // Deterministic, spectrally busy: sweep + harmonics + noise-ish hash.
+        (0..len)
+            .map(|i| {
+                let t = i as f32 / 48000.0;
+                let f = 120.0 + 400.0 * t;
+                let mut s = (std::f32::consts::TAU * f * t).sin() * 0.4;
+                s += (std::f32::consts::TAU * 2.0 * f * t).sin() * 0.2;
+                s += ((i as u32).wrapping_mul(2654435761) >> 16) as f32 / 65536.0 * 0.05;
+                s
+            })
+            .collect()
+    }
+
+    fn fnv(rgba: &[u8]) -> u64 {
+        let mut h = 0xcbf29ce484222325u64;
+        for &b in rgba {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+
+    /// Pins the exact pixel output across performance refactors: the
+    /// renderer restructure must be bit-exact, not merely similar.
+    #[test]
+    fn spectrogram_pixels_are_stable() {
+        let audio = bench_audio(48000);
+        let mut r = SpectrogramRenderer::new();
+        let mut rgba = Vec::new();
+        r.render(&audio, 1000.0, 300.0, 32, 48, 0.0, 1.0, &mut rgba);
+        let full = fnv(&rgba);
+        r.render(&audio, 0.0, 100.0, 16, 24, 0.2, 0.7, &mut rgba);
+        let zoomed = fnv(&rgba);
+        assert_eq!(
+            (full, zoomed),
+            (0x483a625f2d002a9du64, 0xf079947c5b51ea3au64),
+            "got ({full:#x}, {zoomed:#x})"
+        );
     }
 
     #[test]
