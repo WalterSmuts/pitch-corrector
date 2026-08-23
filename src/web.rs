@@ -3,6 +3,11 @@ use crate::pitch_correction::{Harmonizer, PitchCorrector, PitchCorrectorControls
 use crate::session::{waveform_peaks, PitchTrack, SpectrogramRenderer, PITCH_HOP, SPEC_WINDOW};
 use crate::signal_processing::{SpectralFreeze, StreamProcessor, BUFFER_SIZE, HOP_SIZE};
 use crate::units::{HopIdx, SampleIdx};
+use crossbeam_utils::atomic::AtomicCell;
+
+// Audio-thread cells must never hit AtomicCell's seqlock fallback.
+const _: () = assert!(AtomicCell::<SampleIdx>::is_lock_free());
+const _: () = assert!(AtomicCell::<f32>::is_lock_free());
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::DynRealFft;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -72,7 +77,7 @@ struct PlaybackState {
     input_active: AtomicBool,
     recording: Mutex<Vec<f32>>,
     output_recording: Mutex<Vec<f32>>,
-    playback_pos: AtomicU32,
+    playback_pos: AtomicCell<SampleIdx>,
     playing: AtomicBool,
     /// Set true the first time each worklet's audio callback runs, so the UI
     /// can wait until the whole pipeline (both render threads) is live before
@@ -230,7 +235,7 @@ impl WebPitchCorrector {
             input_active: AtomicBool::new(true),
             recording: Mutex::new(Vec::new()),
             output_recording: Mutex::new(Vec::new()),
-            playback_pos: AtomicU32::new(0),
+            playback_pos: AtomicCell::new(SampleIdx(0)),
             playing: AtomicBool::new(false),
             input_started: AtomicBool::new(false),
             output_started: AtomicBool::new(false),
@@ -266,7 +271,7 @@ impl WebPitchCorrector {
         let output_playback = playback.clone();
         // Freeze-audition gain (f32 bits) and its ~5ms one-pole coefficient,
         // owned by the output callback.
-        let freeze_gain = Arc::new(AtomicU32::new(0.0f32.to_bits()));
+        let freeze_gain = Arc::new(AtomicCell::new(0.0f32));
         let freeze_gain_alpha = 1.0 - (-1.0 / (0.005 * sample_rate)).exp();
         // Underruns are expected while the pipeline warms up (the vocoder
         // needs a full window of input before it emits anything) and when
@@ -289,7 +294,7 @@ impl WebPitchCorrector {
                     // ramp finishes we fall through to the normal path.
                     {
                         let active = output_playback.freeze_active.load(Ordering::Relaxed);
-                        let mut gain = f32::from_bits(freeze_gain.load(Ordering::Relaxed));
+                        let mut gain = freeze_gain.load();
                         if active || gain > 1e-4 {
                             if let Ok(mut fz) = output_playback.freeze.try_lock() {
                                 if let Some(fz) = fz.as_mut() {
@@ -298,7 +303,7 @@ impl WebPitchCorrector {
                                         gain += freeze_gain_alpha * (target - gain);
                                         frame.fill(fz.next_sample() * gain);
                                     }
-                                    freeze_gain.store(gain.to_bits(), Ordering::Relaxed);
+                                    freeze_gain.store(gain);
                                     return;
                                 }
                             }
@@ -310,8 +315,7 @@ impl WebPitchCorrector {
                     let frames = data.len() / output_channels;
                     if output_playback.playing.load(Ordering::Relaxed) {
                         if let Ok(rec) = output_playback.recording.try_lock() {
-                            let mut p =
-                                output_playback.playback_pos.load(Ordering::Relaxed) as usize;
+                            let mut p = output_playback.playback_pos.load().0;
                             for _ in 0..frames {
                                 if p < rec.len() {
                                     output_processor.push_sample(rec[p]);
@@ -321,9 +325,7 @@ impl WebPitchCorrector {
                             if p >= rec.len() {
                                 output_playback.playing.store(false, Ordering::Relaxed);
                             }
-                            output_playback
-                                .playback_pos
-                                .store(p as u32, Ordering::Relaxed);
+                            output_playback.playback_pos.store(SampleIdx(p));
                         }
                     }
                     // While recording live, route audio to the speakers only
@@ -457,7 +459,7 @@ impl WebPitchCorrector {
         self.playback.playing.store(false, Ordering::Relaxed);
         spin_lock(&self.playback.recording).clear();
         spin_lock(&self.playback.output_recording).clear();
-        self.playback.playback_pos.store(0, Ordering::Relaxed);
+        self.playback.playback_pos.store(SampleIdx(0));
         self.analysis.lock().unwrap().reset(&self.pipeline.controls);
         self.pipeline.controls.clear_target_pitch_contour();
         self.pipeline.controls.clear_contour();
@@ -544,7 +546,7 @@ impl WebPitchCorrector {
     pub fn load_recording(&self, samples: &[f32]) {
         *spin_lock(&self.playback.recording) = samples.to_vec();
         spin_lock(&self.playback.output_recording).clear();
-        self.playback.playback_pos.store(0, Ordering::Relaxed);
+        self.playback.playback_pos.store(SampleIdx(0));
         self.playback.input_active.store(false, Ordering::Relaxed);
         self.analysis.lock().unwrap().reset(&self.pipeline.controls);
         let _ = self.input_stream.pause();
@@ -574,7 +576,7 @@ impl WebPitchCorrector {
         // Re-processed output overwrites the timeline from the play position:
         // drop everything after it (or pad silence up to it) so the
         // callback's appends line up.
-        let pos = self.playback.playback_pos.load(Ordering::Relaxed) as usize;
+        let pos = self.playback.playback_pos.load().0;
         {
             let mut out = spin_lock(&self.playback.output_recording);
             out.truncate(pos);
@@ -607,23 +609,23 @@ impl WebPitchCorrector {
         if len == 0 {
             return 0.0;
         }
-        self.playback.playback_pos.load(Ordering::Relaxed) as f32 / len as f32
+        self.playback.playback_pos.load().0 as f32 / len as f32
     }
 
     pub fn seek(&self, fraction: f32) {
         let len = self.recording_len() as f32;
-        let pos = (fraction.clamp(0.0, 1.0) * len) as u32;
-        self.playback.playback_pos.store(pos, Ordering::Relaxed);
+        let pos = (fraction.clamp(0.0, 1.0) * len) as usize;
+        self.playback.playback_pos.store(SampleIdx(pos));
         // If we're mid-playback, the output write head must jump with us.
         if self.playback.playing.load(Ordering::Relaxed) {
             {
                 let mut out = spin_lock(&self.playback.output_recording);
-                out.truncate(pos as usize);
-                out.resize(pos as usize, 0.0);
+                out.truncate(pos);
+                out.resize(pos, 0.0);
             }
             self.pipeline
                 .controls
-                .seek_contour(HopIdx::containing(SampleIdx(pos as usize)));
+                .seek_contour(HopIdx::containing(SampleIdx(pos)));
         }
     }
 
