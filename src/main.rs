@@ -4,7 +4,6 @@ use pitch_corrector::display::UserInterface;
 use pitch_corrector::hardware;
 use pitch_corrector::music::{Interval, SimpleInterval};
 use pitch_corrector::pitch_correction;
-use pitch_corrector::signal_processing::pipeline;
 use pitch_corrector::signal_processing::FrequencyDomainPitchShifter;
 use pitch_corrector::signal_processing::HighPassFilter;
 use pitch_corrector::signal_processing::LowPassFilter;
@@ -13,6 +12,7 @@ use pitch_corrector::signal_processing::OverlapAndAddProcessor;
 use pitch_corrector::signal_processing::PhaseVocoderPitchShifter;
 use pitch_corrector::signal_processing::Segmenter;
 use pitch_corrector::signal_processing::TimeToFrequencyDomainBlockProcessorConverter;
+use pitch_corrector::signal_processing::pipeline;
 
 const FILTER_CUTOFF_FREQUENCY: usize = 440;
 
@@ -151,7 +151,8 @@ fn main() {
                 move |scale_name: &str, shift: Interval| {
                     *status.lock().unwrap() = format!(
                         " Scale: {} | Shift: {} semitones | [S]cale [Up/Down]shift [0]reset [L]ogger",
-                        scale_name, shift.semitones()
+                        scale_name,
+                        shift.semitones()
                     );
                 }
             };

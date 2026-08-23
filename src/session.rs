@@ -5,7 +5,7 @@
 //! Everything here is pure data-in/data-out (no web-sys), so it compiles and
 //! is unit-tested on native as well as wasm.
 
-use crate::signal_processing::{YinPitchDetector, BUFFER_SIZE};
+use crate::signal_processing::{BUFFER_SIZE, YinPitchDetector};
 use crate::units::{HopIdx, SampleIdx};
 use easyfft::dyn_size::realfft::{DynRealDft, DynRealFft};
 

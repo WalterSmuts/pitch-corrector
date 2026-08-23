@@ -1,6 +1,6 @@
-use crate::signal_processing::{StreamProcessor, BUFFER_SIZE};
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use crate::signal_processing::{BUFFER_SIZE, StreamProcessor};
 use cpal::StreamConfig;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, Stream};
 use cpal::{InputCallbackInfo, OutputCallbackInfo};
 use cpal::{Sample, SizedSample};

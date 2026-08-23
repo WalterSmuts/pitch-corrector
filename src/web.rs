@@ -1,7 +1,7 @@
 use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
 use crate::pitch_correction::{Harmonizer, HarmonyMode, PitchCorrector, PitchCorrectorControls};
-use crate::session::{waveform_peaks, PitchTrack, SpectrogramRenderer, PITCH_HOP, SPEC_WINDOW};
-use crate::signal_processing::{SpectralFreeze, StreamProcessor, BUFFER_SIZE, HOP_SIZE};
+use crate::session::{PITCH_HOP, PitchTrack, SPEC_WINDOW, SpectrogramRenderer, waveform_peaks};
+use crate::signal_processing::{BUFFER_SIZE, HOP_SIZE, SpectralFreeze, StreamProcessor};
 use crate::units::{HopIdx, SampleIdx};
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
@@ -13,8 +13,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use easyfft::dyn_size::realfft::DynRealFft;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement, ImageData};
 
 /// Prime the expensive, one-time initialization that would otherwise run on

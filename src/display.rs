@@ -77,24 +77,22 @@ impl UserInterface {
             if crossterm::event::poll(timeout).unwrap()
                 && let Event::Key(key) = event::read().unwrap()
             {
-                {
-                    if let KeyCode::Char('q') = key.code {
-                        return;
+                if let KeyCode::Char('q') = key.code {
+                    return;
+                }
+                if let KeyCode::Char(' ') = key.code {
+                    self.state = match self.state {
+                        State::Display => State::Paused,
+                        _ => State::Display,
                     }
-                    if let KeyCode::Char(' ') = key.code {
-                        self.state = match self.state {
-                            State::Display => State::Paused,
-                            _ => State::Display,
-                        }
+                }
+                if let KeyCode::Char('l') = key.code {
+                    match self.state {
+                        State::Display => self.state = State::Logger,
+                        _ => self.state = State::Display,
                     }
-                    if let KeyCode::Char('l') = key.code {
-                        match self.state {
-                            State::Display => self.state = State::Logger,
-                            _ => self.state = State::Display,
-                        }
-                    } else {
-                        on_key(key.code);
-                    }
+                } else {
+                    on_key(key.code);
                 }
             }
             if last_frame.elapsed() >= self.frame_rate {

@@ -1,6 +1,6 @@
 use crate::music::{Interval, Note, Pitch, Scale};
 use crate::signal_processing::{
-    PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, HOP_SIZE,
+    HOP_SIZE, PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector,
 };
 use crate::units::HopIdx;
 
@@ -13,9 +13,9 @@ pub enum HarmonyMode {
 }
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // Domain types cross the audio-thread boundary through AtomicCell<T>,
 // which flattens any small Copy type generically — no per-type encoding.
@@ -992,7 +992,9 @@ mod tests {
             }
         }
 
-        eprintln!("[PERF] corrector_tracking_bandwidth: {best_rate:.1}Hz (threshold: >={PERF_MIN_TRACKING_RATE:.1}Hz)");
+        eprintln!(
+            "[PERF] corrector_tracking_bandwidth: {best_rate:.1}Hz (threshold: >={PERF_MIN_TRACKING_RATE:.1}Hz)"
+        );
 
         assert!(
             best_rate >= PERF_MIN_TRACKING_RATE,
@@ -1009,7 +1011,7 @@ mod tests {
     #[test]
     fn perf_pitch_corrector_noise_tolerance() {
         use crate::signal_processing::YinPitchDetector;
-        use rand::{rngs::StdRng, Rng, SeedableRng};
+        use rand::{Rng, SeedableRng, rngs::StdRng};
 
         let pentatonic_c = Scale::pentatonic(Note::C);
 
@@ -1095,7 +1097,9 @@ mod tests {
             }
         }
 
-        eprintln!("[PERF] corrector_noise_tolerance: {best_noise:.1} (threshold: >={PERF_MIN_NOISE_TOLERANCE})");
+        eprintln!(
+            "[PERF] corrector_noise_tolerance: {best_noise:.1} (threshold: >={PERF_MIN_NOISE_TOLERANCE})"
+        );
 
         assert!(
             best_noise >= PERF_MIN_NOISE_TOLERANCE,
