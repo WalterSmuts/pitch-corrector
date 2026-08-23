@@ -348,11 +348,10 @@ impl Default for PitchCorrector {
 impl PitchCorrector {
     /// Native default sampling rate (Hz), matching hardware.rs.
     const DEFAULT_SAMPLE_RATE: f32 = 44_100.0;
-    /// Time constant of the correction-ratio smoothing filter. The per-hop
-    /// one-pole coefficient is derived from this and the actual sample rate,
-    /// so the smoothing speed is independent of rate and hop size. ~12.7ms
-    /// reproduces the previous fixed alpha=0.6 at 44.1kHz / 512-sample hop.
-    pub(crate) const SMOOTHING_TAU_SECONDS: f32 = 0.0127;
+    /// Default retune speed: time constant of the correction-ratio
+    /// smoothing filter, overridable live via `set_retune_tau_seconds`.
+    /// ~12.7ms sits in the 'natural' zone of commercial correctors.
+    pub(crate) const DEFAULT_RETUNE_TAU: f32 = 0.0127;
 
     pub fn new() -> Self {
         Self::with_scale(Scale::pentatonic(Note::C))
@@ -388,7 +387,7 @@ impl PitchCorrector {
             voice_pitch_log: std::array::from_fn(|_| ArrayQueue::new(TARGET_CONTOUR_CAPACITY)),
             aim_pitch_log: ArrayQueue::new(TARGET_CONTOUR_CAPACITY),
             harmony_mode: AtomicCell::new(HarmonyMode::InKey),
-            retune_tau: AtomicCell::new(PitchCorrector::SMOOTHING_TAU_SECONDS),
+            retune_tau: AtomicCell::new(PitchCorrector::DEFAULT_RETUNE_TAU),
             strength: AtomicCell::new(1.0),
             contour: Mutex::new(Vec::new()),
             contour_hop: AtomicCell::new(HopIdx(0)),
@@ -875,7 +874,7 @@ mod tests {
         assert_eq!(c.get_strength(), 1.0);
         assert_eq!(
             c.get_retune_tau_seconds(),
-            PitchCorrector::SMOOTHING_TAU_SECONDS
+            PitchCorrector::DEFAULT_RETUNE_TAU
         );
 
         c.set_strength(0.25);

@@ -471,10 +471,6 @@ impl WebPitchCorrector {
         self.analysis.lock().unwrap().target_pitch.clone()
     }
 
-    pub fn clear_target_pitch_contour(&self) {
-        self.controls.clear_target_pitch_contour();
-    }
-
     pub fn set_scale(&self, bits: u16) {
         self.controls.set_scale(Scale::from_bits(bits));
     }

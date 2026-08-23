@@ -20,7 +20,6 @@ let vocoderHop = 512;
 
 // Post-correction: target contour (one entry per phase-vocoder hop, spanning
 // the whole recording) captured at stop, plus the user-edited copy.
-let targetContour = [];
 // Sparse override layer over the snap target: entry i (vocoder hop i) is a
 // forced target frequency, 0/empty = no override (the snapper decides).
 // Created lazily on the first drag; consumed by playback re-processing.
@@ -599,7 +598,6 @@ function newCorrector() {
 function resetSession() {
     pitchScale.reset(); // manual vertical zoom ends with the session
     totalSamples = 0;
-    targetContour = [];
     overrideContour = null;
     timeline.reset();
 }
@@ -635,13 +633,7 @@ async function startRecording() {
         }
         newCorrector();
         resetSession();
-        applyScale();
-        corrector.set_shift(parseFloat(slider.value));
-        corrector.set_monitor(passthroughOn);
-        corrector.set_bypass(dryOn);
-        applyRetune();
-        applyStrength();
-        applyHarmony();
+        applyAllSettings();
         corrector.start_recording();
 
         els.status.textContent = 'Initializing audio…';
@@ -669,7 +661,6 @@ function stopRecording() {
         setState('idle');
         return;
     }
-    targetContour = Array.from(corrector.target_pitch_track());
     updateViewScales();
     timeline.follow(false);
     timeline.fit();
@@ -772,6 +763,20 @@ window.addEventListener('keyup', (e) => {
 // absolute (fixed semitone offsets). Defaults: off, in key.
 let harmonyMask = 0;
 let harmonyInKey = true;
+
+// Push every UI control onto a (fresh) corrector. A corrector is created
+// per session (record start, upload), so any control not re-applied here
+// silently reverts to its default — the upload path once missed bypass,
+// so an upload with Dry on processed corrected audio anyway.
+function applyAllSettings() {
+    applyScale();
+    corrector.set_shift(parseFloat(slider.value));
+    corrector.set_monitor(passthroughOn);
+    corrector.set_bypass(dryOn);
+    applyRetune();
+    applyStrength();
+    applyHarmony();
+}
 
 function applyHarmony() {
     updateLegendVoices();
@@ -913,7 +918,7 @@ els.debugBtn.addEventListener('click', () => {
         sampleRate,
         input: Array.from(corrector.get_recording()),
         output: Array.from(corrector.get_output_recording()),
-        targetContour: Array.from(targetContour),
+        targetContour: Array.from(corrector.target_pitch_track()),
         overrideContour: overrideContour ? Array.from(overrideContour) : null,
     };
     downloadBlob(new Blob([JSON.stringify(dump)], { type: 'application/json' }), 'debug-dump.json');
@@ -929,20 +934,15 @@ els.uploadInput.addEventListener('change', (e) => {
 async function uploadRecording(file) {
     await init();
     newCorrector();
-    applyScale();
-    corrector.set_shift(parseFloat(slider.value));
-    applyRetune();
-    applyStrength();
+    applyAllSettings();
     const buf = await file.arrayBuffer();
     const samples = decodeWav(buf);
     if (!samples || samples.length === 0) {
         els.status.textContent = 'Error: could not decode WAV';
         return;
     }
-    applyHarmony();
     corrector.load_recording(samples);
     resetSession();
-    corrector.clear_target_pitch_contour();
 
     // Process offline in chunks, yielding so the page stays responsive.
     const chunk = sampleRate; // ~1s of audio per slice
@@ -955,7 +955,6 @@ async function uploadRecording(file) {
     }
     totalSamples = corrector.analyze();
     timeline.setTotal(totalSamples);
-    targetContour = Array.from(corrector.target_pitch_track());
     updateViewScales();
     timeline.fit();
     timeline.setPlayhead(0);
