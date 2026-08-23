@@ -80,8 +80,8 @@ const els = {
     playBtn: $btn('play-btn'),
     passthroughBtn: $btn('passthrough-btn'),
     dryBtn: $btn('dry-btn'),
-    downloadBtn: $btn('download-btn'),
-    debugBtn: $btn('debug-btn'),
+    downloadInputBtn: $btn('download-input-btn'),
+    downloadOutputBtn: $btn('download-output-btn'),
     uploadBtn: $btn('upload-btn'),
     uploadInput: $input('upload-input'),
 };
@@ -538,8 +538,8 @@ function setState(newState) {
         !(state === 'stopped' || state === 'paused' || state === 'playing') || totalSamples === 0;
     els.playBtn.textContent = state === 'playing' ? '⏸ Pause' : '▶ Play';
     const hasRecording = totalSamples > 0 && (state === 'stopped' || state === 'paused');
-    els.downloadBtn.disabled = !hasRecording;
-    els.debugBtn.disabled = !hasRecording;
+    els.downloadInputBtn.disabled = !hasRecording;
+    els.downloadOutputBtn.disabled = !hasRecording;
 }
 
 function checkBrowserSupport() {
@@ -916,25 +916,17 @@ function applyStrength() {
 }
 strengthSlider.addEventListener('input', applyStrength);
 
-// --- WAV download / upload / debug dump ---
+// --- WAV download / upload ---
 
-els.downloadBtn.addEventListener('click', () => {
-    if (!corrector) return;
-    const samples = corrector.get_recording();
+function downloadWav(samples, filename) {
     if (samples.length === 0) return;
-    downloadBlob(encodeWav(samples, sampleRate), 'recording.wav');
+    downloadBlob(encodeWav(samples, sampleRate), filename);
+}
+els.downloadInputBtn.addEventListener('click', () => {
+    if (corrector) downloadWav(corrector.get_recording(), 'input.wav');
 });
-
-els.debugBtn.addEventListener('click', () => {
-    if (!corrector) return;
-    const dump = {
-        sampleRate,
-        input: Array.from(corrector.get_recording()),
-        output: Array.from(corrector.get_output_recording()),
-        targetContour: Array.from(corrector.target_pitch_track()),
-        overrideContour: overrideContour ? Array.from(overrideContour) : null,
-    };
-    downloadBlob(new Blob([JSON.stringify(dump)], { type: 'application/json' }), 'debug-dump.json');
+els.downloadOutputBtn.addEventListener('click', () => {
+    if (corrector) downloadWav(corrector.get_output_recording(), 'output.wav');
 });
 
 els.uploadBtn.addEventListener('click', () => els.uploadInput.click());

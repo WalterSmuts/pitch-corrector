@@ -401,6 +401,21 @@ try {
     `nearest-note target is drawn without post-correction (${withoutTarget} -> ${withTarget} gray px)`,
   );
 
+  // --- Download buttons: enabled once stopped, and both produce WAVs ---
+  for (const [id, name] of [
+    ['#download-input-btn', 'input.wav'],
+    ['#download-output-btn', 'output.wav'],
+  ]) {
+    const enabled = await page.evaluate((sel) => !document.querySelector(sel).disabled, id);
+    const dl = page.waitForEvent('download', { timeout: 5000 });
+    await page.click(id);
+    const file = await dl;
+    check(
+      enabled && file.suggestedFilename() === name,
+      `${name} download works (got '${file.suggestedFilename()}')`,
+    );
+  }
+
   // --- Playback behavior of the merged lane: the nearest-note target is
   // input-derived and must persist through a replay (no clear-and-regrow),
   // while the output series truncates and regrows — which only renders if
