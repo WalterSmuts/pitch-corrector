@@ -31,7 +31,6 @@ use easyfft::dyn_size::realfft::DynRealFft;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -305,18 +304,17 @@ impl WebPitchCorrector {
                     {
                         let active = output_playback.freeze_active.load(Ordering::Relaxed);
                         let mut gain = freeze_gain.load();
-                        if active || gain > 1e-4 {
-                            if let Ok(mut fz) = output_playback.freeze.try_lock() {
-                                if let Some(fz) = fz.as_mut() {
-                                    let target = if active { 1.0 } else { 0.0 };
-                                    for frame in data.chunks_exact_mut(output_channels) {
-                                        gain += freeze_gain_alpha * (target - gain);
-                                        frame.fill(fz.next_sample() * gain);
-                                    }
-                                    freeze_gain.store(gain);
-                                    return;
-                                }
+                        if (active || gain > 1e-4)
+                            && let Ok(mut fz) = output_playback.freeze.try_lock()
+                            && let Some(fz) = fz.as_mut()
+                        {
+                            let target = if active { 1.0 } else { 0.0 };
+                            for frame in data.chunks_exact_mut(output_channels) {
+                                gain += freeze_gain_alpha * (target - gain);
+                                frame.fill(fz.next_sample() * gain);
                             }
+                            freeze_gain.store(gain);
+                            return;
                         }
                     }
 
@@ -342,20 +340,20 @@ impl WebPitchCorrector {
                         // it can't pollute the next playback re-process.
                         while mic_ring.pop().is_some() {}
                     }
-                    if output_playback.playing.load(Ordering::Relaxed) {
-                        if let Ok(rec) = output_playback.recording.try_lock() {
-                            let mut p = output_playback.playback_pos.load().0;
-                            for _ in 0..frames {
-                                if p < rec.len() {
-                                    processor.push_sample(rec[p]);
-                                    p += 1;
-                                }
+                    if output_playback.playing.load(Ordering::Relaxed)
+                        && let Ok(rec) = output_playback.recording.try_lock()
+                    {
+                        let mut p = output_playback.playback_pos.load().0;
+                        for _ in 0..frames {
+                            if p < rec.len() {
+                                processor.push_sample(rec[p]);
+                                p += 1;
                             }
-                            if p >= rec.len() {
-                                output_playback.playing.store(false, Ordering::Relaxed);
-                            }
-                            output_playback.playback_pos.store(SampleIdx(p));
                         }
+                        if p >= rec.len() {
+                            output_playback.playing.store(false, Ordering::Relaxed);
+                        }
+                        output_playback.playback_pos.store(SampleIdx(p));
                     }
                     // While recording live, route audio to the speakers only
                     // with passthrough on; the pipeline still runs and the
@@ -375,13 +373,11 @@ impl WebPitchCorrector {
                                 // during playback (playback truncates the
                                 // buffer to the play position first, so
                                 // appends stay timeline-aligned).
-                                if output_playback.input_active.load(Ordering::Relaxed)
-                                    || output_playback.playing.load(Ordering::Relaxed)
+                                if (output_playback.input_active.load(Ordering::Relaxed)
+                                    || output_playback.playing.load(Ordering::Relaxed))
+                                    && let Ok(mut rec) = output_playback.output_recording.try_lock()
                                 {
-                                    if let Ok(mut rec) = output_playback.output_recording.try_lock()
-                                    {
-                                        rec.push(s);
-                                    }
+                                    rec.push(s);
                                 }
                             }
                             None => {
