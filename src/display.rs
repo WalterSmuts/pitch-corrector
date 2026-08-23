@@ -1,4 +1,4 @@
-use crate::signal_processing::{DisplayProcessor, BUFFER_SIZE};
+use crate::signal_processing::{BUFFER_SIZE, DisplayProcessor};
 use crossterm::event;
 use crossterm::event::DisableMouseCapture;
 use crossterm::event::EnableMouseCapture;
@@ -6,11 +6,13 @@ use crossterm::event::Event;
 use crossterm::event::KeyCode;
 use crossterm::execute;
 use crossterm::terminal;
-use crossterm::terminal::disable_raw_mode;
 use crossterm::terminal::EnterAlternateScreen;
 use crossterm::terminal::LeaveAlternateScreen;
+use crossterm::terminal::disable_raw_mode;
 use easyfft::dyn_size::DynFft;
 use log::info;
+use ratatui::Frame;
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout;
 use ratatui::layout::Constraint;
@@ -24,8 +26,6 @@ use ratatui::widgets::Borders;
 use ratatui::widgets::Chart;
 use ratatui::widgets::Dataset;
 use ratatui::widgets::GraphType;
-use ratatui::Frame;
-use ratatui::Terminal;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -74,8 +74,10 @@ impl UserInterface {
                 .frame_rate
                 .checked_sub(last_frame.elapsed())
                 .unwrap_or_else(|| Duration::from_secs(0));
-            if crossterm::event::poll(timeout).unwrap() {
-                if let Event::Key(key) = event::read().unwrap() {
+            if crossterm::event::poll(timeout).unwrap()
+                && let Event::Key(key) = event::read().unwrap()
+            {
+                {
                     if let KeyCode::Char('q') = key.code {
                         return;
                     }

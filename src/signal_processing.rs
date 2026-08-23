@@ -329,11 +329,11 @@ impl NaivePitchShifter {
 
 #[macro_export]
 macro_rules! pipeline {
-    ($first_processor:expr$(,)?) => {
+    ($first_processor:expr_2021$(,)?) => {
         $first_processor
     };
 
-    ($first_processor:expr, $($other_processors:expr),+ $(,)?) => {
+    ($first_processor:expr_2021, $($other_processors:expr_2021),+ $(,)?) => {
         $crate::signal_processing::compose(
             pipeline! {$first_processor},
             pipeline! { $($other_processors),+ },
@@ -1633,7 +1633,10 @@ mod tests {
         let auto: f32 = input_slice.iter().map(|a| a * a).sum();
 
         let similarity = cross / auto;
-        eprintln!("[PERF] phase_vocoder_unity_transparency: similarity={similarity:.4} (threshold: >{:.2})", 1.0 - PERF_VOCODER_TRANSPARENCY);
+        eprintln!(
+            "[PERF] phase_vocoder_unity_transparency: similarity={similarity:.4} (threshold: >{:.2})",
+            1.0 - PERF_VOCODER_TRANSPARENCY
+        );
         assert!(
             (similarity - 1.0).abs() < PERF_VOCODER_TRANSPARENCY,
             "Phase vocoder at ratio 1.0 should be transparent, but similarity was {similarity:.3}"
@@ -1678,7 +1681,7 @@ mod tests {
 
     #[test]
     fn yin_fft_difference_matches_direct_loop() {
-        use rand::{rngs::StdRng, Rng, SeedableRng};
+        use rand::{Rng, SeedableRng, rngs::StdRng};
 
         // A voiced-like signal: a couple of harmonics plus noise, so the
         // difference function has real structure (dips) to compare.
@@ -1960,8 +1963,12 @@ mod tests {
         }
 
         let mean_cents = total_cents_error / tested as f32;
-        eprintln!("[PERF] yin_fine_pitch_mean_error: {mean_cents:.2} cents (threshold: <{PERF_YIN_MEAN_CENTS})");
-        eprintln!("[PERF] yin_fine_pitch_worst_error: {worst_cents:.2} cents at {worst_freq:.1}Hz (threshold: <{PERF_YIN_WORST_CENTS})");
+        eprintln!(
+            "[PERF] yin_fine_pitch_mean_error: {mean_cents:.2} cents (threshold: <{PERF_YIN_MEAN_CENTS})"
+        );
+        eprintln!(
+            "[PERF] yin_fine_pitch_worst_error: {worst_cents:.2} cents at {worst_freq:.1}Hz (threshold: <{PERF_YIN_WORST_CENTS})"
+        );
 
         assert!(
             mean_cents < PERF_YIN_MEAN_CENTS,
@@ -2239,7 +2246,7 @@ mod tests {
         num: usize,
         seed: u64,
     ) -> (Vec<f32>, Vec<f32>) {
-        use rand::{rngs::StdRng, Rng, SeedableRng};
+        use rand::{Rng, SeedableRng, rngs::StdRng};
         let mut rng = StdRng::seed_from_u64(seed);
         let sr = SAMPLE_RATE as f32;
         let a_sum: f32 = (1..=n_harm).map(|k| 1.0 / k as f32).sum();
