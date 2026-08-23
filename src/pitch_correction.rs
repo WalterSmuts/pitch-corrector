@@ -138,13 +138,13 @@ impl RatioSmoother {
     /// ~0.5s of hops (hop=512 at 44.1kHz) before a gap resets the ratio.
     const GAP_RESET_HOPS: usize = 43;
 
-    fn new(sample_rate: f32) -> Mutex<Self> {
+    fn new(sample_rate: f32) -> Self {
         let hop_period = HOP_SIZE as f32 / sample_rate;
-        Mutex::new(Self {
+        Self {
             alpha: 1.0 - (-hop_period / PitchCorrector::SMOOTHING_TAU_SECONDS).exp(),
             ratio: 1.0,
             gap_hops: 0,
-        })
+        }
     }
 
     /// Advance one hop toward `target` (None = detection gap) and return
@@ -350,13 +350,13 @@ impl PitchCorrector {
         let hop_bus = Arc::new(HopBus::new());
         let bus_clone = hop_bus.clone();
         let controls_clone = controls.clone();
-        let detector = Mutex::new(yin);
-        let snapper = Mutex::new(NoteSnapper::new());
-        let smoother = RatioSmoother::new(sample_rate);
+        let mut detector = yin;
+        let mut snapper = NoteSnapper::new();
+        let mut smoother = RatioSmoother::new(sample_rate);
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
             let shift = controls_clone.get_shift();
             let shift_ratio = shift.to_ratio();
-            let detected = detector.lock().unwrap().detect(frame);
+            let detected = detector.detect(frame);
 
             // Check for active contour, otherwise snap to scale
             let target_pitch = {
@@ -377,7 +377,7 @@ impl PitchCorrector {
                     contour[hop.0.min(contour.len() - 1)]
                 } else {
                     let scale = controls_clone.get_scale();
-                    detected.and_then(|freq| snapper.lock().unwrap().snap(freq, scale))
+                    detected.and_then(|freq| snapper.snap(freq, scale))
                 }
             };
 
@@ -405,7 +405,7 @@ impl PitchCorrector {
             } else {
                 None
             };
-            let smoothed = smoother.lock().unwrap().step(smoothing_target);
+            let smoothed = smoother.step(smoothing_target);
             let ratio = smoothed * if bypass { 1.0 } else { shift_ratio };
             // Log what this voice actually produces this hop (detected pitch
             // times the applied ratio; 0 when unvoiced).
@@ -456,8 +456,8 @@ const HARMONY_GAIN: f32 = 0.5;
 pub struct Harmonizer {
     main: PitchCorrector,
     voices: [PhaseVocoderPitchShifter<RatioFn>; 3],
-    /// Per-voice smoothed mix gains (audio thread only; uncontended).
-    gains: Mutex<[f32; 3]>,
+    /// Per-voice smoothed mix gains.
+    gains: [f32; 3],
     /// Per-sample one-pole coefficient for the gain fades (~5ms).
     gain_alpha: f32,
     controls: Arc<PitchCorrectorControls>,
@@ -477,7 +477,7 @@ impl Harmonizer {
             let log_idx = voice_idx; // 1..=3 ([0] is the main voice)
             let controls = controls.clone();
             let bus = hop_bus.clone();
-            let smoother = RatioSmoother::new(sample_rate);
+            let mut smoother = RatioSmoother::new(sample_rate);
             let ratio_fn: RatioFn = Box::new(move |_frame: &[f32]| {
                 let enabled =
                     controls.harmony_mask.load(Ordering::Relaxed) & (1 << (log_idx - 1)) != 0;
@@ -499,10 +499,7 @@ impl Harmonizer {
                 };
 
                 // Same smoothing + gap handling as the main voice.
-                let smoothed = smoother
-                    .lock()
-                    .unwrap()
-                    .step(pair.map(|(detected, harmony)| harmony / detected));
+                let smoothed = smoother.step(pair.map(|(detected, harmony)| harmony / detected));
                 // Log this voice's produced pitch for the plot: only while
                 // enabled and voiced (it is faded out of the mix otherwise).
                 let bypass = controls.bypass.load(Ordering::Relaxed);
@@ -519,7 +516,7 @@ impl Harmonizer {
         Harmonizer {
             main,
             voices,
-            gains: Mutex::new([0.0; 3]),
+            gains: [0.0; 3],
             gain_alpha: 1.0 - (-1.0 / (0.005 * sample_rate)).exp(),
             controls,
             hop_bus,
@@ -545,7 +542,7 @@ impl StreamProcessor for Harmonizer {
         let main = self.main.pop_sample()?;
         let mask = self.controls.harmony_mask.load(Ordering::Relaxed);
         let voiced = self.hop_bus.voiced() && !self.controls.bypass.load(Ordering::Relaxed);
-        let mut gains = self.gains.lock().unwrap();
+        let gains = &mut self.gains;
         let mut out = main;
         let mut norm = 1.0;
         for (i, v) in self.voices.iter_mut().enumerate() {

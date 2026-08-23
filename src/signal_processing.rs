@@ -7,8 +7,6 @@ use easyfft::dyn_size::realfft::DynRealFft;
 use easyfft::dyn_size::realfft::DynRealIfft;
 use easyfft::num_complex::Complex;
 use log::info;
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -78,7 +76,7 @@ pub struct PhaseVocoderPitchShifter<F: FnMut(&[f32]) -> f32 + Send> {
     hop_size: usize,
     input_buffer: ArrayQueue<f32>,
     output_buffer: ArrayQueue<f32>,
-    state: Mutex<PhaseVocoderState>,
+    state: PhaseVocoderState,
 }
 
 struct BinData {
@@ -119,18 +117,18 @@ struct PhaseVocoderState {
 
 pub struct DisplayProcessor<const I: usize = BUFFER_SIZE> {
     buffer: ArrayQueue<f32>,
-    back_buffer: Mutex<Box<[f32; I]>>,
+    back_buffer: Box<[f32; I]>,
     front_buffer: Arc<Mutex<[f32; I]>>,
-    write_index: AtomicUsize,
+    write_index: usize,
 }
 
 pub struct OverlapAndAddProcessor<T>
 where
     T: BlockProcessor,
 {
-    previous_clean_half_buffer: Mutex<Box<[f32]>>,
-    previous_processed_half_buffer: Mutex<Box<[f32]>>,
-    scratch: Mutex<OlaBuffers>,
+    previous_clean_half_buffer: Box<[f32]>,
+    previous_processed_half_buffer: Box<[f32]>,
+    scratch: OlaBuffers,
     window: Box<[f32]>,
     block_processor: T,
 }
@@ -163,8 +161,8 @@ where
     T: FrequencyDomainBlockProcessor,
 {
     frequency_domain_block_processor: T,
-    spectrum: Mutex<Option<DynRealDft<f32>>>,
-    ifft_buf: Mutex<Vec<f32>>,
+    spectrum: Option<DynRealDft<f32>>,
+    ifft_buf: Vec<f32>,
 }
 
 impl<T> TimeToFrequencyDomainBlockProcessorConverter<T>
@@ -174,12 +172,12 @@ where
     pub fn new(frequency_domain_block_processor: T) -> Self {
         Self {
             frequency_domain_block_processor,
-            spectrum: Mutex::new(Some(DynRealDft::new(
+            spectrum: Some(DynRealDft::new(
                 0.0,
                 &vec![Complex::default(); BUFFER_SIZE / 2],
                 BUFFER_SIZE,
-            ))),
-            ifft_buf: Mutex::new(vec![0.0; BUFFER_SIZE]),
+            )),
+            ifft_buf: vec![0.0; BUFFER_SIZE],
         }
     }
 }
@@ -189,14 +187,13 @@ where
     T: FrequencyDomainBlockProcessor,
 {
     fn process(&mut self, buffer: &mut [f32]) {
-        let mut spectrum_opt = self.spectrum.lock().unwrap();
-        let spectrum = spectrum_opt.as_mut().unwrap();
+        let spectrum = self.spectrum.as_mut().unwrap();
         buffer.real_fft_using(spectrum);
         self.frequency_domain_block_processor.process(spectrum);
 
-        let mut ifft_buf = self.ifft_buf.lock().unwrap();
-        spectrum.real_ifft_using(&mut ifft_buf);
-        buffer.copy_from_slice(&ifft_buf);
+        let ifft_buf = &mut self.ifft_buf;
+        spectrum.real_ifft_using(ifft_buf);
+        buffer.copy_from_slice(ifft_buf);
         for sample in buffer {
             *sample /= BUFFER_SIZE as f32;
         }
@@ -290,9 +287,9 @@ impl<const I: usize> DisplayProcessor<I> {
         info!("Creating new DisplayProcessor of size {}", I);
         Self {
             buffer: ArrayQueue::new(I * 4),
-            back_buffer: Mutex::new(Box::new([0.0; I])),
+            back_buffer: Box::new([0.0; I]),
             front_buffer: Arc::new(Mutex::new([0.0; I])),
-            write_index: AtomicUsize::new(0),
+            write_index: 0,
         }
     }
 
@@ -310,17 +307,14 @@ impl<const I: usize> StreamProcessor for DisplayProcessor<I> {
 
     fn pop_sample(&mut self) -> Option<f32> {
         let sample = self.buffer.pop()?;
-        let mut back = self.back_buffer.lock().unwrap();
-        let idx = self.write_index.load(Ordering::Relaxed);
-        back[idx] = sample;
-        let next = idx + 1;
-        if next >= I {
-            // Back buffer full — swap to front
+        self.back_buffer[self.write_index] = sample;
+        self.write_index += 1;
+        if self.write_index >= I {
+            // Back buffer full — swap to front (the UI's view; the one
+            // genuine cross-thread boundary here).
             let mut front = self.front_buffer.lock().unwrap();
-            front.copy_from_slice(back.as_ref());
-            self.write_index.store(0, Ordering::Relaxed);
-        } else {
-            self.write_index.store(next, Ordering::Relaxed);
+            front.copy_from_slice(self.back_buffer.as_ref());
+            self.write_index = 0;
         }
         Some(sample)
     }
@@ -486,7 +480,7 @@ impl<F: FnMut(&[f32]) -> f32 + Send> PhaseVocoderPitchShifter<F> {
             hop_size,
             input_buffer: ArrayQueue::new(BUFFER_SIZE * 4),
             output_buffer: ArrayQueue::new(BUFFER_SIZE * 4),
-            state: Mutex::new(PhaseVocoderState {
+            state: PhaseVocoderState {
                 input_frame: vec![0.0; BUFFER_SIZE],
                 input_pos: 0,
                 prev_input_phase: vec![],
@@ -516,7 +510,7 @@ impl<F: FnMut(&[f32]) -> f32 + Send> PhaseVocoderPitchShifter<F> {
                 ifft_output: vec![0.0; BUFFER_SIZE],
                 new_output_phase: vec![0.0; BUFFER_SIZE / 2],
                 peaks: Vec::with_capacity(BUFFER_SIZE / 2),
-            }),
+            },
         }
     }
 
@@ -824,7 +818,7 @@ impl<F: FnMut(&[f32]) -> f32 + Send> StreamProcessor for PhaseVocoderPitchShifte
         }
 
         if self.input_buffer.len() >= self.hop_size {
-            let mut state = self.state.lock().unwrap();
+            let state = &mut self.state;
 
             // Shift input frame left by hop_size
             state.input_frame.copy_within(self.hop_size.., 0);
@@ -839,7 +833,7 @@ impl<F: FnMut(&[f32]) -> f32 + Send> StreamProcessor for PhaseVocoderPitchShifte
             state.input_pos = BUFFER_SIZE;
 
             let scaling_ratio = (self.ratio_fn)(&state.input_frame);
-            Self::process_frame(&mut state, scaling_ratio, self.hop_size);
+            Self::process_frame(state, scaling_ratio, self.hop_size);
 
             // Overlap-add into accumulator
             for i in 0..state.ifft_output.len() {
@@ -871,8 +865,8 @@ where
     T: BlockProcessor,
 {
     fn process(&mut self, buffer: &mut [f32]) {
-        let mut scratch = self.scratch.lock().unwrap();
-        let previous_clean_half_buffer = &mut self.previous_clean_half_buffer.lock().unwrap();
+        let scratch = &mut self.scratch;
+        let previous_clean_half_buffer = &mut self.previous_clean_half_buffer;
 
         // Build first block: previous second half + current first half
         scratch.first[..BUFFER_SIZE / 2].copy_from_slice(previous_clean_half_buffer);
@@ -902,8 +896,7 @@ where
         }
 
         // Overlap and add first half of first block with previous processed tail
-        let previous_processed_half_buffer =
-            &mut self.previous_processed_half_buffer.lock().unwrap();
+        let previous_processed_half_buffer = &mut self.previous_processed_half_buffer;
         for i in 0..BUFFER_SIZE / 2 {
             scratch.first[i] += previous_processed_half_buffer[i];
         }
@@ -926,12 +919,12 @@ where
             .map(|w| w as f32)
             .collect();
         Self {
-            previous_clean_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
-            previous_processed_half_buffer: Mutex::new(Box::new([0.0; BUFFER_SIZE / 2])),
-            scratch: Mutex::new(OlaBuffers {
+            previous_clean_half_buffer: Box::new([0.0; BUFFER_SIZE / 2]),
+            previous_processed_half_buffer: Box::new([0.0; BUFFER_SIZE / 2]),
+            scratch: OlaBuffers {
                 first: Box::new([0.0; BUFFER_SIZE]),
                 second: Box::new([0.0; BUFFER_SIZE]),
-            }),
+            },
             window,
             block_processor,
         }
@@ -2456,7 +2449,7 @@ mod tests {
 
     #[test]
     fn perf_phase_vocoder_ratio_transition_distortion() {
-        use std::sync::atomic::AtomicU32;
+        use std::sync::atomic::{AtomicU32, Ordering};
 
         const ANALYSIS_SIZE: usize = 4096;
         let input_freq = 440.0;
