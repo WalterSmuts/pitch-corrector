@@ -24,6 +24,8 @@ let vocoderHop = 512;
 // forced target frequency, 0/empty = no override (the snapper decides).
 // Created lazily on the first drag; consumed by playback re-processing.
 let overrideContour = null;
+// A freeze that interrupted playback resumes it on release.
+let resumeAfterFreeze = false;
 
 // One shared y axis for every pitch view (input, output, contour editor),
 // dynamically fitted to the data with hysteresis. See PitchScale.
@@ -599,6 +601,7 @@ function resetSession() {
     pitchScale.reset(); // manual vertical zoom ends with the session
     totalSamples = 0;
     overrideContour = null;
+    resumeAfterFreeze = false;
     timeline.reset();
 }
 
@@ -671,6 +674,7 @@ function stopRecording() {
 
 function startPlayback() {
     if (!corrector || totalSamples === 0) return;
+    resumeAfterFreeze = false; // any explicit start voids a pending resume
     if (corrector.playback_progress() >= 1.0) corrector.seek(0);
     if (overrideContour && overrideContour.some((f) => f > 0)) {
         corrector.set_contour(new Float32Array(overrideContour));
@@ -738,9 +742,13 @@ window.addEventListener('keydown', (e) => {
         }
     } else if (e.code === 'KeyH' && !e.repeat) {
         // Hold h: spectral-freeze audition of the frame under the playhead.
-        // During playback, pause first and freeze right there.
+        // During playback, pause first and freeze right there; releasing h
+        // resumes from that position.
         if (!corrector || totalSamples === 0) return;
-        if (state === 'playing') pausePlayback();
+        if (state === 'playing') {
+            pausePlayback();
+            resumeAfterFreeze = true;
+        }
         if (state !== 'stopped' && state !== 'paused') return;
         e.preventDefault();
         const pos = corrector.playback_progress() * totalSamples;
@@ -753,7 +761,12 @@ window.addEventListener('keydown', (e) => {
 window.addEventListener('keyup', (e) => {
     if (e.code === 'KeyH' && corrector && corrector.is_freezing()) {
         corrector.stop_freeze();
-        setState(state); // restore the state's status line
+        if (resumeAfterFreeze) {
+            resumeAfterFreeze = false;
+            startPlayback();
+        } else {
+            setState(state); // restore the state's status line
+        }
     }
 });
 

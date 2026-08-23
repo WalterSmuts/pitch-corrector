@@ -623,9 +623,14 @@ try {
     'h during playback pauses and freezes the frame there',
   );
   await page.keyboard.up('h');
+  await sleep(300);
+  const resumed = await page.evaluate(() => ({
+    freezing: window.__pc.is_freezing(),
+    playing: window.__pc.is_playing(),
+  }));
   check(
-    await page.evaluate(() => !window.__pc.is_freezing()),
-    'releasing h after a mid-playback freeze stays paused',
+    !resumed.freezing && resumed.playing,
+    'releasing h after a mid-playback freeze resumes playback',
   );
 
   // --- Upload runs the offline path and lands in stopped state ---
