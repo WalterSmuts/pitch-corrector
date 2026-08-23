@@ -489,6 +489,11 @@ impl PitchCorrector {
         }
     }
 
+    /// Flush DSP audio state between runs (see `Harmonizer::reset`).
+    pub fn reset(&mut self) {
+        self.processor.reset();
+    }
+
     /// Extract the controls handle before moving this into a pipeline.
     pub fn controls(&self) -> Arc<PitchCorrectorControls> {
         self.controls.clone()
@@ -599,6 +604,18 @@ impl Harmonizer {
 
     pub fn controls(&self) -> Arc<PitchCorrectorControls> {
         self.controls.clone()
+    }
+}
+
+impl Harmonizer {
+    /// Flush DSP state between runs (replay/seek re-processing) so the
+    /// previous run's audio tail cannot masquerade as voiced input at the
+    /// restart point. Controls and gain ramps are untouched.
+    pub fn reset(&mut self) {
+        self.main.reset();
+        for v in &mut self.voices {
+            v.reset();
+        }
     }
 }
 
@@ -783,6 +800,38 @@ mod tests {
             cents(steady_state(&produced), 196.0).abs() < 8.0,
             "Some entries must override the snapper (got {:.1} Hz)",
             steady_state(&produced)
+        );
+    }
+
+    #[test]
+    fn reset_flushes_the_previous_runs_audio() {
+        use crate::signal_processing::BUFFER_SIZE;
+        let mut h = Harmonizer::with_sample_rate(SAMPLE_RATE as f32);
+        let controls = h.controls();
+        let mut phase = 0.0f32;
+        for _ in 0..BUFFER_SIZE * 20 {
+            phase = (phase + 210.0 / SAMPLE_RATE as f32).fract();
+            h.push_sample((TAU * phase).sin() * 0.5);
+            while h.pop_sample().is_some() {}
+        }
+        h.reset();
+        let mut drained = Vec::new();
+        controls.drain_voice_pitch(0, &mut drained);
+
+        // Silence after the reset must not detect as voiced: without the
+        // flush the input frame still holds 7/8ths of the old tone and the
+        // first hops log a stale-voiced blip.
+        for _ in 0..BUFFER_SIZE * 4 {
+            h.push_sample(0.0);
+            while h.pop_sample().is_some() {}
+        }
+        let mut produced = Vec::new();
+        controls.drain_voice_pitch(0, &mut produced);
+        assert!(!produced.is_empty());
+        assert!(
+            produced.iter().all(|&f| f == 0.0),
+            "stale-voiced blip after reset: {:?}",
+            &produced[..produced.len().min(6)]
         );
     }
 

@@ -634,6 +634,10 @@ impl WebPitchCorrector {
             return Ok(());
         }
         self.playback.input_active.store(false, Ordering::Relaxed);
+        // Flush the pipeline's previous run (streams are paused here, so
+        // the boundary lock is uncontended): otherwise its input-frame
+        // residue logs a stale-voiced blip at the restart hop.
+        spin_lock(&self.processor).reset();
         // Re-processed output overwrites the timeline from the play position:
         // drop everything after it (or pad silence up to it) so the
         // callback's appends line up.

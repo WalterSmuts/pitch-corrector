@@ -469,6 +469,20 @@ impl PhaseVocoderPitchShifter<fn(&[f32]) -> f32> {
 }
 
 impl<F: FnMut(&[f32]) -> f32 + Send> PhaseVocoderPitchShifter<F> {
+    /// Flush audio state between runs (seek/replay): the input frame,
+    /// overlap-add accumulator, phase history, and FIFO residue would
+    /// otherwise leak the previous run's tail into the first hops of the
+    /// next one (a stale-voiced blip at the restart point). Allocation-free.
+    pub fn reset(&mut self) {
+        while self.input_buffer.pop().is_some() {}
+        while self.output_buffer.pop().is_some() {}
+        self.state.input_frame.fill(0.0);
+        self.state.input_pos = 0;
+        self.state.output_accum.fill(0.0);
+        self.state.prev_input_phase.fill(0.0);
+        self.state.prev_output_phase.fill(0.0);
+    }
+
     pub fn with_ratio_fn(ratio_fn: F) -> Self {
         info!("Creating new PhaseVocoderPitchShifter with dynamic ratio");
         let hop_size = HOP_SIZE;
