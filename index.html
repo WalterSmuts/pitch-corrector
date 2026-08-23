@@ -1,169 +1,322 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="icon" href="data:,">
-    <title>Pitch Corrector</title>
-    <style>
-        * { box-sizing: border-box; }
-        body {
-            background: #1a1a2e;
-            color: #eee;
-            font-family: monospace;
-            margin: 0;
-            padding: 10px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-        }
-        h1 { font-size: 1.4em; margin: 5px 0; }
-        .app { width: 100%; max-width: 1400px; }
-        button {
-            background: #16213e;
-            color: #eee;
-            border: 1px solid #555;
-            padding: 8px 12px;
-            cursor: pointer;
-            font-family: monospace;
-            font-size: 14px;
-            touch-action: manipulation;
-        }
-        button:hover:not(:disabled) { background: #0f3460; }
-        button:disabled { opacity: 0.4; cursor: default; }
-        button.active { background: #e94560; border-color: #e94560; }
-        select { background: #16213e; color: #eee; border: 1px solid #555; padding: 6px; font-family: monospace; }
-        #status { color: #888; margin: 6px 2px; font-size: 0.9em; min-height: 1.2em; }
-        .settings { border: 1px solid #333; padding: 2px 10px 6px; margin: 8px 0; }
-        .settings-title { font-size: 0.8em; color: #888; text-transform: uppercase; letter-spacing: 1px; margin: 4px 0; }
-        .controls { display: flex; gap: 8px; align-items: center; margin: 6px 0; flex-wrap: wrap; }
-        .controls .sep { flex: 0 0 1px; align-self: stretch; background: #444; margin: 0 4px; }
-        .note-grid { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; }
-        .note-grid button { min-width: 36px; padding: 6px 8px; font-size: 12px; }
-        .note-grid button:not(.active) { opacity: 0.45; }
-        #scale-buttons button:not(.active) { opacity: 0.6; }
-        #scale-buttons button.active { opacity: 1; }
-        input[type=range] { width: 220px; accent-color: #e94560; }
-        .shift-display { min-width: 52px; text-align: center; }
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <link rel="icon" href="data:," />
+        <title>Pitch Corrector</title>
+        <style>
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                background: #1a1a2e;
+                color: #eee;
+                font-family: monospace;
+                margin: 0;
+                padding: 10px;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+            }
+            h1 {
+                font-size: 1.4em;
+                margin: 5px 0;
+            }
+            .app {
+                width: 100%;
+                max-width: 1400px;
+            }
+            button {
+                background: #16213e;
+                color: #eee;
+                border: 1px solid #555;
+                padding: 8px 12px;
+                cursor: pointer;
+                font-family: monospace;
+                font-size: 14px;
+                touch-action: manipulation;
+            }
+            button:hover:not(:disabled) {
+                background: #0f3460;
+            }
+            button:disabled {
+                opacity: 0.4;
+                cursor: default;
+            }
+            button.active {
+                background: #e94560;
+                border-color: #e94560;
+            }
+            select {
+                background: #16213e;
+                color: #eee;
+                border: 1px solid #555;
+                padding: 6px;
+                font-family: monospace;
+            }
+            #status {
+                color: #888;
+                margin: 6px 2px;
+                font-size: 0.9em;
+                min-height: 1.2em;
+            }
+            .settings {
+                border: 1px solid #333;
+                padding: 2px 10px 6px;
+                margin: 8px 0;
+            }
+            .settings-title {
+                font-size: 0.8em;
+                color: #888;
+                text-transform: uppercase;
+                letter-spacing: 1px;
+                margin: 4px 0;
+            }
+            .controls {
+                display: flex;
+                gap: 8px;
+                align-items: center;
+                margin: 6px 0;
+                flex-wrap: wrap;
+            }
+            .controls .sep {
+                flex: 0 0 1px;
+                align-self: stretch;
+                background: #444;
+                margin: 0 4px;
+            }
+            .note-grid {
+                display: flex;
+                gap: 4px;
+                flex-wrap: wrap;
+                margin: 6px 0;
+            }
+            .note-grid button {
+                min-width: 36px;
+                padding: 6px 8px;
+                font-size: 12px;
+            }
+            .note-grid button:not(.active) {
+                opacity: 0.45;
+            }
+            #scale-buttons button:not(.active) {
+                opacity: 0.6;
+            }
+            #scale-buttons button.active {
+                opacity: 1;
+            }
+            input[type='range'] {
+                width: 220px;
+                accent-color: #e94560;
+            }
+            .shift-display {
+                min-width: 52px;
+                text-align: center;
+            }
 
-        /* --- Timeline --- */
-        /* The 110px header column must match HEAD_W in ui/timeline.js. */
-        .tl { border: 1px solid #444; background: #10101c; user-select: none; }
-        .tl-row { display: grid; grid-template-columns: 110px 1fr; }
-        .tl-corner, .tl-head {
-            border-right: 1px solid #444;
-            border-bottom: 1px solid #333;
-            padding: 4px 6px;
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-            justify-content: center;
-        }
-        .tl-corner { flex-direction: row; align-items: center; gap: 4px; }
-        .tl-zoom-btn { padding: 0 8px; font-size: 12px; line-height: 18px; }
-        .tl-label { font-size: 12px; color: #bbb; }
-        .tl-view-select { font-size: 11px; padding: 2px; width: 100%; }
-        .tl-canvas-wrap { position: relative; line-height: 0; border-bottom: 1px solid #333; }
-        .tl-ruler-wrap { height: 26px; }
-        .tl-track .tl-canvas-wrap { height: 340px; }
-        /* Slight gap between the tracks; the playhead spans across it. */
-        .tl-track + .tl-track { margin-top: 8px; border-top: 1px solid #444; }
-        .tl canvas { display: block; width: 100%; height: 100%; }
-        .tl-track-canvas { cursor: crosshair; }
-        .tl-body { position: relative; }
-        .tl-playhead {
-            position: absolute;
-            top: 0;
-            bottom: 0;
-            width: 2px;
-            margin-left: -1px;
-            background: rgba(255,255,255,0.85);
-            pointer-events: none;
-        }
-    </style>
-</head>
-<body>
-    <h1>🎤 Pitch Corrector</h1>
-    <div class="app">
-        <div class="controls">
-            <button id="record-btn">⏺ Record</button>
-            <button id="stop-btn" disabled>⏹ Stop</button>
-            <button id="play-btn" disabled>▶ Play</button>
-            <button id="passthrough-btn" title="Hear the corrected output live while recording (off by default to avoid speaker feedback)">🔊 Passthrough</button>
-            <button id="dry-btn" title="A/B: hear the uncorrected voice (works live while recording and during playback)">Dry</button>
-            <span class="sep"></span>
-            <button id="upload-btn">⬆ Upload WAV</button>
-            <button id="download-btn" disabled>⬇ Download WAV</button>
-            <button id="debug-btn" disabled>🐛 Debug Dump</button>
-            <input type="file" id="upload-input" accept=".wav" style="display:none">
+            /* --- Timeline --- */
+            /* The 110px header column must match HEAD_W in ui/timeline.js. */
+            .tl {
+                border: 1px solid #444;
+                background: #10101c;
+                user-select: none;
+            }
+            .tl-row {
+                display: grid;
+                grid-template-columns: 110px 1fr;
+            }
+            .tl-corner,
+            .tl-head {
+                border-right: 1px solid #444;
+                border-bottom: 1px solid #333;
+                padding: 4px 6px;
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+                justify-content: center;
+            }
+            .tl-corner {
+                flex-direction: row;
+                align-items: center;
+                gap: 4px;
+            }
+            .tl-zoom-btn {
+                padding: 0 8px;
+                font-size: 12px;
+                line-height: 18px;
+            }
+            .tl-label {
+                font-size: 12px;
+                color: #bbb;
+            }
+            .tl-view-select {
+                font-size: 11px;
+                padding: 2px;
+                width: 100%;
+            }
+            .tl-canvas-wrap {
+                position: relative;
+                line-height: 0;
+                border-bottom: 1px solid #333;
+            }
+            .tl-ruler-wrap {
+                height: 26px;
+            }
+            .tl-track .tl-canvas-wrap {
+                height: 340px;
+            }
+            /* Slight gap between the tracks; the playhead spans across it. */
+            .tl-track + .tl-track {
+                margin-top: 8px;
+                border-top: 1px solid #444;
+            }
+            .tl canvas {
+                display: block;
+                width: 100%;
+                height: 100%;
+            }
+            .tl-track-canvas {
+                cursor: crosshair;
+            }
+            .tl-body {
+                position: relative;
+            }
+            .tl-playhead {
+                position: absolute;
+                top: 0;
+                bottom: 0;
+                width: 2px;
+                margin-left: -1px;
+                background: rgba(255, 255, 255, 0.85);
+                pointer-events: none;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>🎤 Pitch Corrector</h1>
+        <div class="app">
+            <div class="controls">
+                <button id="record-btn">⏺ Record</button>
+                <button id="stop-btn" disabled>⏹ Stop</button>
+                <button id="play-btn" disabled>▶ Play</button>
+                <button
+                    id="passthrough-btn"
+                    title="Hear the corrected output live while recording (off by default to avoid speaker feedback)"
+                >
+                    🔊 Passthrough
+                </button>
+                <button
+                    id="dry-btn"
+                    title="A/B: hear the uncorrected voice (works live while recording and during playback)"
+                >
+                    Dry
+                </button>
+                <span class="sep"></span>
+                <button id="upload-btn">⬆ Upload WAV</button>
+                <button id="download-btn" disabled>⬇ Download WAV</button>
+                <button id="debug-btn" disabled>🐛 Debug Dump</button>
+                <input type="file" id="upload-input" accept=".wav" style="display: none" />
+            </div>
+            <div id="status">Loading…</div>
+            <div class="settings">
+                <div class="settings-title">Correction</div>
+                <div class="controls" id="scale-buttons">
+                    <span>Scale:</span>
+                    <button data-scale="off">Off</button>
+                    <button data-scale="chromatic">Chromatic</button>
+                    <button data-scale="major">Major</button>
+                    <button data-scale="minor">Minor</button>
+                    <button data-scale="pentatonic" class="active">Pentatonic</button>
+                    <button data-scale="custom">Custom</button>
+                    <span class="sep"></span>
+                    <span>Root:</span>
+                    <select id="root-select">
+                        <option value="0" selected>C</option>
+                        <option value="1">C#</option>
+                        <option value="2">D</option>
+                        <option value="3">D#</option>
+                        <option value="4">E</option>
+                        <option value="5">F</option>
+                        <option value="6">F#</option>
+                        <option value="7">G</option>
+                        <option value="8">G#</option>
+                        <option value="9">A</option>
+                        <option value="10">A#</option>
+                        <option value="11">B</option>
+                    </select>
+                    <span class="sep"></span>
+                    <span>Shift:</span>
+                    <input type="range" id="shift-slider" min="-12" max="12" value="0" step="1" />
+                    <span class="shift-display" id="shift-display">0 st</span>
+                    <span class="sep"></span>
+                    <span
+                        title="How fast the pitch is pulled to the target. Fast = hard snap (the classic effect), slow = transparent, keeps vibrato"
+                        >Speed:</span
+                    >
+                    <input type="range" id="retune-slider" min="0" max="100" value="41" step="1" />
+                    <span class="shift-display" id="retune-display">13 ms</span>
+                    <span class="sep"></span>
+                    <span
+                        title="How much of the correction is applied. 100% = all the way to the target note, 0% = untouched"
+                        >Strength:</span
+                    >
+                    <input
+                        type="range"
+                        id="strength-slider"
+                        min="0"
+                        max="100"
+                        value="100"
+                        step="1"
+                    />
+                    <span class="shift-display" id="strength-display">100%</span>
+                    <span class="sep"></span>
+                    <label id="post-correction-label" style="display: none; cursor: pointer">
+                        <input type="checkbox" id="post-correction-cb" /> Post-Correction
+                    </label>
+                </div>
+                <div id="custom-notes" style="display: none">
+                    <div class="note-grid" id="note-grid"></div>
+                </div>
+            </div>
+            <div class="settings">
+                <div class="settings-title">Harmony</div>
+                <div class="controls" id="harmony-controls">
+                    <span>Voices:</span>
+                    <button id="harmony-off" class="active">Off</button>
+                    <button data-hvoice="0">3rd</button>
+                    <button data-hvoice="1">5th</button>
+                    <button data-hvoice="2">Octave</button>
+                    <span class="sep"></span>
+                    <span>Intervals:</span>
+                    <button
+                        data-hmode="key"
+                        class="active"
+                        title="Walk the selected scale: the third above A in C major is C (minor third)"
+                    >
+                        In key
+                    </button>
+                    <button
+                        data-hmode="abs"
+                        title="Fixed semitones: a third is always 4 semitones up"
+                    >
+                        Absolute
+                    </button>
+                </div>
+            </div>
+            <div class="controls">
+                <span>View:</span>
+                <select id="view-select">
+                    <option value="waveform" selected>Waveform</option>
+                    <option value="pitch">Pitch</option>
+                    <option value="spectrogram">Spectrogram</option>
+                </select>
+                <label style="cursor: pointer">
+                    <input type="checkbox" id="split-views-cb" /> Split per track
+                </label>
+            </div>
+            <div id="timeline"></div>
         </div>
-        <div id="status">Loading…</div>
-        <div class="settings">
-        <div class="settings-title">Correction</div>
-        <div class="controls" id="scale-buttons">
-            <span>Scale:</span>
-            <button data-scale="off">Off</button>
-            <button data-scale="chromatic">Chromatic</button>
-            <button data-scale="major">Major</button>
-            <button data-scale="minor">Minor</button>
-            <button data-scale="pentatonic" class="active">Pentatonic</button>
-            <button data-scale="custom">Custom</button>
-            <span class="sep"></span>
-            <span>Root:</span>
-            <select id="root-select">
-                <option value="0" selected>C</option>
-                <option value="1">C#</option>
-                <option value="2">D</option>
-                <option value="3">D#</option>
-                <option value="4">E</option>
-                <option value="5">F</option>
-                <option value="6">F#</option>
-                <option value="7">G</option>
-                <option value="8">G#</option>
-                <option value="9">A</option>
-                <option value="10">A#</option>
-                <option value="11">B</option>
-            </select>
-            <span class="sep"></span>
-            <span>Shift:</span>
-            <input type="range" id="shift-slider" min="-12" max="12" value="0" step="1">
-            <span class="shift-display" id="shift-display">0 st</span>
-            <span class="sep"></span>
-            <label id="post-correction-label" style="display:none; cursor: pointer;">
-                <input type="checkbox" id="post-correction-cb"> Post-Correction
-            </label>
-        </div>
-        <div id="custom-notes" style="display:none">
-            <div class="note-grid" id="note-grid"></div>
-        </div>
-        </div>
-        <div class="settings">
-        <div class="settings-title">Harmony</div>
-        <div class="controls" id="harmony-controls">
-            <span>Voices:</span>
-            <button id="harmony-off" class="active">Off</button>
-            <button data-hvoice="0">3rd</button>
-            <button data-hvoice="1">5th</button>
-            <button data-hvoice="2">Octave</button>
-            <span class="sep"></span>
-            <span>Intervals:</span>
-            <button data-hmode="key" class="active" title="Walk the selected scale: the third above A in C major is C (minor third)">In key</button>
-            <button data-hmode="abs" title="Fixed semitones: a third is always 4 semitones up">Absolute</button>
-        </div>
-        </div>
-        <div class="controls">
-            <span>View:</span>
-            <select id="view-select">
-                <option value="waveform" selected>Waveform</option>
-                <option value="pitch">Pitch</option>
-                <option value="spectrogram">Spectrogram</option>
-            </select>
-            <label style="cursor: pointer;">
-                <input type="checkbox" id="split-views-cb"> Split per track
-            </label>
-        </div>
-        <div id="timeline"></div>
-    </div>
-    <script type="module" src="ui/app.js"></script>
-</body>
+        <script type="module" src="ui/app.js"></script>
+    </body>
 </html>

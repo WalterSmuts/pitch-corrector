@@ -133,9 +133,9 @@ type RatioFn = Box<dyn FnMut(&[f32]) -> f32 + Send>;
 /// first hops of an unrelated later note are not mis-corrected by a
 /// stale ratio.
 struct RatioSmoother {
-    /// Per-hop one-pole coefficient, derived from
-    /// `PitchCorrector::SMOOTHING_TAU_SECONDS` and the real hop period.
-    alpha: f32,
+    /// Seconds per hop, so the one-pole coefficient can be derived from
+    /// whatever time constant the retune-speed control holds this hop.
+    hop_period: f32,
     ratio: f32,
     gap_hops: usize,
 }
@@ -145,20 +145,20 @@ impl RatioSmoother {
     const GAP_RESET_HOPS: usize = 43;
 
     fn new(sample_rate: f32) -> Self {
-        let hop_period = HOP_SIZE as f32 / sample_rate;
         Self {
-            alpha: 1.0 - (-hop_period / PitchCorrector::SMOOTHING_TAU_SECONDS).exp(),
+            hop_period: HOP_SIZE as f32 / sample_rate,
             ratio: 1.0,
             gap_hops: 0,
         }
     }
 
-    /// Advance one hop toward `target` (None = detection gap) and return
-    /// the smoothed ratio.
-    fn step(&mut self, target: Option<f32>) -> f32 {
+    /// Advance one hop toward `target` (None = detection gap) with time
+    /// constant `tau` seconds, and return the smoothed ratio.
+    fn step(&mut self, target: Option<f32>, tau: f32) -> f32 {
         match target {
             Some(t) => {
-                self.ratio += self.alpha * (t - self.ratio);
+                let alpha = 1.0 - (-self.hop_period / tau.max(1e-4)).exp();
+                self.ratio += alpha * (t - self.ratio);
                 self.gap_hops = 0;
             }
             None => {
@@ -198,6 +198,14 @@ pub struct PitchCorrectorControls {
     voice_pitch_log: [ArrayQueue<f32>; 4],
     /// Diatonic (walk the scale) vs absolute (fixed semitones) harmony.
     harmony_mode: AtomicCell<HarmonyMode>,
+    /// Retune speed: time constant (seconds) of the correction-ratio
+    /// smoothing filter. Small = hard snap, large = transparent glide.
+    retune_tau: AtomicCell<f32>,
+    /// Correction strength 0..=1: the fraction of the (smoothed) correction
+    /// interval actually applied, in log-frequency space. 1 = full
+    /// correction, 0 = none. Scales only the correction — the manual shift
+    /// and harmony intervals stay full size.
+    strength: AtomicCell<f32>,
     /// Edited target contour (post-correction playback). Written wholesale by
     /// the UI and read by index on the audio thread. It is only populated
     /// during post-correction playback and swapped rarely, so the lock is
@@ -222,6 +230,24 @@ impl PitchCorrectorControls {
 
     pub fn get_scale(&self) -> Scale {
         self.scale.load()
+    }
+
+    /// Retune speed as a time constant in seconds (clamped to 1ms..=2s).
+    pub fn set_retune_tau_seconds(&self, tau: f32) {
+        self.retune_tau.store(tau.clamp(0.001, 2.0));
+    }
+
+    pub fn get_retune_tau_seconds(&self) -> f32 {
+        self.retune_tau.load()
+    }
+
+    /// Fraction of the correction applied, 0..=1 (see `strength` field).
+    pub fn set_strength(&self, strength: f32) {
+        self.strength.store(strength.clamp(0.0, 1.0));
+    }
+
+    pub fn get_strength(&self) -> f32 {
+        self.strength.load()
     }
 
     /// Install an edited target contour. Entries are addressed by absolute
@@ -349,6 +375,8 @@ impl PitchCorrector {
             harmony_mask: AtomicU32::new(0),
             voice_pitch_log: std::array::from_fn(|_| ArrayQueue::new(TARGET_CONTOUR_CAPACITY)),
             harmony_mode: AtomicCell::new(HarmonyMode::InKey),
+            retune_tau: AtomicCell::new(PitchCorrector::SMOOTHING_TAU_SECONDS),
+            strength: AtomicCell::new(1.0),
             contour: Mutex::new(Vec::new()),
             contour_hop: AtomicCell::new(HopIdx(0)),
         });
@@ -411,8 +439,18 @@ impl PitchCorrector {
             } else {
                 None
             };
-            let smoothed = smoother.step(smoothing_target);
-            let ratio = smoothed * if bypass { 1.0 } else { shift_ratio };
+            let tau = controls_clone.get_retune_tau_seconds();
+            let smoothed = smoother.step(smoothing_target, tau);
+            // Strength: apply a fraction of the smoothed correction
+            // *interval* (log space) — powf, not a linear blend, so half
+            // strength means half the semitones, not a sharp-biased average.
+            let strength = controls_clone.get_strength();
+            let corrected = if strength >= 1.0 {
+                smoothed
+            } else {
+                smoothed.powf(strength)
+            };
+            let ratio = corrected * if bypass { 1.0 } else { shift_ratio };
             // Log what this voice actually produces this hop (detected pitch
             // times the applied ratio; 0 when unvoiced).
             let _ = controls_clone.voice_pitch_log[0].push(detected.map_or(0.0, |f| f * ratio));
@@ -504,8 +542,13 @@ impl Harmonizer {
                     _ => None,
                 };
 
-                // Same smoothing + gap handling as the main voice.
-                let smoothed = smoother.step(pair.map(|(detected, harmony)| harmony / detected));
+                // Same smoothing + gap handling (and retune speed) as the
+                // main voice. Strength does not apply: scaling a harmony's
+                // ratio would flatten it toward unison, not soften the
+                // correction.
+                let tau = controls.get_retune_tau_seconds();
+                let smoothed =
+                    smoother.step(pair.map(|(detected, harmony)| harmony / detected), tau);
                 // Log this voice's produced pitch for the plot: only while
                 // enabled and voiced (it is faded out of the mix otherwise).
                 let bypass = controls.bypass.load(Ordering::Relaxed);
@@ -587,6 +630,104 @@ mod tests {
     const PERF_MIN_TRACKING_RATE: f32 = 3.0; // Hz (measured 4.0)
     const PERF_NOISE_PASS: f32 = 0.75; // min accuracy per noise level
     const PERF_MIN_NOISE_TOLERANCE: f32 = 0.3; // amplitude
+
+    /// Drive a steady sine through the corrector and return the per-hop
+    /// produced-pitch log of the main voice (Hz; 0 = unvoiced hop).
+    fn produced_pitch_for_tone(corrector: &mut PitchCorrector, freq: f32) -> Vec<f32> {
+        let controls = corrector.controls();
+        let mut phase = 0.0f32;
+        for _ in 0..BUFFER_SIZE * 60 {
+            phase = (phase + freq / SAMPLE_RATE as f32).fract();
+            corrector.push_sample((TAU * phase).sin() * 0.5);
+            while corrector.pop_sample().is_some() {}
+        }
+        let mut produced = Vec::new();
+        controls.drain_voice_pitch(0, &mut produced);
+        produced
+    }
+
+    fn cents(a: f32, b: f32) -> f32 {
+        1200.0 * (a / b).log2()
+    }
+
+    /// 240 Hz against C major: nearest scale note is B3 (246.94 Hz),
+    /// a +49.4-cent correction.
+    const OFF_SCALE_HZ: f32 = 240.0;
+    const B3_HZ: f32 = 246.94;
+
+    #[test]
+    fn strength_scales_the_correction_in_log_space() {
+        for (strength, expected_cents) in [(1.0, 49.4), (0.5, 24.7), (0.0, 0.0)] {
+            let mut corrector = PitchCorrector::with_scale(Scale::major(Note::C));
+            corrector.controls().set_strength(strength);
+            let produced = produced_pitch_for_tone(&mut corrector, OFF_SCALE_HZ);
+
+            // Steady state: average the last quarter of voiced hops.
+            let voiced: Vec<f32> = produced.iter().copied().filter(|&f| f > 0.0).collect();
+            assert!(voiced.len() > 20, "too few voiced hops: {}", voiced.len());
+            let tail = &voiced[voiced.len() - voiced.len() / 4..];
+            let avg = tail.iter().sum::<f32>() / tail.len() as f32;
+
+            let correction = cents(avg, OFF_SCALE_HZ);
+            assert!(
+                (correction - expected_cents).abs() < 8.0,
+                "strength {strength}: applied {correction:.1} cents, \
+                 expected ~{expected_cents:.1}"
+            );
+        }
+    }
+
+    #[test]
+    fn retune_speed_controls_convergence_rate() {
+        let err_after_10_hops = |tau: f32| -> f32 {
+            let mut corrector = PitchCorrector::with_scale(Scale::major(Note::C));
+            corrector.controls().set_retune_tau_seconds(tau);
+            let produced = produced_pitch_for_tone(&mut corrector, OFF_SCALE_HZ);
+            let first = produced
+                .iter()
+                .position(|&f| f > 0.0)
+                .expect("no voiced hop");
+            let f = produced[first + 10];
+            assert!(f > 0.0, "unvoiced hop mid-tone");
+            cents(f, B3_HZ).abs()
+        };
+
+        let fast = err_after_10_hops(0.005);
+        let slow = err_after_10_hops(0.4);
+        assert!(
+            fast < 10.0,
+            "fast retune still {fast:.1} cents off after 10 hops"
+        );
+        assert!(
+            slow > 25.0,
+            "slow retune already {slow:.1} cents in after 10 hops"
+        );
+    }
+
+    #[test]
+    fn retune_tau_and_strength_clamp_and_roundtrip() {
+        let corrector = PitchCorrector::new();
+        let c = corrector.controls();
+        assert_eq!(c.get_strength(), 1.0);
+        assert_eq!(
+            c.get_retune_tau_seconds(),
+            PitchCorrector::SMOOTHING_TAU_SECONDS
+        );
+
+        c.set_strength(0.25);
+        assert_eq!(c.get_strength(), 0.25);
+        c.set_strength(7.0);
+        assert_eq!(c.get_strength(), 1.0);
+        c.set_strength(-1.0);
+        assert_eq!(c.get_strength(), 0.0);
+
+        c.set_retune_tau_seconds(0.1);
+        assert_eq!(c.get_retune_tau_seconds(), 0.1);
+        c.set_retune_tau_seconds(0.0);
+        assert_eq!(c.get_retune_tau_seconds(), 0.001);
+        c.set_retune_tau_seconds(99.0);
+        assert_eq!(c.get_retune_tau_seconds(), 2.0);
+    }
 
     #[test]
     fn set_scale_at_runtime() {

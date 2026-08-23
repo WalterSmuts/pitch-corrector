@@ -483,6 +483,8 @@ async function startRecording() {
         corrector.set_shift(parseFloat(slider.value));
         corrector.set_monitor(passthroughOn);
         corrector.set_bypass(dryOn);
+        applyRetune();
+        applyStrength();
         applyHarmony();
         corrector.start_recording();
 
@@ -719,6 +721,26 @@ slider.addEventListener('input', () => {
     if (corrector) corrector.set_shift(parseFloat(slider.value));
 });
 
+// Retune speed: log-scale slider position 0..100 -> 1..500 ms.
+const retuneSlider = $input('retune-slider');
+const retuneDisplay = $('retune-display');
+function retuneMs() {
+    return 10 ** ((parseFloat(retuneSlider.value) / 100) * Math.log10(500));
+}
+function applyRetune() {
+    retuneDisplay.textContent = Math.round(retuneMs()) + ' ms';
+    if (corrector) corrector.set_retune_speed_ms(retuneMs());
+}
+retuneSlider.addEventListener('input', applyRetune);
+
+const strengthSlider = $input('strength-slider');
+const strengthDisplay = $('strength-display');
+function applyStrength() {
+    strengthDisplay.textContent = strengthSlider.value + '%';
+    if (corrector) corrector.set_strength(parseFloat(strengthSlider.value) / 100);
+}
+strengthSlider.addEventListener('input', applyStrength);
+
 // --- Post-correction ---
 
 function updatePostCorrectionVisibility() {
@@ -776,6 +798,8 @@ async function uploadRecording(file) {
     newCorrector();
     applyScale();
     corrector.set_shift(parseFloat(slider.value));
+    applyRetune();
+    applyStrength();
     const buf = await file.arrayBuffer();
     const samples = decodeWav(buf);
     if (!samples || samples.length === 0) {

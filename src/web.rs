@@ -506,6 +506,18 @@ impl WebPitchCorrector {
         self.controls.set_bypass(on);
     }
 
+    /// Retune speed in milliseconds (time constant of the correction
+    /// smoothing). Small = hard snap, large = transparent glide.
+    pub fn set_retune_speed_ms(&self, ms: f32) {
+        self.controls.set_retune_tau_seconds(ms / 1000.0);
+    }
+
+    /// Correction strength 0..=1: fraction of the correction interval
+    /// applied. Manual shift and harmonies are unaffected.
+    pub fn set_strength(&self, strength: f32) {
+        self.controls.set_strength(strength);
+    }
+
     /// Sustain the sound at `position` (samples on the output timeline)
     /// using a spectral freeze — hold-a-key audition. Only meaningful while
     /// stopped or paused; returns false if that doesn't hold or there is

@@ -145,6 +145,41 @@ try {
     sl.value = '0';
     sl.dispatchEvent(new Event('input'));
   });
+
+  // --- Strength scales the live correction: the 210Hz tone corrects to
+  // A3 (220Hz, ~+0.8 midi) at full strength and stays put at zero ---
+  await sleep(700);
+  const corrected = await tailMedian();
+  await page.evaluate(() => {
+    const sl = document.getElementById('strength-slider');
+    sl.value = '0';
+    sl.dispatchEvent(new Event('input'));
+  });
+  await sleep(700);
+  const uncorrected = await tailMedian();
+  check(
+    corrected - uncorrected > 0.4,
+    `Strength 0 disables correction live (midi ${corrected.toFixed(2)} -> ${uncorrected.toFixed(2)})`,
+  );
+  await page.evaluate(() => {
+    const sl = document.getElementById('strength-slider');
+    sl.value = '100';
+    sl.dispatchEvent(new Event('input'));
+  });
+
+  // --- Retune-speed slider is wired end to end (log scale tops at 500ms) ---
+  const retuneText = await page.evaluate(() => {
+    const sl = document.getElementById('retune-slider');
+    sl.value = '100';
+    sl.dispatchEvent(new Event('input'));
+    return document.getElementById('retune-display').textContent;
+  });
+  check(retuneText === '500 ms', `retune display follows slider (got '${retuneText}')`);
+  await page.evaluate(() => {
+    const sl = document.getElementById('retune-slider');
+    sl.value = '41';
+    sl.dispatchEvent(new Event('input'));
+  });
   // The recording grows between the render and this readback, so allow
   // ~100ms of audio of slack on the pin check.
   const rightEdge = followState.s0 + followState.w * followState.spp;
