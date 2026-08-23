@@ -40,8 +40,18 @@ const ampScale = new AmplitudeScale();
 
 const INPUT_COLOR = 'rgb(255,150,50)';
 const OUTPUT_COLOR = 'rgb(50,255,120)';
+// Nearest-note snap target: white-ish steps under everything else.
+const TARGET_COLOR = 'rgba(255,255,255,0.55)';
 // Merged pitch view: which series are drawn (legend toggles).
-const pitchVis = { input: true, output: true, aim: true, h1: true, h2: true, h3: true };
+const pitchVis = {
+    input: true,
+    output: true,
+    aim: true,
+    target: true,
+    h1: true,
+    h2: true,
+    h3: true,
+};
 // The aim line (post-smoothing, full strength): output green, dimmed.
 const AIM_COLOR = 'rgba(50,255,120,0.35)';
 const EDIT_COLOR = 'rgb(255,80,200)';
@@ -141,10 +151,12 @@ const splitLabel = /** @type {HTMLElement} */ (splitCb.parentElement);
 const legendEl = document.createElement('div');
 legendEl.className = 'pitch-legend';
 legendEl.style.display = 'none';
+const legendRows = {};
 for (const [key, label, color] of [
     ['input', 'Input', INPUT_COLOR],
     ['output', 'Output', OUTPUT_COLOR],
     ['aim', 'Aim', AIM_COLOR],
+    ['target', 'Nearest note', TARGET_COLOR],
     ['h1', '3rd', HARMONY_COLORS[0]],
     ['h2', '5th', HARMONY_COLORS[1]],
     ['h3', 'Octave', HARMONY_COLORS[2]],
@@ -162,9 +174,17 @@ for (const [key, label, color] of [
     swatch.className = 'swatch';
     swatch.style.background = color;
     row.append(cb, swatch, document.createTextNode(label));
+    legendRows[key] = row;
     legendEl.appendChild(row);
 }
 timeline.getTrack('input').canvas.parentElement.appendChild(legendEl);
+
+// Harmony rows only appear while their voice is selected.
+function updateLegendVoices() {
+    for (let v = 1; v <= 3; v++) {
+        legendRows['h' + v].style.display = (harmonyMask >> (v - 1)) & 1 ? '' : 'none';
+    }
+}
 
 function renderTrack(track, canvas, vp, x0, x1) {
     const isInput = track.id === 'input';
@@ -209,8 +229,18 @@ function renderTrack(track, canvas, vp, x0, x1) {
             });
             if (pitchMerged()) {
                 // One lane, every series overlaid; the legend gates each.
+                if (pitchVis.target && !(postCorrectionActive && editedContour)) {
+                    drawPitchTrack(
+                        ctx,
+                        corrector.target_pitch_track(),
+                        vocoderHop,
+                        vp,
+                        TARGET_COLOR,
+                        pitchScale,
+                    );
+                }
                 for (let v = 1; v <= 3; v++) {
-                    if (!pitchVis['h' + v]) continue;
+                    if (!pitchVis['h' + v] || !((harmonyMask >> (v - 1)) & 1)) continue;
                     const track = corrector.harmony_pitch_track(v);
                     if (track.some((f) => f > 0)) {
                         drawPitchTrack(
@@ -624,7 +654,7 @@ function stopRecording() {
         setState('idle');
         return;
     }
-    targetContour = Array.from(corrector.take_target_pitch_contour());
+    targetContour = Array.from(corrector.target_pitch_track());
     updateViewScales();
     timeline.follow(false);
     timeline.fit();
@@ -729,6 +759,7 @@ let harmonyMask = 0;
 let harmonyInKey = true;
 
 function applyHarmony() {
+    updateLegendVoices();
     if (!corrector) return;
     corrector.set_harmony(harmonyMask);
     corrector.set_harmony_in_key(harmonyInKey);
@@ -933,7 +964,7 @@ async function uploadRecording(file) {
     }
     totalSamples = corrector.analyze();
     timeline.setTotal(totalSamples);
-    targetContour = Array.from(corrector.take_target_pitch_contour());
+    targetContour = Array.from(corrector.target_pitch_track());
     updateViewScales();
     timeline.fit();
     timeline.setPlayhead(0);
@@ -952,6 +983,7 @@ timeline.showTrackSelectors(splitCb.checked);
 viewSelect.disabled = splitCb.checked;
 if (!splitCb.checked) applySharedView();
 updatePitchMerge();
+updateLegendVoices();
 
 // Gate on browser support, then pre-warm the audio engine.
 

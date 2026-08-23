@@ -110,6 +110,11 @@ struct Analysis {
     /// Post-smoothing, full-strength aim of the main voice per vocoder hop
     /// (see `PitchCorrectorControls::aim_pitch_log`).
     aim_pitch: Vec<f32>,
+    /// Snap target (nearest scale note, or the installed contour entry) per
+    /// vocoder hop (Hz; 0 = unvoiced). The single consumer of the DSP's
+    /// target log — the UI reads this mirror both live and at stop (it
+    /// seeds the editable contour).
+    target_pitch: Vec<f32>,
     spec: SpectrogramRenderer,
     rgba: Vec<u8>,
 }
@@ -122,6 +127,7 @@ impl Analysis {
             input_pitch: PitchTrack::new(sample_rate),
             voice_pitch: std::array::from_fn(|_| Vec::new()),
             aim_pitch: Vec::new(),
+            target_pitch: Vec::new(),
             spec: SpectrogramRenderer::new(),
             rgba: Vec::new(),
         }
@@ -144,6 +150,12 @@ impl Analysis {
             controls.drain_voice_pitch(voice, track);
         }
         controls.drain_aim_pitch(&mut self.aim_pitch);
+        self.target_pitch.extend(
+            controls
+                .take_target_pitch_contour()
+                .iter()
+                .map(|p| p.map_or(0.0, |p| p.to_freq())),
+        );
         if let Some(len) = self.output.catch_up(&playback.output) {
             // Output rewrite (playback seek): drop derived pitch past it.
             let hops: HopIdx<HOP_SIZE> = HopIdx::containing(SampleIdx(len));
@@ -151,6 +163,7 @@ impl Analysis {
                 track.truncate(hops.0);
             }
             self.aim_pitch.truncate(hops.0);
+            self.target_pitch.truncate(hops.0);
         }
         self.input_pitch.analyze(self.input.samples());
     }
@@ -168,6 +181,8 @@ impl Analysis {
         self.aim_pitch.clear();
         controls.drain_aim_pitch(&mut self.aim_pitch);
         self.aim_pitch.clear();
+        self.target_pitch.clear();
+        controls.clear_target_pitch_contour();
     }
 }
 
@@ -441,12 +456,11 @@ impl WebPitchCorrector {
     /// `i * vocoder_hop()`. Never rescale it against the recording length —
     /// the underlying log is bounded and may be shorter than the recording
     /// (missing tail), but every entry it does have is hop-true.
-    pub fn take_target_pitch_contour(&self) -> Vec<f32> {
-        self.controls
-            .take_target_pitch_contour()
-            .iter()
-            .map(|p| p.map_or(0.0, |p| p.to_freq()))
-            .collect()
+    /// Snap-target track per vocoder hop (Hz; 0 = unvoiced), available live
+    /// and at stop. Replaces the old destructive queue drain at stop — the
+    /// analysis mirror is the single consumer of the DSP's target log.
+    pub fn target_pitch_track(&self) -> Vec<f32> {
+        self.analysis.lock().unwrap().target_pitch.clone()
     }
 
     pub fn clear_target_pitch_contour(&self) {

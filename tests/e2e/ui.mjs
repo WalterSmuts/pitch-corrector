@@ -360,6 +360,47 @@ try {
     'split checkbox hidden on the merged pitch view',
   );
 
+  // Harmony legend entries only exist while their voice is selected
+  // (voices are all off at this point), and the nearest-note target is
+  // drawn without post-correction being involved.
+  const visibleLegend = () =>
+    page.evaluate(
+      () =>
+        [...document.querySelectorAll('.pitch-legend label')].filter(
+          (l) => l.style.display !== 'none',
+        ).length,
+    );
+  check((await visibleLegend()) === 4, 'legend hides unselected harmony voices');
+  await page.click('#harmony-controls button[data-hvoice="0"]');
+  check((await visibleLegend()) === 5, 'selecting the 3rd adds its legend entry');
+  await page.click('#harmony-controls button[data-hvoice="0"]');
+  // The target renders semi-transparent white (blends to mid-gray over the
+  // dark background), so measure it as the pixel delta of its own toggle.
+  const grayish = () =>
+    page.evaluate(() => {
+      const c = document.querySelectorAll('.tl-track-canvas')[0];
+      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+      let n = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const [r, g, b] = [d[i], d[i + 1], d[i + 2]];
+        if (r > 110 && Math.abs(r - g) < 25 && Math.abs(g - b) < 25) n++;
+      }
+      return n;
+    });
+  // The corrected output sits exactly on the target note for a steady
+  // tone, occluding it — hide the other series so the target stands alone.
+  for (const k of ['input', 'output', 'aim'])
+    await page.uncheck(`.pitch-legend input[data-series="${k}"]`);
+  const withTarget = await grayish();
+  await page.uncheck('.pitch-legend input[data-series="target"]');
+  const withoutTarget = await grayish();
+  for (const k of ['input', 'output', 'aim', 'target'])
+    await page.check(`.pitch-legend input[data-series="${k}"]`);
+  check(
+    withTarget - withoutTarget > 100,
+    `nearest-note target is drawn without post-correction (${withoutTarget} -> ${withTarget} gray px)`,
+  );
+
   // Legend switches gate their series.
   const orangeBefore = await probe(0, 'orange');
   await page.uncheck('.pitch-legend input[data-series="input"]');
