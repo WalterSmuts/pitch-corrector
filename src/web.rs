@@ -1,5 +1,5 @@
 use crate::music::{Interval, Note, Pitch, Scale, SimpleInterval};
-use crate::pitch_correction::{Harmonizer, PitchCorrector, PitchCorrectorControls};
+use crate::pitch_correction::{Harmonizer, HarmonyMode, PitchCorrector, PitchCorrectorControls};
 use crate::session::{waveform_peaks, PitchTrack, SpectrogramRenderer, PITCH_HOP, SPEC_WINDOW};
 use crate::signal_processing::{SpectralFreeze, StreamProcessor, BUFFER_SIZE, HOP_SIZE};
 use crate::units::{HopIdx, SampleIdx};
@@ -482,8 +482,13 @@ impl WebPitchCorrector {
     }
 
     /// Diatonic (walk the selected scale) vs absolute (fixed semitones).
+    /// (Bool at the wasm boundary; typed HarmonyMode inside.)
     pub fn set_harmony_in_key(&self, in_key: bool) {
-        self.pipeline.controls.set_harmony_in_key(in_key);
+        self.pipeline.controls.set_harmony_mode(if in_key {
+            HarmonyMode::InKey
+        } else {
+            HarmonyMode::Absolute
+        });
     }
 
     /// Dry bypass (A/B): hear the uncorrected voice. Applies live, during

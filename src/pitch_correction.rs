@@ -3,9 +3,17 @@ use crate::signal_processing::{
     PhaseVocoderPitchShifter, StreamProcessor, YinPitchDetector, HOP_SIZE,
 };
 use crate::units::HopIdx;
+
+/// Whether harmony intervals walk the selected scale (diatonic) or are
+/// fixed semitone offsets.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HarmonyMode {
+    InKey,
+    Absolute,
+}
 use crossbeam_queue::ArrayQueue;
 use crossbeam_utils::atomic::AtomicCell;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -17,6 +25,8 @@ const _: () = assert!(AtomicCell::<Option<Pitch>>::is_lock_free());
 const _: () = assert!(AtomicCell::<Detected>::is_lock_free());
 const _: () = assert!(AtomicCell::<Scale>::is_lock_free());
 const _: () = assert!(AtomicCell::<Interval>::is_lock_free());
+const _: () = assert!(AtomicCell::<HarmonyMode>::is_lock_free());
+const _: () = assert!(AtomicCell::<HopIdx<HOP_SIZE>>::is_lock_free());
 
 /// `Option<f32>` padded to 8-byte alignment so its cell backs onto a
 /// 64-bit atomic (a bare `Option<f32>` is 8 bytes but only 4-aligned,
@@ -131,14 +141,14 @@ pub struct PitchCorrectorControls {
     /// a monophonic detector on the mixed output would garble.
     voice_pitch_log: [ArrayQueue<f32>; 4],
     /// Diatonic (walk the scale) vs absolute (fixed semitones) harmony.
-    harmony_in_key: AtomicBool,
+    harmony_mode: AtomicCell<HarmonyMode>,
     /// Edited target contour (post-correction playback). Written wholesale by
     /// the UI and read by index on the audio thread. It is only populated
     /// during post-correction playback and swapped rarely, so the lock is
     /// low-contention; making a variable-length buffer fully lock-free would
     /// need an arc-swap-style atomic pointer swap (extra dependency).
     contour: Mutex<Vec<Option<Pitch>>>,
-    contour_hop: AtomicUsize,
+    contour_hop: AtomicCell<HopIdx<HOP_SIZE>>,
 }
 
 impl PitchCorrectorControls {
@@ -164,7 +174,7 @@ impl PitchCorrectorControls {
     /// cursor with the playback position.
     pub fn set_contour(&self, contour: Vec<Option<Pitch>>) {
         *self.contour.lock().unwrap() = contour;
-        self.contour_hop.store(0, Ordering::Relaxed);
+        self.contour_hop.store(HopIdx(0));
     }
 
     /// Point the contour cursor at an absolute vocoder-hop index. Playback
@@ -172,12 +182,12 @@ impl PitchCorrectorControls {
     /// play position, or the contour would be applied from the play
     /// position instead of its own timeline.
     pub fn seek_contour(&self, hop: HopIdx<HOP_SIZE>) {
-        self.contour_hop.store(hop.0, Ordering::Relaxed);
+        self.contour_hop.store(hop);
     }
 
     pub fn clear_contour(&self) {
         self.contour.lock().unwrap().clear();
-        self.contour_hop.store(0, Ordering::Relaxed);
+        self.contour_hop.store(HopIdx(0));
     }
 
     pub fn take_target_pitch_contour(&self) -> Vec<Option<Pitch>> {
@@ -210,9 +220,9 @@ impl PitchCorrectorControls {
         self.harmony_mask.load(Ordering::Relaxed) as u8
     }
 
-    /// Diatonic (in the selected key) vs absolute (fixed semitones).
-    pub fn set_harmony_in_key(&self, in_key: bool) {
-        self.harmony_in_key.store(in_key, Ordering::Relaxed);
+    /// Diatonic (walk the selected scale) vs absolute (fixed semitones).
+    pub fn set_harmony_mode(&self, mode: HarmonyMode) {
+        self.harmony_mode.store(mode);
     }
 
     /// Drain the produced-pitch log of `voice` (0 = main, 1..=3 harmonies;
@@ -223,8 +233,8 @@ impl PitchCorrectorControls {
         }
     }
 
-    pub fn get_harmony_in_key(&self) -> bool {
-        self.harmony_in_key.load(Ordering::Relaxed)
+    pub fn get_harmony_mode(&self) -> HarmonyMode {
+        self.harmony_mode.load()
     }
 }
 
@@ -287,9 +297,9 @@ impl PitchCorrector {
             bypass: AtomicBool::new(false),
             harmony_mask: AtomicU32::new(0),
             voice_pitch_log: std::array::from_fn(|_| ArrayQueue::new(TARGET_CONTOUR_CAPACITY)),
-            harmony_in_key: AtomicBool::new(true),
+            harmony_mode: AtomicCell::new(HarmonyMode::InKey),
             contour: Mutex::new(Vec::new()),
-            contour_hop: AtomicUsize::new(0),
+            contour_hop: AtomicCell::new(HopIdx(0)),
         });
 
         let hop_bus = Arc::new(HopBus::new());
@@ -308,8 +318,19 @@ impl PitchCorrector {
             let target_pitch = {
                 let contour = controls_clone.contour.lock().unwrap();
                 if !contour.is_empty() {
-                    let hop = controls_clone.contour_hop.fetch_add(1, Ordering::Relaxed);
-                    contour[hop.min(contour.len() - 1)]
+                    // Advance the cursor; compare_exchange preserves the
+                    // read-modify-write against a concurrent UI seek.
+                    let mut hop = controls_clone.contour_hop.load();
+                    loop {
+                        match controls_clone
+                            .contour_hop
+                            .compare_exchange(hop, HopIdx(hop.0 + 1))
+                        {
+                            Ok(_) => break,
+                            Err(actual) => hop = actual,
+                        }
+                    }
+                    contour[hop.0.min(contour.len() - 1)]
                 } else {
                     let scale = controls_clone.get_scale();
                     detected.and_then(|freq| snapper.lock().unwrap().snap(freq, scale))
@@ -445,7 +466,7 @@ impl Harmonizer {
                 let pair = match (bus.detected(), bus.target_pitch()) {
                     (Some(detected), Some(base)) => {
                         let scale = controls.get_scale();
-                        let in_key = controls.harmony_in_key.load(Ordering::Relaxed);
+                        let in_key = controls.get_harmony_mode() == HarmonyMode::InKey;
                         let harmony = if interval == Interval::OCTAVE || !in_key || scale.is_empty()
                         {
                             // Octave, absolute mode, or no key to walk in.
@@ -612,7 +633,11 @@ mod tests {
             let c = h.controls();
             c.set_scale(Scale::major(Note::C));
             c.set_harmony(0b001); // 3rd only
-            c.set_harmony_in_key(in_key);
+            c.set_harmony_mode(if in_key {
+                HarmonyMode::InKey
+            } else {
+                HarmonyMode::Absolute
+            });
             let freq = Pitch::new(Note::A, 3).to_freq(); // 220Hz, in C major
             let mut out = Vec::new();
             for i in 0..BUFFER_SIZE * 40 {
