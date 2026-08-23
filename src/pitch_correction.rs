@@ -116,6 +116,56 @@ impl NoteSnapper {
 
 type RatioFn = Box<dyn Fn(&[f32]) -> f32 + Send + Sync>;
 
+/// One-pole smoothing of a correction ratio with gap-reset semantics,
+/// shared by the main voice and every harmony voice.
+///
+/// Only updates toward a target while one exists; holds the previous
+/// ratio during detection gaps (see f837ae5: decaying toward 1.0 every
+/// gap-hop caused a systematic downward bias). A *sustained* gap means
+/// the current note has ended, so after `GAP_RESET_HOPS` without a
+/// target the held ratio is forgotten and returns to neutral — the
+/// first hops of an unrelated later note are not mis-corrected by a
+/// stale ratio.
+struct RatioSmoother {
+    /// Per-hop one-pole coefficient, derived from
+    /// `PitchCorrector::SMOOTHING_TAU_SECONDS` and the real hop period.
+    alpha: f32,
+    ratio: f32,
+    gap_hops: usize,
+}
+
+impl RatioSmoother {
+    /// ~0.5s of hops (hop=512 at 44.1kHz) before a gap resets the ratio.
+    const GAP_RESET_HOPS: usize = 43;
+
+    fn new(sample_rate: f32) -> Mutex<Self> {
+        let hop_period = HOP_SIZE as f32 / sample_rate;
+        Mutex::new(Self {
+            alpha: 1.0 - (-hop_period / PitchCorrector::SMOOTHING_TAU_SECONDS).exp(),
+            ratio: 1.0,
+            gap_hops: 0,
+        })
+    }
+
+    /// Advance one hop toward `target` (None = detection gap) and return
+    /// the smoothed ratio.
+    fn step(&mut self, target: Option<f32>) -> f32 {
+        match target {
+            Some(t) => {
+                self.ratio += self.alpha * (t - self.ratio);
+                self.gap_hops = 0;
+            }
+            None => {
+                self.gap_hops = self.gap_hops.saturating_add(1);
+                if self.gap_hops >= Self::GAP_RESET_HOPS {
+                    self.ratio = 1.0;
+                }
+            }
+        }
+        self.ratio
+    }
+}
+
 /// Remote control for a `PitchCorrector` that has been moved into a pipeline.
 pub struct PitchCorrectorControls {
     /// Pitch shift, read lock-free on the audio thread.
@@ -281,11 +331,6 @@ impl PitchCorrector {
 
     fn assemble(scale: Scale, sample_rate: f32) -> Self {
         let yin = YinPitchDetector::with_sample_rate(sample_rate);
-        // Per-hop one-pole coefficient from the time constant: the ratio_fn
-        // runs once per hop (BUFFER_SIZE/4 samples), so alpha adapts to the
-        // real hop period and keeps a constant smoothing time.
-        let hop_period = HOP_SIZE as f32 / sample_rate;
-        let smoothing_alpha = 1.0 - (-hop_period / Self::SMOOTHING_TAU_SECONDS).exp();
 
         // ~94 hops/sec (hop=BUFFER_SIZE/4 at 44.1-48kHz); this bounds the
         // target-pitch log to a few minutes of recording.
@@ -307,8 +352,7 @@ impl PitchCorrector {
         let controls_clone = controls.clone();
         let detector = Mutex::new(yin);
         let snapper = Mutex::new(NoteSnapper::new());
-        let smoothed_ratio = Mutex::new(1.0f32);
-        let gap_hops = Mutex::new(0usize);
+        let smoother = RatioSmoother::new(sample_rate);
         let ratio_fn: RatioFn = Box::new(move |frame: &[f32]| {
             let shift = controls_clone.get_shift();
             let shift_ratio = shift.to_ratio();
@@ -351,39 +395,18 @@ impl PitchCorrector {
                 _ => 1.0,
             };
 
-            // Smooth the correction ratio to avoid abrupt changes. The
-            // one-pole coefficient (smoothing_alpha) is derived from a fixed
-            // time constant and the real sample rate/hop, so tracking speed
-            // does not drift with the device rate.
-            //
-            // Only update when we have a valid detection; hold the previous
-            // ratio during detection gaps (see f837ae5: decaying toward 1.0
-            // every gap-hop caused a systematic downward bias).
-            //
-            // However, a *sustained* gap means the current note has ended,
-            // so after GAP_RESET_HOPS of no detection we forget the held
-            // ratio and return to neutral. This prevents the first hops of
-            // an unrelated later note from being mis-corrected by a stale
-            // ratio, without reintroducing the per-hop downward bias.
-            const GAP_RESET_HOPS: usize = 43; // ~0.5s at 44.1kHz, hop=512
             let bypass = controls_clone.bypass.load(Ordering::Relaxed);
-            let mut prev = smoothed_ratio.lock().unwrap();
-            let mut gaps = gap_hops.lock().unwrap();
-            if bypass {
+            let smoothing_target = if bypass {
                 // Dry: glide the correction ratio back to unity through the
                 // same smoothing filter, and drop the shift below.
-                *prev += smoothing_alpha * (1.0 - *prev);
-                *gaps = 0;
+                Some(1.0)
             } else if target_pitch.is_some() && detected.is_some() {
-                *prev += smoothing_alpha * (target_ratio - *prev);
-                *gaps = 0;
+                Some(target_ratio)
             } else {
-                *gaps = gaps.saturating_add(1);
-                if *gaps >= GAP_RESET_HOPS {
-                    *prev = 1.0;
-                }
-            }
-            let ratio = *prev * if bypass { 1.0 } else { shift_ratio };
+                None
+            };
+            let smoothed = smoother.lock().unwrap().step(smoothing_target);
+            let ratio = smoothed * if bypass { 1.0 } else { shift_ratio };
             // Log what this voice actually produces this hop (detected pitch
             // times the applied ratio; 0 when unvoiced).
             let _ = controls_clone.voice_pitch_log[0].push(detected.map_or(0.0, |f| f * ratio));
@@ -448,17 +471,13 @@ impl Harmonizer {
         let controls = main.controls();
         let hop_bus = main.hop_bus.clone();
 
-        let hop_period = HOP_SIZE as f32 / sample_rate;
-        let smoothing_alpha = 1.0 - (-hop_period / PitchCorrector::SMOOTHING_TAU_SECONDS).exp();
-
         let mut voice_idx = 0usize;
         let voices = HARMONY_VOICES.map(|(degrees, interval)| {
             voice_idx += 1;
             let log_idx = voice_idx; // 1..=3 ([0] is the main voice)
             let controls = controls.clone();
             let bus = hop_bus.clone();
-            let smoothed = Mutex::new(1.0f32);
-            let gap_hops = Mutex::new(0usize);
+            let smoother = RatioSmoother::new(sample_rate);
             let ratio_fn: RatioFn = Box::new(move |_frame: &[f32]| {
                 let enabled =
                     controls.harmony_mask.load(Ordering::Relaxed) & (1 << (log_idx - 1)) != 0;
@@ -480,30 +499,19 @@ impl Harmonizer {
                 };
 
                 // Same smoothing + gap handling as the main voice.
-                const GAP_RESET_HOPS: usize = 43;
-                let mut prev = smoothed.lock().unwrap();
-                let mut gaps = gap_hops.lock().unwrap();
-                match pair {
-                    Some((detected, harmony)) => {
-                        *prev += smoothing_alpha * (harmony / detected - *prev);
-                        *gaps = 0;
-                    }
-                    None => {
-                        *gaps = gaps.saturating_add(1);
-                        if *gaps >= GAP_RESET_HOPS {
-                            *prev = 1.0;
-                        }
-                    }
-                }
+                let smoothed = smoother
+                    .lock()
+                    .unwrap()
+                    .step(pair.map(|(detected, harmony)| harmony / detected));
                 // Log this voice's produced pitch for the plot: only while
                 // enabled and voiced (it is faded out of the mix otherwise).
                 let bypass = controls.bypass.load(Ordering::Relaxed);
                 let produced = match (enabled && !bypass, pair) {
-                    (true, Some((detected, _))) => detected * *prev,
+                    (true, Some((detected, _))) => detected * smoothed,
                     _ => 0.0,
                 };
                 let _ = controls.voice_pitch_log[log_idx].push(produced);
-                *prev
+                smoothed
             });
             PhaseVocoderPitchShifter::with_ratio_fn(ratio_fn)
         });
