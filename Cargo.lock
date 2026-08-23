@@ -1327,7 +1327,6 @@ dependencies = [
  "apodize",
  "approx",
  "assert_no_alloc",
- "bitflags 2.10.0",
  "clap",
  "console_log",
  "cpal",

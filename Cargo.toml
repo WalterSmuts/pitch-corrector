@@ -18,7 +18,6 @@ cpal = { path = "../cpal", features = ["wasm-bindgen"] }
 crossbeam-queue = "0.3"
 crossbeam-utils = "0.8"
 apodize = "1.0.0"
-bitflags = "2"
 log = "0.4"
 easyfft = "0.4.2"
 
