@@ -1332,6 +1332,7 @@ dependencies = [
  "console_log",
  "cpal",
  "crossbeam-queue",
+ "crossbeam-utils",
  "crossterm 0.29.0",
  "ctrlc",
  "easyfft",
