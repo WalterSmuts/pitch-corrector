@@ -20,6 +20,19 @@ try {
     timeout: 20000,
   });
 
+  // --- Default view is the merged pitch lane (set before any recording) ---
+  check(
+    await page.evaluate(() => {
+      const rows = document.querySelectorAll('.tl-row.tl-track');
+      return (
+        document.getElementById('view-select').value === 'pitch' &&
+        rows[1].style.display === 'none' &&
+        document.querySelector('.pitch-legend').style.display !== 'none'
+      );
+    }),
+    'default view is the merged pitch lane',
+  );
+
   // --- Record with a small follow window so it actually scrolls ---
   await page.click('#record-btn');
   await page.waitForFunction(
@@ -205,6 +218,20 @@ try {
     `fit maps recording end to right edge (xEnd=${fitState.xEnd.toFixed(1)}, cssW=${fitState.cssW})`,
   );
 
+  // --- Microphone selector: populated once permission is granted, and a
+  // live device switch rebuilds the input stream without throwing ---
+  const micOpts = await page.evaluate(() => document.querySelectorAll('#mic-select option').length);
+  check(micOpts >= 1, `mic selector populated after permission (${micOpts} options)`);
+  const micSwitch = await page.evaluate(() => {
+    try {
+      window.__pc.set_input_device(undefined); // back to default; must not throw
+      return 'ok';
+    } catch (e) {
+      return String(e);
+    }
+  });
+  check(micSwitch === 'ok', `live microphone switch does not throw (${micSwitch})`);
+
   // --- Re-record: a second take must be a fresh session on the SAME audio
   // graph (regression: a new WebPitchCorrector per take left the old
   // AudioContext live — runaway sample counts and dropped-closure errors) ---
@@ -251,6 +278,10 @@ try {
     );
 
   // --- Wheel zoom in at the track center halves samples-per-px ---
+  // The default view is now the merged pitch lane (one collapsed track);
+  // switch to waveform up front so the whole zoom/gain/seek block below runs
+  // in the stable two-lane layout it measures `box` against.
+  await page.selectOption('#view-select', 'waveform');
   const track = page.locator('.tl-track-canvas').first();
   const box = await track.boundingBox();
   const sppBefore = await page.evaluate(() => {
@@ -330,7 +361,7 @@ try {
   );
 
   // --- View switching: shared dropdown drives both tracks; split opts out ---
-  check((await probe(0, 'orange')) > 100, 'default view is the waveform (orange peaks)');
+  check((await probe(0, 'orange')) > 100, 'waveform view shows orange peaks');
   const perTrackVisible = () =>
     page.evaluate(() =>
       [...document.querySelectorAll('.tl-view-select')].map((s) => s.style.display !== 'none'),
