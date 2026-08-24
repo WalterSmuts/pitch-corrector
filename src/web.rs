@@ -194,10 +194,69 @@ impl Analysis {
     }
 }
 
+/// Build the live mic-capture stream on `device`. Extracted so it can be
+/// called both at construction and when the user switches microphones
+/// (`WebPitchCorrector::set_input_device`). The callback mixes interleaved
+/// frames down to mono, pushes them onto `mic_ring` for the DSP, and appends
+/// to the input recording while `input_active`.
+fn build_input_stream(
+    device: &cpal::Device,
+    config: cpal::SupportedStreamConfig,
+    input_channels: usize,
+    playback: Arc<PlaybackState>,
+    mic_ring: Arc<ArrayQueue<f32>>,
+) -> Result<cpal::Stream, JsValue> {
+    device
+        .build_input_stream(
+            config.into(),
+            move |data: &[f32], _| {
+                playback.input_started.store(true, Ordering::Relaxed);
+                if !playback.input_active.load(Ordering::Relaxed) {
+                    return;
+                }
+                let mut rec = playback.input.writer();
+                for frame in data.chunks_exact(input_channels) {
+                    let s = frame.iter().sum::<f32>() / input_channels as f32;
+                    if mic_ring.push(s).is_err() {
+                        log::warn!("Input callback: mic ring overflow — dropping sample");
+                    }
+                    if let Some(rec) = rec.as_mut() {
+                        rec.push(s);
+                    }
+                }
+            },
+            |err| log::error!("Input error: {}", err),
+            None,
+        )
+        .map_err(|e| JsValue::from_str(&format!("{:?}", e)))
+}
+
+/// Select the microphone used for the *next* input stream built.
+///
+/// `device_id` is a browser `MediaDeviceInfo.deviceId` from
+/// `navigator.mediaDevices.enumerateDevices()`; `None`/empty restores the
+/// default. Call this before constructing [`WebPitchCorrector`] to choose the
+/// initial mic; to switch on an existing instance use
+/// [`WebPitchCorrector::set_input_device`], which also rebuilds the stream.
+#[wasm_bindgen]
+pub fn set_preferred_input_device(device_id: Option<String>) {
+    let id = device_id.filter(|s| !s.is_empty());
+    cpal::web::set_preferred_input_device_id(id);
+}
+
 #[wasm_bindgen]
 pub struct WebPitchCorrector {
-    input_stream: cpal::Stream,
+    /// The live mic-capture stream. Boxed in a `RefCell` so it can be
+    /// swapped when the user picks a different microphone: dropping the old
+    /// stream releases the previous device (see cpal's webaudio/audioworklet
+    /// `Drop`), then a fresh stream is built with the new `deviceId`.
+    input_stream: std::cell::RefCell<cpal::Stream>,
     output_stream: cpal::Stream,
+    /// Everything needed to rebuild the input stream for a device switch.
+    input_device: cpal::Device,
+    input_config: cpal::SupportedStreamConfig,
+    input_channels: usize,
+    mic_ring: Arc<ArrayQueue<f32>>,
     processor: Arc<Mutex<Harmonizer>>,
     controls: Arc<PitchCorrectorControls>,
     playback: Arc<PlaybackState>,
@@ -257,7 +316,10 @@ impl WebPitchCorrector {
         let processor = Arc::new(Mutex::new(Harmonizer::with_sample_rate(sample_rate)));
         let controls = processor.lock().unwrap().controls();
         let mic_ring = Arc::new(ArrayQueue::<f32>::new(BUFFER_SIZE * 8));
-        let mic_ring_in = mic_ring.clone();
+        // The output callback drains the mic ring into the pipeline; give it
+        // its own handle so `mic_ring` stays available to build the input
+        // stream and to be stored for later device switches.
+        let mic_ring_out = mic_ring.clone();
         let output_processor = processor.clone();
 
         let playback = Arc::new(PlaybackState {
@@ -274,30 +336,13 @@ impl WebPitchCorrector {
             freeze_active: AtomicBool::new(false),
         });
 
-        let input_playback = playback.clone();
-        let input_stream = input_device
-            .build_input_stream(
-                input_config.into(),
-                move |data: &[f32], _| {
-                    input_playback.input_started.store(true, Ordering::Relaxed);
-                    if !input_playback.input_active.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    let mut rec = input_playback.input.writer();
-                    for frame in data.chunks_exact(input_channels) {
-                        let s = frame.iter().sum::<f32>() / input_channels as f32;
-                        if mic_ring_in.push(s).is_err() {
-                            log::warn!("Input callback: mic ring overflow — dropping sample");
-                        }
-                        if let Some(rec) = rec.as_mut() {
-                            rec.push(s);
-                        }
-                    }
-                },
-                |err| log::error!("Input error: {}", err),
-                None,
-            )
-            .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        let input_stream = build_input_stream(
+            &input_device,
+            input_config.clone(),
+            input_channels,
+            playback.clone(),
+            mic_ring.clone(),
+        )?;
 
         let output_playback = playback.clone();
         // Freeze-audition gain (f32 bits) and its ~5ms one-pole coefficient,
@@ -354,13 +399,13 @@ impl WebPitchCorrector {
                     let frames = data.len() / output_channels;
                     if output_playback.input_active.load(Ordering::Relaxed) {
                         // Live: drain captured mic samples into the pipeline.
-                        while let Some(s) = mic_ring.pop() {
+                        while let Some(s) = mic_ring_out.pop() {
                             processor.push_sample(s);
                         }
                     } else {
                         // Not recording: discard any stale capture residue so
                         // it can't pollute the next playback re-process.
-                        while mic_ring.pop().is_some() {}
+                        while mic_ring_out.pop().is_some() {}
                     }
                     if output_playback.playing.load(Ordering::Relaxed)
                         && let Some(rec) = output_playback.input.writer()
@@ -426,8 +471,12 @@ impl WebPitchCorrector {
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
 
         Ok(WebPitchCorrector {
-            input_stream,
+            input_stream: std::cell::RefCell::new(input_stream),
             output_stream,
+            input_device,
+            input_config,
+            input_channels,
+            mic_ring,
             processor,
             controls,
             playback,
@@ -486,8 +535,36 @@ impl WebPitchCorrector {
 
     pub fn stop(&self) {
         self.playback.input_active.store(false, Ordering::Relaxed);
-        let _ = self.input_stream.pause();
+        let _ = self.input_stream.borrow().pause();
         let _ = self.output_stream.pause();
+    }
+
+    /// Switch the capture microphone to `device_id` (a browser
+    /// `MediaDeviceInfo.deviceId`; `None`/empty = default). Rebuilds the
+    /// input stream on the same audio graph: the new stream acquires the
+    /// chosen device, then the old one is dropped, which releases the
+    /// previous microphone (see cpal's browser-host `Drop`). Preserves the
+    /// current play/pause state so switching mid-recording keeps capturing.
+    pub fn set_input_device(&self, device_id: Option<String>) -> Result<(), JsValue> {
+        set_preferred_input_device(device_id);
+        let was_active = self.playback.input_active.load(Ordering::Relaxed);
+        let new_stream = build_input_stream(
+            &self.input_device,
+            self.input_config.clone(),
+            self.input_channels,
+            self.playback.clone(),
+            self.mic_ring.clone(),
+        )?;
+        if was_active {
+            new_stream
+                .play()
+                .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
+        } else {
+            let _ = new_stream.pause();
+        }
+        // Replacing the cell drops the previous stream, releasing its mic.
+        *self.input_stream.borrow_mut() = new_stream;
+        Ok(())
     }
 
     /// Begin a fresh recording on the existing audio graph. Reusing the
@@ -512,6 +589,7 @@ impl WebPitchCorrector {
             .store(false, Ordering::Relaxed);
         self.playback.input_active.store(true, Ordering::Relaxed);
         self.input_stream
+            .borrow()
             .play()
             .map_err(|e| JsValue::from_str(&format!("{:?}", e)))?;
         self.output_stream
@@ -613,7 +691,7 @@ impl WebPitchCorrector {
             .lock()
             .unwrap()
             .reset(&self.playback, &self.controls);
-        let _ = self.input_stream.pause();
+        let _ = self.input_stream.borrow().pause();
         let _ = self.output_stream.pause();
     }
 
