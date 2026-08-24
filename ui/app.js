@@ -1,4 +1,8 @@
-import init, { WebPitchCorrector, warmup } from '../pkg/pitch_corrector.js';
+import init, {
+    WebPitchCorrector,
+    warmup,
+    set_preferred_input_device,
+} from '../pkg/pitch_corrector.js';
 import { Timeline } from './timeline.js';
 import {
     AmplitudeScale,
@@ -84,7 +88,62 @@ const els = {
     downloadOutputBtn: $btn('download-output-btn'),
     uploadBtn: $btn('upload-btn'),
     uploadInput: $input('upload-input'),
+    micSelect: $select('mic-select'),
 };
+
+// --- Microphone selection ---
+// Browsers pick the capture device by passing a deviceId constraint to
+// getUserMedia (there is no synchronous device list), so the choice is
+// applied in Rust via set_preferred_input_device and, for a live switch,
+// WebPitchCorrector::set_input_device (which rebuilds the input stream).
+// Device labels are only exposed once mic permission has been granted, so
+// the list is (re)populated after the first getUserMedia and on devicechange.
+let selectedMicId = ''; // '' = browser default
+
+async function populateMics() {
+    if (!(navigator.mediaDevices && navigator.mediaDevices.enumerateDevices)) return;
+    let devices;
+    try {
+        devices = await navigator.mediaDevices.enumerateDevices();
+    } catch {
+        return;
+    }
+    const mics = devices.filter((d) => d.kind === 'audioinput');
+    const sel = els.micSelect;
+    // Preserve the current choice across repopulation if it still exists.
+    const prev = selectedMicId;
+    sel.textContent = '';
+    const def = document.createElement('option');
+    def.value = '';
+    def.textContent = 'Default microphone';
+    sel.appendChild(def);
+    mics.forEach((d, i) => {
+        const opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || `Microphone ${i + 1}`;
+        sel.appendChild(opt);
+    });
+    sel.value = mics.some((d) => d.deviceId === prev) ? prev : '';
+    selectedMicId = sel.value;
+}
+
+els.micSelect.addEventListener('change', async () => {
+    selectedMicId = els.micSelect.value;
+    // Take effect on the next stream built (initial record / upload)…
+    set_preferred_input_device(selectedMicId || undefined);
+    // …and immediately on the live graph if one exists.
+    if (corrector) {
+        try {
+            corrector.set_input_device(selectedMicId || undefined);
+        } catch (e) {
+            els.status.textContent = 'Could not switch microphone: ' + e;
+        }
+    }
+});
+
+if (navigator.mediaDevices) {
+    navigator.mediaDevices.addEventListener?.('devicechange', populateMics);
+}
 
 // --- Timeline ---
 
@@ -600,6 +659,8 @@ function newCorrector() {
     // constructing a second WebPitchCorrector leaves the old AudioContext
     // live and fighting over the microphone. Re-record via start_recording.
     if (corrector) return;
+    // Apply the chosen mic before the input stream is built.
+    set_preferred_input_device(selectedMicId || undefined);
     corrector = new WebPitchCorrector();
     // E2E test hook: expose the corrector so Playwright can inspect the
     // captured buffers. Only when ?e2e is set.
@@ -648,6 +709,8 @@ async function startRecording() {
             els.status.textContent = 'Waiting for microphone permission…';
             const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
             probe.getTracks().forEach((t) => t.stop());
+            // Permission just granted: device labels are now available.
+            await populateMics();
         }
         newCorrector();
         resetSession();
@@ -1018,4 +1081,7 @@ updateLegendOverride();
         return;
     }
     setState('idle');
+    // Show whatever devices we can enumerate now (labels appear after the
+    // first permission grant); refreshed again once recording is allowed.
+    populateMics();
 })();
