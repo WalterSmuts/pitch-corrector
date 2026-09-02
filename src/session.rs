@@ -85,7 +85,7 @@ pub fn waveform_peaks(samples: &[f32], start: f64, end: f64, bins: usize) -> Vec
         return out;
     }
     let per_bin = (end - start) / bins as f64;
-    for (i, chunk) in out.chunks_exact_mut(2).enumerate() {
+    for (i, chunk) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
         let lo = (start + i as f64 * per_bin).floor().max(0.0) as usize;
         let hi = ((start + (i + 1) as f64 * per_bin).ceil() as usize).min(samples.len());
         if lo >= hi {
@@ -377,7 +377,7 @@ mod tests {
             .collect();
         let peaks = waveform_peaks(&samples, 0.0, 1000.0, 10);
         assert_eq!(peaks.len(), 20);
-        for pair in peaks.chunks_exact(2) {
+        for pair in peaks.as_chunks::<2>().0 {
             assert_eq!(pair[0], -1.0);
             assert_eq!(pair[1], 1.0);
         }
