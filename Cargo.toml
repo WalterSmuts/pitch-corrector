@@ -14,7 +14,7 @@ web = ["wasm-bindgen", "web-sys", "js-sys", "console_log", "wasm-bindgen-futures
 worklet = ["cpal/audioworklet"]
 
 [dependencies]
-cpal = { path = "../cpal", features = ["wasm-bindgen"] }
+cpal = { git = "https://github.com/WalterSmuts/cpal.git", features = ["wasm-bindgen"] }
 crossbeam-queue = "0.3"
 crossbeam-utils = "0.8"
 apodize = "1.0.0"

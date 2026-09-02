@@ -5,26 +5,9 @@ Real-time pitch correction using YIN pitch detection and phase vocoder synthesis
 ## Prerequisites
 
 This project depends on a fork of [`cpal`](https://github.com/WalterSmuts/cpal)
-with additional WebAudio support, referenced as a path dependency at `../cpal`.
-Clone it as a sibling of this repository before building:
-
-```bash
-# from the parent directory that contains this repo
-git clone https://github.com/WalterSmuts/cpal.git
-```
-
-Your layout should be:
-
-```
-parent/
-├── pitch-corrector/   (this repo)
-└── cpal/              (the fork)
-```
-
-> Note: the web build relies on WebAudio commits in the fork
-> (`build_input_stream_raw`, input-device enumeration, ScriptProcessorNode
-> output). Ensure the branch you check out contains them. CI clones this fork
-> automatically (see `.github/workflows/ci.yml`).
+with additional WebAudio support (`build_input_stream_raw`, input-device
+enumeration, ScriptProcessorNode output). It is referenced as a git dependency
+in `Cargo.toml`, so cargo fetches it automatically — no manual setup needed.
 
 ## Build
 
